@@ -1,0 +1,8 @@
+name: network-toy
+channels: [conda-forge]
+dependencies:
+  - python=3.12
+  - nodejs
+  - pip
+  - pip:
+      - playwright

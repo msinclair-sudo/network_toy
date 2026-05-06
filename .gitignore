@@ -1,0 +1,24 @@
+# node / npm — not used now, but in case we ever add a build step
+node_modules/
+package-lock.json
+
+# python — conda env file is committed; the env itself is not
+__pycache__/
+*.pyc
+.venv/
+.env
+
+# editors / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# transient
+*.log
+*.tmp
+.cache/
+
+# claude code workspace files (kept locally, not shared)
+.claude/
