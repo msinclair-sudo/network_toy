@@ -26,6 +26,15 @@
 
 export const DEFAULT_STRENGTH = 0.04;
 
+// Max value the tension cache can hold. For uncited springs the strain
+// (d − ℓ) / d is in [-1, 1]. For cited springs the spring also gets a
+// stiffness multiplier s = max(1, α), so the force per unit length scales
+// up with α. We write s · strain into the cache so the debug overlay can
+// distinguish "lightly pulled" from "yanked hard" — the strain alone
+// saturates at ±1 the moment α ≥ 1 because ℓ collapses to 0.
+// Matches the α slider cap in app/index.html.
+export const MAX_TENSION = 5;
+
 // Light per-pair tension cache so debug overlays (and anyone else who needs
 // per-spring state) can read what the most recent tick computed without
 // recomputing it. The force writes `tension[i*n + j] = (d − ℓ) / max(d, eps)`
@@ -66,18 +75,27 @@ export function makeHybridForce({
     const baseD = getBaseDist();
     const cit   = getHasCit();
     if (!baseD || !cit) return;
+    // baseD / cit / tens are all sized nData × nData (data nodes only).
+    // The simulation may include extra debug gizmo nodes (origins,
+    // centroids) — those are not in the pair tables, so we skip them and
+    // index by the data-node id rather than by the simulation index.
+    const stride = Math.sqrt(baseD.length) | 0;
     const A = +getAlpha() || 0;
     const oneMinusA = 1 - A;
     const STRENGTH = strength;
     const tens = getTensionCache();
-    const tensValid = tens && tens.length >= n * n;
+    const tensValid = tens && tens.length >= stride * stride;
 
     for (let i = 0; i < n; i++) {
       const ni = nodes[i];
+      if (ni.kind && ni.kind !== "node") continue;
+      const idi = ni.id;
       for (let j = i + 1; j < n; j++) {
         const nj = nodes[j];
-        const semRest = baseD[i * n + j];
-        const cited = cit[i * n + j];
+        if (nj.kind && nj.kind !== "node") continue;
+        const idj = nj.id;
+        const semRest = baseD[idi * stride + idj];
+        const cited = cit[idi * stride + idj];
         const rest = cited ? Math.max(0, oneMinusA * semRest) : semRest;
         const sMul = cited ? Math.max(1, A) : 1;
 
@@ -89,12 +107,14 @@ export function makeHybridForce({
         nj.vx -= fx; nj.vy -= fy; nj.vz -= fz;
 
         if (tensValid) {
-          // Normalised tension: + means stretched, − means compressed.
-          // Clamped to [-1, 1] for downstream colour mapping.
-          let t = (d - rest) / Math.max(d, 1e-3);
-          if (t > 1) t = 1; else if (t < -1) t = -1;
-          tens[i * n + j] = t;
-          tens[j * n + i] = t;
+          // Stiffness-weighted tension: + stretched, − compressed.
+          // Clamped to [-MAX_TENSION, MAX_TENSION]; the debug palette
+          // normalises this back into [-1, 1] for colour mapping.
+          let t = sMul * (d - rest) / Math.max(d, 1e-3);
+          if (t > MAX_TENSION) t = MAX_TENSION;
+          else if (t < -MAX_TENSION) t = -MAX_TENSION;
+          tens[idi * stride + idj] = t;
+          tens[idj * stride + idi] = t;
         }
       }
     }

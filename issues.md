@@ -30,6 +30,7 @@ chasing the wrong fix.
 The Debug menu currently exposes seven checkboxes, grouped by layer:
 
 ### Generation
+
 1. **show origin markers** — `dbg-origins`
    Toggles `debugFlags.showOrigins` in `generation-debug.js`. When on,
    `buildDebugGraph` injects N extra graph nodes (one per origin) with
@@ -48,25 +49,27 @@ The Debug menu currently exposes seven checkboxes, grouped by layer:
    touch graph data — purely a scene overlay.
 
 ### Clustering
-4. **cluster centroids** — `dbg-centroids`
+
+1. **cluster centroids** — `dbg-centroids`
    Toggles `clusterDebugFlags.showCentroids`. Adds graph nodes with
    `id = "centroid:N"`, `kind = "centroid"`, `fx/fy/fz` pinned to the
    cluster centroid. `nodeThreeObject` swaps in a wire-tetrahedron gizmo.
 
-5. **mutual k-NN edges** — `dbg-mutual-edges`
+2. **mutual k-NN edges** — `dbg-mutual-edges`
    Toggles `clusterDebugFlags.showMutualEdges`. Adds links between
    integer-ID data nodes for every mutual k-NN pair found by the
    clustering layer. Coloured `#5dd39e` in `colourForLink`.
 
 ### Physics
-6. **citation tension** — `dbg-tension-cit`
+
+1. **citation tension** — `dbg-tension-cit`
    Toggles `physicsDebugFlags.tensionCitations`. When on, the link colour
    callback for citation edges defers to `colourForTension(t)` where `t`
    is the live spring tension `(d − ℓ) / d` written by the force into
    `state._tensionCache` every tick. Stretched → red, neutral → grey,
    compressed → blue.
 
-7. **base tension** — `dbg-tension-base`
+2. **base tension** — `dbg-tension-base`
    Same idea as (6) but for base edges (the visual ones drawn when "show
    base" is on in the bottom bar).
 
@@ -132,6 +135,7 @@ again does not propagate new colours to the clones — they're independent
 material objects.
 
 When the user ticks "citation tension" on:
+
 - We call `Graph.linkColor(colourForLink)` so the lib re-resolves colour.
 - But the existing cloned materials still hold their old colour.
 - New materials created from this point would pick up the new colour,
@@ -200,6 +204,7 @@ that defined the clustering," then watching its edges deform under α is
 visually misleading, even though it's technically correct.
 
 **Possible interpretations**:
+
 - (a) Expected: edges follow the live nodes. Then this overlay isn't
   broken; it just doesn't match the user's intuition.
 - (b) Wanted: render the edges at basePos coordinates regardless of
@@ -242,6 +247,7 @@ and mutual k-NN edges still render at all in the new physics-enabled
 viewer. Boot the page, tick each toggle, screenshot.
 
 If any of them silently fails to appear:
+
 - Check that `nodeThreeObject` is still being applied (likely yes).
 - Check that the gizmo's `fx/fy/fz` is being respected (look at
   `Graph.graphData().nodes` after the toggle).
@@ -294,6 +300,7 @@ Estimate: 20 min, mostly just clicking around.
 ### Step 6 (optional) — Polish
 
 Things to consider once the structural fixes are in:
+
 - Origin gizmo size relative to spreadScale (they're currently fixed at
   ~4 scene units, which is fine for spreadScale=1 but tiny when
   spreadScale=4).

@@ -31,7 +31,10 @@ import {
 } from "./citations-debug.js";
 import { buildBaseEdges } from "./base-edges.js";
 import { makeHybridForce, makeTensionCache } from "./hybrid-force.js";
-import { physicsDebugFlags, colourForTension } from "./physics-debug.js";
+import {
+  physicsDebugFlags, colourForTension,
+  buildDisplacementOverlay, updateDisplacementOverlay,
+} from "./physics-debug.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -84,6 +87,7 @@ const state = {
 
 let Graph = null;
 let volumeObject = null;
+let displacementObject = null;
 
 /* ── pipeline orchestration ─────────────────────────────────────────────── */
 /* Each stage runs only when something at or above it has changed.
@@ -296,7 +300,8 @@ function loadGraphData() {
       return `#${n.id} · origin ${n.originId} · cluster ${cid} · t=${n.t.toFixed(2)}`;
     })
     .linkColor(colourForLink)
-    .linkOpacity(0.9)              // base; per-link override via material clone
+    .linkOpacity(0.9)              // overridden per-link via linkMaterial below
+    .linkMaterial((l) => getLinkMaterial(l))
     .linkWidth((l) => {
       if (l.kind === "citation")    return 0.9;
       if (l.kind === "mutual-edge") return 0.6;
@@ -308,31 +313,54 @@ function loadGraphData() {
     .graphData(data);
 
   ensureVolumeOutline();
+  ensureDisplacementOverlay();
   installPerLinkOpacityHook();
 }
 
-/* per-link opacity: 3d-force-graph caches LineBasicMaterials by colour
-   string, so every link of the same colour shares ONE material instance.
-   Writing material.opacity directly means the last link iterated wins for
-   every link of that colour. Workaround: on first sight of each link,
-   replace its material with a .clone() so every link owns its own
-   instance, then set opacity on that clone. graphData rebuilds regenerate
-   materials, so we re-clone on the next tick automatically. */
+/* per-link material ownership: 3d-force-graph caches LineBasicMaterials /
+   MeshLambertMaterials internally, indexed by colour string — multiple
+   links of the same colour share ONE material instance. That's fatal for
+   per-link opacity (last writer wins) AND for live colour updates (lib
+   doesn't re-evaluate the colour accessor every frame; tension changes
+   every frame, so it would never propagate). We bypass the cache by
+   handing the lib a fresh MeshLambertMaterial per link via the
+   linkMaterial accessor. The lib uses our material as-is and never
+   replaces it. We then own colour + opacity, updated every frame in the
+   rAF tick below. WeakMap keyed on the link object means materials are
+   GC'd when graphData() rebuilds links. */
+const _linkMatCache = new WeakMap();
+function getLinkMaterial(link) {
+  let m = _linkMatCache.get(link);
+  if (!m) {
+    const T = window.THREE;
+    m = new T.MeshLambertMaterial({ transparent: true, depthWrite: false });
+    _linkMatCache.set(link, m);
+  }
+  return m;
+}
 function installPerLinkOpacityHook() {
   if (installPerLinkOpacityHook._installed) return;
   installPerLinkOpacityHook._installed = true;
   const tick = () => {
     if (Graph) {
-      const links = Graph.graphData().links;
+      const data = Graph.graphData();
+      const links = data.links;
       for (const l of links) {
-        const obj = l.__lineObj;
-        if (!obj || !obj.material) continue;
-        if (!obj.material.__perLink) {
-          obj.material = obj.material.clone();
-          obj.material.__perLink = true;
-          obj.material.transparent = true;
+        const m = _linkMatCache.get(l);
+        if (!m) continue;
+        m.opacity = opacityForLink(l);
+        const c = colourForLink(l);
+        if (m.__lastColour !== c) {
+          m.color.set(c);
+          m.__lastColour = c;
         }
-        obj.material.opacity = opacityForLink(l);
+      }
+      if (physicsDebugFlags.showDisplacement && displacementObject && state.result) {
+        updateDisplacementOverlay(
+          displacementObject,
+          data.nodes,
+          (id) => state.result.nodes[id]?.basePos,
+        );
       }
     }
     requestAnimationFrame(tick);
@@ -356,6 +384,31 @@ function ensureVolumeOutline() {
   if (debugFlags.showVolume) {
     volumeObject = buildVolumeOutline(T, state.result.R);
     scene.add(volumeObject);
+  }
+}
+
+// Same lifecycle pattern as ensureVolumeOutline. Rebuilds when the data
+// node count changes (so a regen with a different N gets a correctly-sized
+// vertex buffer).
+function ensureDisplacementOverlay() {
+  if (!Graph) return;
+  const T = window.THREE;
+  if (!T || !state.result) return;
+  const scene = Graph.scene();
+  const wantN = state.result.nodes.length;
+  const haveN = displacementObject
+    ? displacementObject.geometry.attributes.position.array.length / 6
+    : 0;
+  const sizeMismatch = displacementObject && haveN !== wantN;
+  if (displacementObject && (!physicsDebugFlags.showDisplacement || sizeMismatch)) {
+    scene.remove(displacementObject);
+    displacementObject.geometry.dispose();
+    displacementObject.material.dispose();
+    displacementObject = null;
+  }
+  if (physicsDebugFlags.showDisplacement && !displacementObject) {
+    displacementObject = buildDisplacementOverlay(T, wantN);
+    scene.add(displacementObject);
   }
 }
 
@@ -421,8 +474,10 @@ function bindDebugToggles() {
   // just nudge the link-colour function so the lib applies it.
   $("dbg-tension-cit").checked   = physicsDebugFlags.tensionCitations;
   $("dbg-tension-base").checked  = physicsDebugFlags.tensionBase;
+  $("dbg-displacement").checked  = physicsDebugFlags.showDisplacement;
   $("dbg-tension-cit").onchange  = (e) => { physicsDebugFlags.tensionCitations = e.target.checked; if (Graph) Graph.linkColor(colourForLink); };
   $("dbg-tension-base").onchange = (e) => { physicsDebugFlags.tensionBase      = e.target.checked; if (Graph) Graph.linkColor(colourForLink); };
+  $("dbg-displacement").onchange = (e) => { physicsDebugFlags.showDisplacement = e.target.checked; ensureDisplacementOverlay(); };
 }
 
 /* ── settings modal ─────────────────────────────────────────────────────── */
@@ -897,5 +952,11 @@ export function boot() {
     initGraph();
     loadGraphData();
     Graph.cameraPosition({ x: 0, y: 0, z: R_GLOBAL * 4 }, { x: 0, y: 0, z: 0 }, 0);
+    // expose for debugging in DevTools console
+    window.__nt = {
+      Graph, state, physicsDebugFlags, citationViewFlags,
+      colourForLink, opacityForLink, readTension,
+      linkMatCache: _linkMatCache,
+    };
   });
 }
