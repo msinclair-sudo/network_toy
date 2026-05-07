@@ -11,6 +11,7 @@
 // immediately when adding a new algorithm.
 
 import { inferClusters as inferMutualKNN } from "./clustering.js";
+import { inferHdbscan, defaultHdbscanParams } from "./clustering-hdbscan.js";
 
 // Each entry's `infer` is called as infer(genResult, params) and must
 // return a ClusterResult.
@@ -30,6 +31,32 @@ export const ALGORITHMS = [
         min: 1, max: 20, step: 1,
         format: (v) => String(v),
         hint: "Top-K nearest neighbours each node considers. Larger K → more pairs are mutual → fewer, bigger clusters.",
+      },
+    ],
+  },
+  {
+    id: "hdbscan",
+    label: "HDBSCAN (stage 1)",
+    description: "Builds the mutual-reachability MST under HDBSCAN's density-aware metric, then drops the K-1 longest edges to produce K clusters. Stage 1 placeholder — stage 2 will swap the fixed-K cut for the canonical condensed-tree + stability extraction.",
+    allowsNoise: false,
+    defaultParams: defaultHdbscanParams,
+    infer: (genResult, params) => inferHdbscan(genResult, params),
+    modalSchema: [
+      {
+        key: "minSamples",
+        label: "min samples",
+        kind: "int",
+        min: 1, max: 30, step: 1,
+        format: (v) => String(v),
+        hint: "Defines core distance: each node's distance to its k-th nearest neighbour. Larger values = stronger smoothing and more aggressive density-awareness.",
+      },
+      {
+        key: "numClusters",
+        label: "clusters",
+        kind: "int",
+        min: 1, max: 30, step: 1,
+        format: (v) => String(v),
+        hint: "Target number of clusters. Stage 1 cuts the MST's K-1 longest edges to produce this many components. Stage 2 will replace this with min_cluster_size and let the cluster count emerge.",
       },
     ],
   },
