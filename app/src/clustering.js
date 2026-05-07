@@ -1,24 +1,19 @@
-// Clustering layer.
+// Clustering layer — mutual k-NN algorithm.
 //
 // Pure function: given a generation result, recover cluster IDs by building a
 // mutual k-NN graph over basePos and taking its connected components.
 //
 // Math reference: doc/dynamics.md §2.
+// Output contract: doc/clustering.md §1, validated by contracts/cluster.js.
 //
 // Reads basePos only. Does NOT touch originId. Does NOT mutate the input.
 // Returns its own payload — the caller decides whether/how to attach the
 // cluster IDs to its node objects.
 //
-// Output shape:
-//   {
-//     mutualK,                            the K used (clamped)
-//     clusters: [{                        one entry per connected component
-//       id, centre:[x,y,z], spread, count, colour
-//     }],
-//     nodeCluster: Int32Array,            nodeCluster[i] = cluster id for node i
-//     mutualEdges: [[i,j], ...],          undirected pair list of mutual k-NN edges
-//                                          (kept for debug viz; not used downstream)
-//   }
+// This algorithm does not produce noise points (every node always lands in
+// exactly one connected component, even if that component is a singleton).
+// `stability` is filled with NaN per cluster — the contract requires the
+// field to always be present, but mutual-k-NN has no notion of stability.
 
 const TABLEAU10 = [
   "#4e79a7", "#f28e2b", "#e15759", "#76b7b2", "#59a14f",
@@ -35,7 +30,13 @@ export function inferClusters(genResult, params = {}) {
   const K = Math.max(1, Math.min(Math.max(1, n - 1), (params.mutualK ?? 5) | 0));
 
   if (n === 0) {
-    return { mutualK: K, clusters: [], nodeCluster: new Int32Array(0), mutualEdges: [] };
+    return {
+      method: "mutualKNN",
+      params: { mutualK: K },
+      clusters: [],
+      nodeCluster: new Int32Array(0),
+      structureEdges: [],
+    };
   }
 
   // 1. For each node, find its top-K nearest neighbours by basePos distance.
@@ -69,12 +70,12 @@ export function inferClusters(genResult, params = {}) {
     const ra = find(a), rb = find(b);
     if (ra !== rb) parent[ra] = rb;
   };
-  const mutualEdges = [];
+  const structureEdges = [];
   for (let i = 0; i < n; i++) {
     for (const j of topK[i]) {
       if (j > i && topK[j].has(i)) {
         union(i, j);
-        mutualEdges.push([i, j]);
+        structureEdges.push([i, j]);
       }
     }
   }
@@ -122,8 +123,15 @@ export function inferClusters(genResult, params = {}) {
       spread,
       count: counts[c],
       colour: TABLEAU10[c % TABLEAU10.length],
+      stability: NaN,                      // contract requires the field; mutual-k-NN doesn't compute it
     });
   }
 
-  return { mutualK: K, clusters, nodeCluster, mutualEdges };
+  return {
+    method: "mutualKNN",
+    params: { mutualK: K },
+    clusters,
+    nodeCluster,
+    structureEdges,
+  };
 }

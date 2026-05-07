@@ -20,6 +20,7 @@ import {
   buildVolumeOutline, buildOriginMarker, debugFlags,
 } from "./generation-debug.js";
 import { inferClusters, defaultClusteringParams } from "./clustering.js";
+import { validateClusterResult } from "./contracts/cluster.js";
 import {
   decorateGraphData as decorateClusterDebug, buildCentroidMarker, clusterDebugFlags,
 } from "./clustering-debug.js";
@@ -133,6 +134,10 @@ function resetLivePositions() {
 
 function recluster() {
   state.clusterResult = inferClusters(state.result, state.clusterParams);
+  // Contract guard — every clustering algorithm output flows through here
+  // before the rest of the pipeline reads it. Throws on contract violation.
+  // mutual-k-NN never produces noise; allowNoise stays false.
+  validateClusterResult(state.clusterResult, state.result.nodes.length, { allowNoise: false });
   rebuildClusterLegend();
   reneighbour();
 }
@@ -226,7 +231,7 @@ function colourForLink(link) {
     }
     return state.view.baseColour;
   }
-  if (link.kind === "mutual-edge") return "#5dd39e";   // cluster-debug
+  if (link.kind === "structure-edge") return "#5dd39e";   // cluster-debug
   return genColourForLink(link, state.result.origins);
 }
 
@@ -254,7 +259,7 @@ function opacityForLink(link) {
   if (link.kind === "citation") {
     return Math.max(0.02, Math.min(1, state.view.citGamma ?? 1));
   }
-  if (link.kind === "mutual-edge") return 0.55;
+  if (link.kind === "structure-edge") return 0.55;
   return 0.4;
 }
 
@@ -304,7 +309,7 @@ function loadGraphData() {
     .linkMaterial((l) => getLinkMaterial(l))
     .linkWidth((l) => {
       if (l.kind === "citation")    return 0.9;
-      if (l.kind === "mutual-edge") return 0.6;
+      if (l.kind === "structure-edge") return 0.6;
       if (l.kind === "base")        return 0.3;
       return 0.3;
     })
@@ -465,9 +470,9 @@ function bindDebugToggles() {
 
   // Clustering overlays.
   $("dbg-centroids").checked     = clusterDebugFlags.showCentroids;
-  $("dbg-mutual-edges").checked  = clusterDebugFlags.showMutualEdges;
+  $("dbg-structure-edges").checked  = clusterDebugFlags.showStructureEdges;
   $("dbg-centroids").onchange    = (e) => { clusterDebugFlags.showCentroids   = e.target.checked; loadGraphData(); };
-  $("dbg-mutual-edges").onchange = (e) => { clusterDebugFlags.showMutualEdges = e.target.checked; loadGraphData(); };
+  $("dbg-structure-edges").onchange = (e) => { clusterDebugFlags.showStructureEdges = e.target.checked; loadGraphData(); };
 
   // Physics overlays. Both are render-only (the per-link colour callback
   // reads physicsDebugFlags) so toggling doesn't rebuild graph data; we
@@ -938,6 +943,7 @@ export function boot() {
   precomputeBaseDist();
   state._tensionCache = makeTensionCache(state.result.nodes.length);
   state.clusterResult = inferClusters(state.result, state.clusterParams);
+  validateClusterResult(state.clusterResult, state.result.nodes.length, { allowNoise: false });
   rebuildClusterLegend();
   state.neighbourhoodResult = inferNeighbourhoods(state.result, state.clusterResult, state.neighbourhoodParams);
   state.tasteResult = buildCitationTaste(state.clusterResult, state.neighbourhoodResult, state.tasteParams);

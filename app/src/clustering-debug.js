@@ -1,31 +1,37 @@
 // Clustering debug visualization.
 //
-// Lives entirely separate from the clustering pure module. Reads an
-// inferClusters() result and produces:
-//   - per-cluster centroid markers (a custom THREE gizmo, distinct from the
-//     origin gizmo so the two cannot be confused);
-//   - graph links for the mutual k-NN edges (the edges that defined the
-//     connected components).
+// Lives entirely separate from the clustering pure module. Reads a
+// ClusterResult (see doc/clustering.md §1) and produces:
+//   - per-cluster centroid markers (a custom THREE gizmo, distinct from
+//     the origin gizmo so the two cannot be confused);
+//   - graph links for `clusterResult.structureEdges` (algorithm-specific:
+//     mutual k-NN edges for the mutual-k-NN algorithm, MST edges for
+//     HDBSCAN).
 //
-// Toggles via debugFlags. All flags default OFF — the production view should
-// not show clustering debug noise. Open Debug ▾ to enable.
+// Toggles via debugFlags. All flags default OFF — the production view
+// should not show clustering debug noise. Open Debug ▾ to enable.
 
 const CENTROID_NODE_PREFIX = "centroid:";
 
 export const clusterDebugFlags = {
   showCentroids: false,
-  showMutualEdges: false,
+  showStructureEdges: false,
 };
 
-// Inject extra "node" entries (centroid markers) and "link" entries (mutual
-// k-NN pairs) into a graph-data object. Caller is responsible for merging
-// these with whatever else they want to draw.
+// Inject extra "node" entries (centroid markers) and "link" entries
+// (structureEdges from the active algorithm) into a graph-data object.
+// Caller is responsible for merging these with whatever else they want
+// to draw.
 export function decorateGraphData(graphData, clusterResult) {
   if (!clusterResult) return graphData;
-  const { clusters, mutualEdges } = clusterResult;
+  const { clusters, structureEdges } = clusterResult;
 
   if (clusterDebugFlags.showCentroids) {
     for (const c of clusters) {
+      // Skip the noise pseudo-cluster (id -1) — there's no meaningful
+      // centroid for "the noise points" and rendering one at [0,0,0]
+      // is misleading.
+      if (c.id === -1) continue;
       graphData.nodes.push({
         id: CENTROID_NODE_PREFIX + c.id,
         kind: "centroid",
@@ -35,12 +41,12 @@ export function decorateGraphData(graphData, clusterResult) {
       });
     }
   }
-  if (clusterDebugFlags.showMutualEdges) {
-    for (const [i, j] of mutualEdges) {
+  if (clusterDebugFlags.showStructureEdges) {
+    for (const [i, j] of structureEdges) {
       graphData.links.push({
         source: i,
         target: j,
-        kind: "mutual-edge",
+        kind: "structure-edge",
       });
     }
   }
