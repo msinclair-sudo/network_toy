@@ -153,6 +153,17 @@
       </div>
     </div>
 
+    <!-- Cluster ▾ — one menu item per registered algorithm. Picking one
+         opens the cluster-settings modal preloaded with that algorithm's
+         params. Items are populated dynamically from the registry, so
+         adding an algorithm doesn't need an HTML edit. -->
+    <div class="menu" id="menu-cluster">
+      <button class="tb-btn">Cluster ▾</button>
+      <div class="menu-list" id="menu-cluster-list">
+        <!-- populated by main.js bindClusterMenu() -->
+      </div>
+    </div>
+
     <!-- Citations ▾ — opens the citation settings modal. -->
     <div class="menu" id="menu-citations">
       <button class="tb-btn">Citations ▾</button>
@@ -192,16 +203,10 @@
   </div>
 
   <!-- ── left panel ─────────────────────────────────────────────────────── -->
+  <!-- The Clusters group has been moved to the topbar Cluster ▾ menu /
+       cluster settings modal, so swapping algorithms doesn't require
+       reshaping this panel. -->
   <div id="left">
-    <div class="group">
-      <h3>Clusters</h3>
-      <div class="row">
-        <label style="width: 70px;">k-NN</label>
-        <input type="range" id="mutualk-input" min="1" max="20" step="1" value="5" style="flex: 1 1 auto;">
-        <span class="val" id="mutualk-val" style="font-variant-numeric: tabular-nums; color: var(--text); min-width: 1.5em; text-align: right;">5</span>
-      </div>
-    </div>
-
     <div class="group">
       <h3>Force</h3>
       <div class="row">
@@ -341,6 +346,26 @@
     <div class="modal-foot">
       <button class="tb-btn" id="settings-close">Close</button>
       <button class="tb-btn primary" id="settings-generate">Generate</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── cluster settings modal ───────────────────────────────────────────── -->
+<!-- One modal serves every clustering algorithm. The body is rendered
+     dynamically from the active algorithm's modalSchema in the registry,
+     so adding a new algorithm needs no markup edits here. -->
+<div class="modal-backdrop" id="cluster-modal">
+  <div class="modal" role="dialog" aria-labelledby="cluster-modal-title">
+    <div class="modal-head">
+      <h2 id="cluster-modal-title">Cluster settings</h2>
+      <button class="tb-btn" id="cluster-modal-x" aria-label="Close" style="padding: 2px 8px;">✕</button>
+    </div>
+    <div class="modal-body" id="cluster-modal-body">
+      <!-- populated by main.js openClusterModal() -->
+    </div>
+    <div class="modal-foot">
+      <button class="tb-btn" id="cluster-modal-cancel">Cancel</button>
+      <button class="tb-btn primary" id="cluster-modal-apply">Apply</button>
     </div>
   </div>
 </div>

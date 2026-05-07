@@ -19,7 +19,7 @@ import {
   buildDebugGraph, colourForLink as genColourForLink,
   buildVolumeOutline, buildOriginMarker, debugFlags,
 } from "./generation-debug.js";
-import { inferClusters, defaultClusteringParams } from "./clustering.js";
+import { getAlgorithm, listAlgorithms } from "./clustering-registry.js";
 import { validateClusterResult } from "./contracts/cluster.js";
 import {
   decorateGraphData as decorateClusterDebug, buildCentroidMarker, clusterDebugFlags,
@@ -44,9 +44,12 @@ const state = {
   params: defaultGenerationParams(),
   result: null,
 
-  // Clustering params + result. mutualK is live; changing it reruns
-  // inferClusters() against the existing genResult without regenerating.
-  clusterParams: defaultClusteringParams(),
+  // Clustering params + result. The active algorithm is `method`; each
+  // algorithm gets its own params bag in `byAlgo[id]` so switching back
+  // and forth doesn't lose what you'd dialled in for either. Changing
+  // either the method OR a slider in the active algorithm's modal
+  // reruns the clustering pipeline.
+  clusterParams: initialClusterParams(),
   clusterResult: null,
 
   // Neighbourhoods (Stage 1). neighbourK is in the citation modal; changing
@@ -89,6 +92,25 @@ const state = {
 let Graph = null;
 let volumeObject = null;
 let displacementObject = null;
+
+/* ── clustering: registry-backed access ─────────────────────────────────── */
+
+// Initial cluster params: method = first registered algorithm, with each
+// algorithm's defaults pre-populated so switching never reads `undefined`.
+function initialClusterParams() {
+  const algos = listAlgorithms();
+  const byAlgo = {};
+  for (const a of algos) byAlgo[a.id] = a.defaultParams();
+  return { method: algos[0].id, byAlgo };
+}
+
+function activeAlgorithm() {
+  return getAlgorithm(state.clusterParams.method);
+}
+
+function activeAlgorithmParams() {
+  return state.clusterParams.byAlgo[state.clusterParams.method];
+}
 
 /* ── pipeline orchestration ─────────────────────────────────────────────── */
 /* Each stage runs only when something at or above it has changed.
@@ -133,11 +155,16 @@ function resetLivePositions() {
 }
 
 function recluster() {
-  state.clusterResult = inferClusters(state.result, state.clusterParams);
-  // Contract guard — every clustering algorithm output flows through here
-  // before the rest of the pipeline reads it. Throws on contract violation.
-  // mutual-k-NN never produces noise; allowNoise stays false.
-  validateClusterResult(state.clusterResult, state.result.nodes.length, { allowNoise: false });
+  // Registry-driven dispatch. The active algorithm decides how to cluster;
+  // its params live under state.clusterParams.byAlgo[method]. Whatever it
+  // returns gets validated against the contract before anything downstream
+  // reads it — that catches a contract violation the moment a new algorithm
+  // is added.
+  const algo = activeAlgorithm();
+  state.clusterResult = algo.infer(state.result, activeAlgorithmParams());
+  validateClusterResult(state.clusterResult, state.result.nodes.length, {
+    allowNoise: !!algo.allowsNoise,
+  });
   rebuildClusterLegend();
   reneighbour();
 }
@@ -573,17 +600,122 @@ function bindTopbar() {
   };
 }
 
-/* ── left panel: clustering ─────────────────────────────────────────────── */
+/* ── topbar: Cluster ▾ menu + cluster settings modal ────────────────────── */
+/* The menu is built from the registry (one item per algorithm). Picking
+ * an item commits that method to state and opens the cluster-settings
+ * modal preloaded with that algorithm's pending params. The modal body
+ * is rendered from the algorithm's modalSchema, so adding an algorithm
+ * needs no UI code here. */
 
-function bindClusterControls() {
-  $("mutualk-input").value = state.clusterParams.mutualK;
-  $("mutualk-val").textContent = String(state.clusterParams.mutualK);
-  $("mutualk-input").oninput = (e) => {
-    const k = +e.target.value | 0;
-    state.clusterParams.mutualK = k;
-    $("mutualk-val").textContent = String(k);
-    recluster();
+let clusterPending = null;          // { method, params } staged for Apply
+
+function bindClusterMenu() {
+  const list = $("menu-cluster-list");
+  list.innerHTML = "";
+  for (const algo of listAlgorithms()) {
+    const btn = document.createElement("button");
+    btn.className = "menu-item";
+    btn.textContent = algo.label;
+    btn.onclick = () => {
+      $("menu-cluster").classList.remove("open");
+      openClusterModal(algo.id);
+    };
+    list.appendChild(btn);
+  }
+}
+
+function bindClusterModal() {
+  $("cluster-modal-cancel").onclick = closeClusterModal;
+  $("cluster-modal-x").onclick      = closeClusterModal;
+  $("cluster-modal-apply").onclick  = commitClusterModalAndApply;
+  $("cluster-modal").addEventListener("click", (e) => {
+    if (e.target.id === "cluster-modal") closeClusterModal();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && $("cluster-modal").classList.contains("open")) closeClusterModal();
+  });
+}
+
+function openClusterModal(methodId) {
+  const algo = getAlgorithm(methodId);
+  // Stage pending params: shallow-copy whatever the user dialled in last
+  // time for this algorithm. If the user has never touched it, byAlgo
+  // already holds defaultParams() (set during initialClusterParams()).
+  clusterPending = {
+    method: algo.id,
+    params: { ...state.clusterParams.byAlgo[algo.id] },
   };
+  $("cluster-modal-title").textContent = algo.label + " — settings";
+  renderClusterModalBody(algo, clusterPending.params);
+  $("cluster-modal").classList.add("open");
+}
+
+function closeClusterModal() {
+  $("cluster-modal").classList.remove("open");
+  clusterPending = null;
+}
+
+function commitClusterModalAndApply() {
+  if (!clusterPending) return;
+  // Commit pending → state. The pending bag may include keys clamped /
+  // typed by the schema renderer, so trust it as-is.
+  state.clusterParams.byAlgo[clusterPending.method] = { ...clusterPending.params };
+  state.clusterParams.method = clusterPending.method;
+  closeClusterModal();
+  recluster();
+}
+
+// Render one row per modalSchema entry. This is intentionally simple —
+// just range / int sliders for now. If a future algorithm needs a
+// different control type, extend this and add the kind to the schema.
+function renderClusterModalBody(algo, params) {
+  const body = $("cluster-modal-body");
+  body.innerHTML = "";
+
+  if (algo.description) {
+    const note = document.createElement("div");
+    note.style.cssText = "font-size:11px;color:var(--muted);line-height:1.5;margin-bottom:12px;";
+    note.textContent = algo.description;
+    body.appendChild(note);
+  }
+
+  for (const field of algo.modalSchema) {
+    const row = document.createElement("div");
+    row.className = "field";
+
+    const label = document.createElement("label");
+    label.textContent = field.label;
+    row.appendChild(label);
+
+    const range = document.createElement("input");
+    range.type = "range";
+    range.min  = String(field.min);
+    range.max  = String(field.max);
+    range.step = String(field.step);
+    range.value = String(params[field.key]);
+    row.appendChild(range);
+
+    const val = document.createElement("span");
+    val.className = "val";
+    val.textContent = field.format(params[field.key]);
+    row.appendChild(val);
+
+    range.oninput = (e) => {
+      let v = +e.target.value;
+      if (field.kind === "int") v = v | 0;
+      params[field.key] = v;
+      val.textContent = field.format(v);
+    };
+
+    body.appendChild(row);
+
+    if (field.hint) {
+      const hint = document.createElement("div");
+      hint.style.cssText = "grid-column: 1 / -1; font-size:10px;color:var(--muted);line-height:1.4;margin:-4px 0 6px;";
+      hint.textContent = field.hint;
+      body.appendChild(hint);
+    }
+  }
 }
 
 /* ── left panel: force ──────────────────────────────────────────────────── */
@@ -931,7 +1063,8 @@ export function boot() {
   bindDebugToggles();
   bindSettings();
   bindTopbar();
-  bindClusterControls();
+  bindClusterMenu();
+  bindClusterModal();
   bindForceControls();
   bindCitationControls();
   bindCitationModal();
@@ -942,8 +1075,13 @@ export function boot() {
   state.result = generate(state.params);
   precomputeBaseDist();
   state._tensionCache = makeTensionCache(state.result.nodes.length);
-  state.clusterResult = inferClusters(state.result, state.clusterParams);
-  validateClusterResult(state.clusterResult, state.result.nodes.length, { allowNoise: false });
+  {
+    const algo = activeAlgorithm();
+    state.clusterResult = algo.infer(state.result, activeAlgorithmParams());
+    validateClusterResult(state.clusterResult, state.result.nodes.length, {
+      allowNoise: !!algo.allowsNoise,
+    });
+  }
   rebuildClusterLegend();
   state.neighbourhoodResult = inferNeighbourhoods(state.result, state.clusterResult, state.neighbourhoodParams);
   state.tasteResult = buildCitationTaste(state.clusterResult, state.neighbourhoodResult, state.tasteParams);
