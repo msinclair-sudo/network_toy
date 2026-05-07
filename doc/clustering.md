@@ -232,40 +232,189 @@ menu and the modal are generated from the registry.
 
 ## 4. Currently-registered algorithms
 
+Each subsection here is the source of truth for that algorithm's math
+and behaviour. The implementation in `app/src/clustering*.js` should
+agree with the spec; if they ever diverge, fix the code (or update the
+doc and the changelog in §6).
+
 ### 4.1 Mutual k-NN
 
-- `id: "mutualKNN"`
-- `allowsNoise: false`
-- Params: `{ mutualK: int }` (default 5)
-- Output:
-  - `nodeCluster[i]` always ≥ 0; never -1.
-  - `structureEdges` = the mutual-k-NN edges that defined the
-    components.
-  - `stability` = `NaN` for every cluster.
-- Algorithm: see §2 of `dynamics.md`. Top-K nearest neighbours by
-  basePos, edge exists iff mutual, connected components.
+- **Module:** `app/src/clustering.js`
+- **Registry id:** `mutualKNN`
+- **`allowsNoise`:** `false` — every node lands in exactly one cluster.
+- **Params:** `{ mutualK: int }` (default 5; clamped to `[1, n - 1]`).
+
+**Algorithm.**
+
+1. For each node `i`, find its top-`K` nearest neighbours in `basePos`
+   by Euclidean distance. (Sort the `n - 1` candidates by squared
+   distance, take the first `K`.)
+2. Build an undirected graph where edge `(i, j)` exists iff
+   `j ∈ topK(i)` *and* `i ∈ topK(j)` — both directions must agree.
+3. Find connected components via union-find. Each component becomes a
+   cluster, labelled `0..C-1`.
+
+**Output specifics.**
+
+- `nodeCluster[i]` always ≥ 0; never `-1`.
+- `structureEdges` = the mutual k-NN edges that defined the components
+  (one entry per `(i, j)` with `i < j`).
+- `clusters[c].stability` = `NaN` for every cluster. Mutual k-NN has no
+  stability concept.
+- `clusters[c].centre` = mean of member `basePos`.
+- `clusters[c].spread` = RMS distance of members from centre.
+- `clusters[c].colour` = `TABLEAU10[c % 10]`.
+
+**Why mutual.** A spatial bridge of a few nodes between two dense
+regions doesn't produce mutual edges, because the bridge nodes' actual
+nearest neighbours sit inside their home region rather than across the
+gap. So dense clusters are not fused through narrow chains, the way
+they would be under absolute-distance single-linkage.
+
+**Effect of `K`.** Larger `K` = looser mutual constraint = more pairs
+join = fewer, bigger clusters. `K = 1` typically leaves many
+singletons; `K ≈ 20` typically merges most of the embedding into one
+component.
 
 **Known limitation.** Halo nodes — points sitting in the periphery of
 a dense cluster — can end up as singleton components even though they
-are geometrically clearly part of the cluster. This happens because the
-core nodes' top-K all point at each other inside the core, never out at
-the halo, so the halo's proposed edges go unreciprocated. This is the
-"trap" that motivated adding HDBSCAN (§4.2). The trade-off is real:
-mutual k-NN refuses to chain narrow bridges between dense regions, at
-the cost of being conservative about the periphery.
+are geometrically clearly part of the cluster. The dense core's top-K
+all point at each other inside the core, never out at the halo, so the
+halo's proposed edges go unreciprocated. This is the "trap" that
+motivated adding HDBSCAN (§4.2). The trade-off is real: mutual k-NN
+refuses to chain narrow bridges between dense regions, at the cost of
+being conservative about the periphery.
 
-### 4.2 HDBSCAN — to be added in stages
+### 4.2 HDBSCAN
 
-- `id: "hdbscan"`
-- `allowsNoise: true`
-- Params: `{ minSamples: int, minClusterSize: int }`
-- Output:
-  - `nodeCluster[i]` may be `-1` for noise.
-  - `structureEdges` = the mutual-reachability MST edges.
-  - `stability` = the EOM-extracted stability score per cluster.
-    `NaN` for the noise pseudo-cluster.
-- Algorithm: see §3 of this document (to be filled in when the
-  algorithm lands).
+- **Module:** `app/src/clustering-hdbscan.js`
+- **Registry id:** `hdbscan`
+- **`allowsNoise`:** `false` (toy-app convention; see "Noise handling"
+  below — every node still gets a non-negative cluster id, but the
+  algorithm's pre-absorption decision is preserved in `noiseFlags`).
+- **Params:**
+  - `minSamples: int` (default 5; clamped to `[1, n - 1]`) — controls
+    the core-distance smoothing.
+  - `minClusterSize: int` (default 5; clamped to `[2, n]`) — smallest
+    sub-cluster the condensation pass keeps.
+  - `noiseMode: "absorb" | "singletons"` (default `"absorb"`) —
+    strategy for points the EOM extraction left outside any stable
+    cluster.
+
+**Algorithm.** Five stages, each implemented in its own helper in
+`clustering-hdbscan.js`.
+
+**(1) Pairwise distances.** Compute the full Euclidean distance matrix
+on `basePos`. `O(n²)`.
+
+**(2) Core distance.** For each node `i`,
+```
+coreDist(i) = distance to its k-th nearest other node, k = minSamples
+```
+Inflates densities of points in sparse regions.
+
+**(3) Mutual-reachability MST.** Define
+```
+d_mreach(i, j) = max(coreDist(i), coreDist(j), dist(i, j))
+```
+Build the minimum spanning tree on the complete graph weighted by
+`d_mreach` using Prim's algorithm, computing weights lazily inside the
+relaxation. Returns `n - 1` edges.
+
+**(4) Dendrogram + condensed tree.** Sort the MST edges by weight
+ascending; each merge becomes a binary tree node carrying its
+`weight`. Traverse this dendrogram top-down to build the *condensed
+tree*, gating splits on `minClusterSize`:
+
+- **Both sides ≥ `minClusterSize`** → real split. Each child becomes
+  its own condensed-tree node with `birthLambda = 1 / weight`.
+- **Both sides < `minClusterSize`** → entire branch dies. All leaves
+  beneath this dendrogram node fall out of the parent condensed
+  cluster at `λ = 1 / weight`.
+- **One side ≥ threshold, one side <** → persistence. The big side
+  continues as the parent's condensed cluster; the small side's leaves
+  fall out at `λ = 1 / weight`.
+
+**(5) Stability + EOM extraction.** For each condensed cluster `C`:
+```
+stability(C) = Σ_{p ∈ C} (λ_p_falls_out − λ_birth(C))
+```
+Walk the condensed tree bottom-up. At each node:
+- if `stability(C) > Σ children's selected stability`, **select C**
+  and unselect every descendant;
+- otherwise **don't select C**; pass children's selection through.
+
+The root cluster is explicitly excluded from selection so we never
+fall back to "everything is one cluster." Selected clusters form a
+frontier in the condensed tree; every leaf's owning cluster is the
+deepest selected ancestor in that frontier. Leaves with no selected
+ancestor are *noise*.
+
+**Noise handling (Stage 5).** The EOM step produces a set of stable
+labels `[0, numStableClusters)` plus possibly some noise points. The
+`noiseMode` parameter resolves these:
+
+- **`absorb` (default).** For each noise point `p` and each stable
+  cluster `C`:
+  ```
+  λ_p_in_C = 1 / min_{q ∈ C} d_mreach(p, q)
+  score(p, C) = λ_p_in_C · stability(C)      if λ_p_in_C ≥ birthLambda(C)
+              = 0                              otherwise
+  ```
+  Assign `p` to the cluster with the highest score. If every score is
+  zero, fall back to the cluster minimising `d_mreach(p, ·)` so
+  "absorb" never leaves a point unassigned. This mirrors sklearn's
+  `approximate_predict`.
+- **`singletons`.** Each noise point becomes its own cluster, with
+  `count = 1`, `spread = 0`, `colour = "#7a8090"` (noise grey),
+  `stability = NaN`.
+
+In both modes, `noiseFlags[i] = 1` iff EOM left point `i` outside any
+stable cluster (i.e. *before* absorption). This survives in the
+output regardless of `noiseMode` so debug overlays can show the
+algorithm's pre-absorption decision.
+
+**Output specifics.**
+
+- `nodeCluster[i]` always ≥ 0. Despite the algorithm having a noise
+  concept, `allowsNoise` stays `false` because both noise modes
+  resolve every point to a non-negative id.
+- `structureEdges` = the full MST under `d_mreach` (one entry per
+  edge with `i < j`).
+- `clusters[c].stability` = the EOM-extracted stability score for
+  stable clusters; `NaN` for noise singletons (when `noiseMode =
+  "singletons"`).
+- `clusters[c].centre` / `.spread` / `.count` computed over the
+  *resolved* membership (i.e. include absorbed noise members in
+  absorb mode).
+- `clusters[c].colour` = `TABLEAU10[c % 10]` for stable clusters;
+  `"#7a8090"` for noise singletons.
+- `noiseFlags: Uint8Array(n)` always present, regardless of mode.
+
+**Effect of the knobs.**
+
+- `minSamples` ↑ → `coreDist` is taken from a more distant neighbour,
+  inflating distances in sparse regions more aggressively → more
+  points get classified as noise / fewer "stable" sub-clusters
+  survive condensation.
+- `minClusterSize` ↑ → splits dissolve more readily into noise →
+  fewer, larger surviving clusters.
+- `noiseMode` is render-only with respect to the EOM decision — it
+  doesn't change *who* is noise, only *what label* noise points end
+  up with.
+
+**Algorithm-specific notes.**
+
+- The EOM rule "select self iff `S(C) > Σ children selected
+  stability`" with the strict inequality means ties go to the
+  children — so the algorithm prefers finer clusters when equally
+  stable. This is the standard convention and makes the toy match
+  external HDBSCAN tools.
+- The root-cluster exclusion is a toy-specific touch: without it the
+  default-density-uniform synthetic data has its root cluster
+  sometimes win EOM and the result collapses to "one big cluster."
+  Sklearn behaves the same way (`allow_single_cluster = False` is the
+  default).
 
 ---
 
@@ -312,3 +461,11 @@ If we ever need to break the contract, the steps are:
   to a cluster (when the algorithm uses soft absorption to fold noise
   into the nearest stable cluster). Mutual-k-NN omits this field;
   HDBSCAN always populates it.
+- **v1.2 (2026-05-07)** — no contract change. Doc reorganisation:
+  the per-algorithm math for both Mutual k-NN and HDBSCAN moved into
+  §4 of this file (was previously split between `dynamics.md` §2 and
+  source-code comments). `dynamics.md` §2 now points here. The
+  `dynamics.md` controls table treats clustering-modal sliders as a
+  single category rather than naming `mutualK` directly, since that
+  param is no longer the only one (HDBSCAN has `minSamples`,
+  `minClusterSize`, `noiseMode`).

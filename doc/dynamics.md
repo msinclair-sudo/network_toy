@@ -45,26 +45,46 @@ The generator emits only positions and timestamps. **It does not assign cluster 
 
 ---
 
-## 2. Cluster inference: mutual k-NN connected components
+## 2. Cluster inference: pluggable algorithms behind a contract
 
-Clusters are not specified, they **emerge** from the geometry.
+Cluster IDs are recovered from `basePos` by a clustering algorithm that
+the user picks at runtime from the **Cluster ▾** dropdown. The toy
+keeps every algorithm behind a fixed `ClusterResult` contract so the
+rest of the pipeline (citations, neighbourhoods, taste, render) reads
+the same fields regardless of which algorithm produced them.
 
-**Algorithm.**
-1. For each node `i`, compute its top-`K` nearest neighbours by Euclidean distance in `basePos` (parameter `mutualK`, default 5).
-2. Build an undirected graph where edge `(i, j)` exists iff `j ∈ topK(i)` *and* `i ∈ topK(j)` (the membership must be **mutual**).
-3. Find the connected components of that graph via union-find. Each component is a cluster, labelled `0..C−1`.
+**See `doc/clustering.md`** for:
 
-**Why mutual.** A spatial bridge of a few nodes between two dense regions does not produce mutual edges, because the bridge nodes' actual nearest neighbours sit inside their home region rather than across the gap. So dense clusters are not fused through narrow chains, the way they would be under absolute-distance single-linkage.
+- §1 the `ClusterResult` contract, validated at runtime by
+  `app/src/contracts/cluster.js`
+- §2 every consumer of cluster output across the codebase
+- §3 the algorithm-registry shape that lets new algorithms register
+  themselves with no UI edits
+- §4 the algorithms currently registered, with full math:
+  - **§4.1 Mutual k-NN** — top-K + mutuality + connected components.
+    Conservative about cluster peripheries (the "halo trap"), but
+    refuses to chain narrow bridges between dense regions.
+  - **§4.2 HDBSCAN** — core distances + mutual-reachability MST +
+    condensed-tree EOM extraction with stability scoring. Density-
+    aware. Has a noise concept resolved by `noiseMode = absorb |
+    singletons`.
+- §5 the rerun semantics
+- §6 the contract changelog
 
-**Effect of `K`.** Larger `K` = looser mutual constraint = more pairs join = fewer, bigger clusters. `K=1` typically leaves many singletons; `K≈20` typically merges most of the embedding into one component.
+What's stable across algorithms (and therefore safe to rely on from
+elsewhere in `dynamics.md`):
 
-**Cluster metadata** (per cluster, used only for the side panel and as a citation grouping):
-- `centre` = mean of member `basePos`
-- `spread` = RMS distance of members from `centre`
-- `count` = member count
-- `colour` = `TABLEAU10[id mod 10]`
+- Every node has a non-negative cluster id; the toy never propagates
+  raw `-1` (HDBSCAN's pre-absorption noise stays in `noiseFlags` for
+  debug overlays only).
+- `clusters[c].centre` is always defined.
+- Cluster ids are contiguous from 0.
+- Clustering runs against `basePos`, never against the live moving
+  positions.
 
-Clustering runs **once** per regeneration and again whenever `mutualK` changes. It runs against `basePos`, never against the live moving positions.
+**Reruns** — clustering re-runs on regeneration, when the active
+algorithm changes, or when any algorithm-specific param changes. See
+`clustering.md` §5 for the cascade.
 
 ---
 
@@ -215,7 +235,7 @@ Each stage is its own pure function with its own seed; runs of any stage invalid
 | User action | Rerun |
 |---|---|
 | `nodeCount`, `pointsOfOrigin`, `spreadScale`, `seed` | generation → clustering → neighbourhoods → taste → sampling |
-| `mutualK` | clustering → neighbourhoods → taste → sampling |
+| any clustering modal change (algorithm or its params) | clustering → neighbourhoods → taste → sampling |
 | `neighbourK` | neighbourhoods → taste → sampling |
 | `favouritesMean`, `sharedTaste`, `transitiveBoost`, `tasteSeed`, *Randomize taste* | taste → sampling |
 | `density`, `intraRate`, `crossRate`, `ε_intra`, `ε_cross`, `samplingSeed`, *Randomize sampling* | sampling only |
@@ -290,7 +310,7 @@ After all pairs are processed in a tick, d3-force-3d applies its standard veloci
 | Control                                              | Affects                                | Recompute path                                                        |
 |------------------------------------------------------|----------------------------------------|-----------------------------------------------------------------------|
 | `seed`, `nodeCount`, `pointsOfOrigin`, `spreadScale` | Generation                             | regenerate → recluster → re-neighbour → re-taste → resample           |
-| `mutualK`                                            | Cluster inference                      | recluster → re-neighbour → re-taste → resample                        |
+| Cluster ▾ algorithm switch / any clustering-modal slider | Cluster inference (see `clustering.md`) | recluster → re-neighbour → re-taste → resample                       |
 | `neighbourK`                                         | Stage 1 (neighbourhoods)               | re-neighbour → re-taste → resample                                    |
 | `favouritesMean`, `sharedTaste`, `tasteRange`, `transitiveBoost` | Stages 2 + 3 (taste)                   | re-taste → resample                                                   |
 | `tasteSeed`, *Randomize taste*                       | Stages 2 + 3                           | re-taste → resample                                                   |
@@ -316,7 +336,7 @@ Once generation runs, these are immutable until the next regeneration:
 - `t_i` for every node
 - `_baseDist[i,j]` (precomputed `‖basePos_i − basePos_j‖`)
 
-Cluster IDs are immutable until `mutualK` changes (or regeneration).
+Cluster IDs are immutable until the active clustering algorithm or any of its params change (or regeneration). See `clustering.md` §5.
 
 Neighbourhood IDs are immutable until `neighbourK` changes (or any upstream change).
 
