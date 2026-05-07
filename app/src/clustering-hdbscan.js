@@ -31,6 +31,13 @@ const TABLEAU10 = [
 export const defaultHdbscanParams = () => ({
   minSamples: 5,
   minClusterSize: 5,
+  // "absorb"     → soft-absorb noise into the most likely stable cluster
+  //                (sklearn's approximate_predict scoring). Result has no
+  //                noise pseudo-cluster; noiseFlags still reports the
+  //                pre-absorption decision so debug overlays can show
+  //                which points HDBSCAN considered noise.
+  // "singletons" → each noise point becomes its own cluster.
+  noiseMode: "absorb",
 });
 
 export function inferHdbscan(genResult, params = {}) {
@@ -38,23 +45,26 @@ export function inferHdbscan(genResult, params = {}) {
   const n = nodes.length;
   const minSamples     = Math.max(1, Math.min(Math.max(1, n - 1), (params.minSamples ?? 5) | 0));
   const minClusterSize = Math.max(2, Math.min(Math.max(2, n), (params.minClusterSize ?? 5) | 0));
+  const noiseMode      = (params.noiseMode === "singletons") ? "singletons" : "absorb";
 
   if (n === 0) {
     return {
       method: "hdbscan",
-      params: { minSamples, minClusterSize },
+      params: { minSamples, minClusterSize, noiseMode },
       clusters: [],
       nodeCluster: new Int32Array(0),
       structureEdges: [],
+      noiseFlags: new Uint8Array(0),
     };
   }
   if (n === 1) {
     return {
       method: "hdbscan",
-      params: { minSamples, minClusterSize },
+      params: { minSamples, minClusterSize, noiseMode },
       clusters: [trivialCluster(0, nodes[0].basePos, 0, 1, NaN)],
       nodeCluster: new Int32Array([0]),
       structureEdges: [],
+      noiseFlags: new Uint8Array([0]),
     };
   }
 
@@ -89,32 +99,34 @@ export function inferHdbscan(genResult, params = {}) {
   // 7. EOM cluster selection.
   const selectedNodes = eomSelect(condensed);
 
-  // 8. Assign labels. Every leaf inside a selected condensed node gets
-  //    that node's label; everything else is noise. At Stage 2 noise
-  //    becomes a single trailing "noise" cluster (no `-1` ids until
-  //    Stage 3 when allowsNoise flips true).
-  const { nodeCluster, numStableClusters, hasNoise } =
-        assignLabelsStage2(selectedNodes, condensed, n);
+  // 8. Initial labels — stable points only. Every node not under a
+  //    selected condensed cluster is left as -1 here. We resolve that
+  //    in step 9 via the chosen noiseMode.
+  const stableLabels = assignStableLabels(selectedNodes, condensed, n);
 
-  // 9. Build the per-cluster metadata. Stable clusters first, in the
-  //    order they were assigned (matches the contract: clusters[c].id === c).
-  //    Noise bucket appended last with a fixed grey colour.
+  // 9. Note who was noise (pre-absorption) and resolve final labels.
+  //    noiseFlags is always populated regardless of mode — it preserves
+  //    the algorithm's pre-absorption decision so debug overlays can
+  //    distinguish "originally classified as noise" from "stable
+  //    member."
+  const noiseFlags = new Uint8Array(n);
+  for (let i = 0; i < n; i++) noiseFlags[i] = (stableLabels[i] === -1) ? 1 : 0;
+
+  const numStableClusters = countDistinct(stableLabels);
   const stabilityById = new Map();
-  for (const cn of selectedNodes) {
-    stabilityById.set(cn.label, cn.stability);
-  }
-  const clusters = [];
-  for (let c = 0; c < numStableClusters; c++) {
-    const stab = stabilityById.has(c) ? stabilityById.get(c) : NaN;
-    clusters.push(buildClusterEntry(nodes, nodeCluster, c, c, stab));
-  }
-  if (hasNoise) {
-    // Noise bucket: id stays a contiguous integer at Stage 2 (numStableClusters);
-    // at Stage 3 it'll switch to id = -1.
-    const noiseId = numStableClusters;
-    const noiseCluster = buildClusterEntry(nodes, nodeCluster, noiseId, noiseId, NaN);
-    noiseCluster.colour = "#7a8090";   // fixed noise grey
-    clusters.push(noiseCluster);
+  for (const cn of selectedNodes) stabilityById.set(cn.label, cn.stability);
+
+  let nodeCluster, clusters;
+  if (noiseMode === "absorb") {
+    ({ nodeCluster, clusters } = resolveByAbsorption(
+      stableLabels, noiseFlags, numStableClusters, stabilityById,
+      coreDist, dist, condensed, selectedNodes, nodes, n,
+    ));
+  } else {
+    ({ nodeCluster, clusters } = resolveBySingletons(
+      stableLabels, noiseFlags, numStableClusters, stabilityById,
+      nodes, n,
+    ));
   }
 
   // 10. structureEdges = the full MST. The MST is the structural backbone
@@ -124,11 +136,20 @@ export function inferHdbscan(genResult, params = {}) {
 
   return {
     method: "hdbscan",
-    params: { minSamples, minClusterSize },
+    params: { minSamples, minClusterSize, noiseMode },
     clusters,
     nodeCluster,
     structureEdges,
+    noiseFlags,
   };
+}
+
+function countDistinct(labels) {
+  const seen = new Set();
+  for (let i = 0; i < labels.length; i++) {
+    if (labels[i] !== -1) seen.add(labels[i]);
+  }
+  return seen.size;
 }
 
 /* ── helpers ────────────────────────────────────────────────────────────── */
@@ -342,7 +363,7 @@ function computeLeafLists(dendro, n) {
 //                         //   small-side persistence or final split)
 //     childIds: [],       // condensed-tree children
 //     stability,          // filled by computeStabilities()
-//     label,              // filled by assignLabelsStage2() with the cluster id
+//     label,              // filled by assignStableLabels() with the cluster id
 //   }
 function condenseDendrogram(dendro, n, minClusterSize) {
   const leaves = computeLeafLists(dendro, n);
@@ -558,35 +579,18 @@ function reSelectIfDeselected(id, isSelected, condensed, selectedStability) {
   }
 }
 
-// Given the selected condensed nodes, label every input point. Stage 2
-// writes labels [0..numStableClusters) for stable points and
-// numStableClusters for noise points (so contract still holds without
-// allowNoise being set).
-function assignLabelsStage2(selectedNodes, condensed, n) {
+// Stable-only label assignment: writes labels [0..numStableClusters) for
+// every point that lives under a selected condensed cluster, and -1 for
+// anything else (= noise). The caller resolves -1 according to the
+// noiseMode (absorb | singletons).
+function assignStableLabels(selectedNodes, condensed, n) {
   const labels = new Int32Array(n).fill(-1);
+  if (condensed.length === 0) return labels;
 
-  // For each selected cluster, every leaf reachable by walking down the
-  // condensed tree from that cluster (including children of children, but
-  // bounded by other selected clusters) belongs to the cluster.
-  //
-  // Simpler equivalent: a leaf belongs to its NEAREST selected ancestor
-  // in the condensed tree. We walk every leaf event of every condensed
-  // node and check whether that node (or any selected ancestor of it)
-  // is selected.
-  //
-  // But leafEvents only contains points that LEFT the cluster — points
-  // that survived to the cluster's leaves are also in the cluster. We
-  // need the union of all leaves under each condensed node, intersected
-  // with the leaves of the selected ancestor-most node.
-  //
-  // Cleanest approach: for every selected cluster, walk down the
-  // condensed tree from it and collect leaves that aren't claimed by a
-  // selected descendant. To make that easy, label each leaf by its
-  // "owning" condensed cluster — which is the deepest selected ancestor.
   const isSelected = new Array(condensed.length).fill(false);
   for (const cn of selectedNodes) isSelected[cn.id] = true;
 
-  // Map condensed cluster id → assigned label (only filled for selected).
+  // Each selected cluster gets a contiguous label.
   let nextLabel = 0;
   const assigned = new Map();
   for (const cn of selectedNodes) {
@@ -594,13 +598,7 @@ function assignLabelsStage2(selectedNodes, condensed, n) {
     assigned.set(cn.id, nextLabel);
     nextLabel++;
   }
-  const numStableClusters = nextLabel;
 
-  // Walk every condensed cluster; for each leafEvent (point that "passed
-  // through" this cluster on its way to falling out), the point's owning
-  // cluster is the deepest selected ancestor — i.e. this cluster if it's
-  // selected, else the nearest selected ancestor. If no selected ancestor
-  // exists, the point is noise.
   function deepestSelectedAncestor(cdId) {
     let cur = cdId;
     while (cur !== -1) {
@@ -609,6 +607,11 @@ function assignLabelsStage2(selectedNodes, condensed, n) {
     }
     return -1;
   }
+
+  // Each leaf inherits the label of its deepest selected ancestor.
+  // leafEvents capture which condensed cluster a leaf "passed through"
+  // on its way to falling out; the owning cluster is the deepest
+  // selected ancestor of that node.
   for (const cn of condensed) {
     const ownerCdId = deepestSelectedAncestor(cn.id);
     if (ownerCdId === -1) continue;
@@ -618,15 +621,140 @@ function assignLabelsStage2(selectedNodes, condensed, n) {
     }
   }
 
-  // Anything still -1 is noise. At Stage 2 we move noise into a single
-  // trailing bucket (id = numStableClusters) because the contract doesn't
-  // yet allow -1 (Stage 3 flips allowsNoise true).
-  let hasNoise = false;
+  return labels;
+}
+
+/* ── Stage 3 noise handling ─────────────────────────────────────────────── */
+
+// "absorb" path. For each noise point p, compute a soft membership score
+// over every stable cluster C, mirroring sklearn's approximate_predict:
+//
+//     score(p, C)  =  λ_p_in_C · stability(C)
+//
+// where λ_p_in_C is the lambda at which p would have first been pulled
+// into C — i.e. 1 / (smallest d_mreach between p and any current member
+// of C), provided that lambda is at least C's birth lambda. If p never
+// connects to C above its birth lambda, score is 0.
+//
+// Assign p to the highest-scoring cluster. If every cluster scores 0
+// (the point genuinely belongs nowhere in the level set hierarchy), p
+// stays unclassified — at this stage we hand-pick the closest cluster
+// by raw d_mreach as a last resort, since the noiseMode contract is
+// "absorb everything" and "stays as -1 forever" violates that.
+function resolveByAbsorption(stableLabels, noiseFlags, numStableClusters,
+                             stabilityById, coreDist, dist, condensed,
+                             selectedNodes, nodes, n) {
+  const labels = new Int32Array(stableLabels);
+
+  if (numStableClusters === 0) {
+    // No stable clusters at all — nothing to absorb into. Treat
+    // everything as one cluster so the contract holds (every node
+    // gets a non-negative id).
+    for (let i = 0; i < n; i++) labels[i] = 0;
+    const single = buildClusterEntry(nodes, labels, 0, 0, NaN);
+    return { nodeCluster: labels, clusters: [single] };
+  }
+
+  // Pre-compute, per stable cluster, the list of node ids assigned to it
+  // (so we can scan d_mreach efficiently).
+  const membersByLabel = Array.from({ length: numStableClusters }, () => []);
   for (let i = 0; i < n; i++) {
-    if (labels[i] === -1) {
-      labels[i] = numStableClusters;
-      hasNoise = true;
+    if (labels[i] !== -1) membersByLabel[labels[i]].push(i);
+  }
+
+  // Per-cluster birth lambda. Cluster label l corresponds to a selected
+  // condensed node — find it, read birthLambda.
+  const birthLambdaByLabel = new Float64Array(numStableClusters);
+  for (const cn of selectedNodes) {
+    if (cn.label >= 0 && cn.label < numStableClusters) {
+      birthLambdaByLabel[cn.label] = cn.birthLambda;
     }
   }
-  return { nodeCluster: labels, numStableClusters, hasNoise };
+
+  for (let p = 0; p < n; p++) {
+    if (labels[p] !== -1) continue;     // already stable
+
+    let bestLabel = -1;
+    let bestScore = -Infinity;
+    let fallbackLabel = -1;
+    let fallbackBestMReach = Infinity;
+
+    for (let l = 0; l < numStableClusters; l++) {
+      const stab = stabilityById.get(l);
+      if (!Number.isFinite(stab) || stab <= 0) continue;
+      const members = membersByLabel[l];
+      if (members.length === 0) continue;
+
+      // Smallest d_mreach from p to any member of cluster l.
+      let bestMReach = Infinity;
+      const cp = coreDist[p];
+      for (const q of members) {
+        const dq = dist[p * n + q];
+        const cq = coreDist[q];
+        const w = dq > cp ? (dq > cq ? dq : cq) : (cp > cq ? cp : cq);
+        if (w < bestMReach) bestMReach = w;
+      }
+      if (bestMReach < fallbackBestMReach) {
+        fallbackBestMReach = bestMReach;
+        fallbackLabel = l;
+      }
+      const lambda = bestMReach > 0 ? (1 / bestMReach) : Infinity;
+      // Score is zero if the cluster's level set never reached p's
+      // density (lambda below cluster birth means p connects only at
+      // a more-permissive density than the cluster ever existed at).
+      if (lambda < birthLambdaByLabel[l]) continue;
+      const score = lambda * stab;
+      if (score > bestScore) {
+        bestScore = score;
+        bestLabel = l;
+      }
+    }
+
+    // If no cluster scored > 0 (e.g. all stabilities are NaN/0, or the
+    // point's lambda is below every cluster's birth), fall back to the
+    // smallest-d_mreach cluster. This guarantees every noise point lands
+    // somewhere in absorb mode, matching the user's "absorb everything"
+    // expectation.
+    labels[p] = (bestLabel !== -1) ? bestLabel : (fallbackLabel !== -1 ? fallbackLabel : 0);
+  }
+
+  // Build per-cluster metadata. Member counts now include absorbed
+  // points, so centroids and spreads come from the full membership.
+  const clusters = [];
+  for (let c = 0; c < numStableClusters; c++) {
+    const stab = stabilityById.get(c);
+    clusters.push(buildClusterEntry(nodes, labels, c, c, Number.isFinite(stab) ? stab : NaN));
+  }
+  return { nodeCluster: labels, clusters };
+}
+
+// "singletons" path. Each noise point gets its own cluster. Stable
+// clusters keep their EOM labels; singletons use ids
+// [numStableClusters .. numStableClusters + numNoise). All singletons
+// share the noise grey colour so the visual stays legible even when
+// the legend is busy.
+function resolveBySingletons(stableLabels, noiseFlags, numStableClusters,
+                             stabilityById, nodes, n) {
+  const labels = new Int32Array(stableLabels);
+  const clusters = [];
+  for (let c = 0; c < numStableClusters; c++) {
+    const stab = stabilityById.get(c);
+    clusters.push(buildClusterEntry(nodes, labels, c, c, Number.isFinite(stab) ? stab : NaN));
+  }
+  let nextId = numStableClusters;
+  for (let i = 0; i < n; i++) {
+    if (labels[i] !== -1) continue;
+    labels[i] = nextId;
+    const p = nodes[i].basePos;
+    clusters.push({
+      id: nextId,
+      centre: [p[0], p[1], p[2]],
+      spread: 0,
+      count: 1,
+      colour: "#7a8090",          // noise grey, shared across all singletons
+      stability: NaN,
+    });
+    nextId++;
+  }
+  return { nodeCluster: labels, clusters };
 }

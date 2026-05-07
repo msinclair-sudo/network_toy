@@ -58,6 +58,16 @@ export const ALGORITHMS = [
         format: (v) => String(v),
         hint: "Smallest acceptable cluster size. Splits where one side falls below the threshold dissolve the smaller side into noise. Larger values → fewer, more substantial clusters.",
       },
+      {
+        key: "noiseMode",
+        label: "noise mode",
+        kind: "select",
+        options: [
+          { value: "absorb",     label: "Soft absorb (sklearn approximate_predict)" },
+          { value: "singletons", label: "Singletons (each noise point its own cluster)" },
+        ],
+        hint: "What to do with noise points (those EOM left outside any stable cluster). Absorb folds them into the most likely stable cluster, weighted by mutual reachability and cluster stability. Singletons keeps each noise point as its own cluster. Either way, debug overlays can flag pre-absorption noise via Debug ▾ → noise rings.",
+      },
     ],
   },
 ];

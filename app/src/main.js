@@ -22,7 +22,8 @@ import {
 import { getAlgorithm, listAlgorithms } from "./clustering-registry.js";
 import { validateClusterResult } from "./contracts/cluster.js";
 import {
-  decorateGraphData as decorateClusterDebug, buildCentroidMarker, clusterDebugFlags,
+  decorateGraphData as decorateClusterDebug, buildCentroidMarker,
+  buildNoiseDecoratedNode, clusterDebugFlags,
 } from "./clustering-debug.js";
 import { inferNeighbourhoods, defaultNeighbourhoodParams } from "./neighbourhoods.js";
 import { buildCitationTaste, defaultTasteParams } from "./citation-taste.js";
@@ -322,6 +323,17 @@ function loadGraphData() {
     .nodeThreeObject((n) => {
       if (n.kind === "origin") return buildOriginMarker(T, state.result.origins[n.originId]);
       if (n.kind === "centroid") return buildCentroidMarker(T, state.clusterResult.clusters[n.clusterId]);
+      // Data nodes: only return a custom mesh when the noise-rings overlay
+      // is on AND this node was flagged as noise by the algorithm. The
+      // helper bundles a coloured sphere (replacement for the lib's
+      // default) plus the ring so we can keep nodeThreeObjectExtend(false)
+      // and stay consistent with origin / centroid markers.
+      if (clusterDebugFlags.showNoiseRings) {
+        const flags = state.clusterResult.noiseFlags;
+        if (flags && flags[n.id] === 1) {
+          return buildNoiseDecoratedNode(T, colourForNode(n));
+        }
+      }
       return null;
     })
     .nodeThreeObjectExtend(false)
@@ -452,10 +464,15 @@ function rebuildClusterLegend() {
   for (const c of state.clusterResult.clusters) {
     const row = document.createElement("div");
     row.className = "cluster-row";
+    // Stability is optional per the contract — only show it for
+    // algorithms that compute it (HDBSCAN). NaN values are suppressed.
+    const stabFrag = Number.isFinite(c.stability)
+      ? ` · S=${c.stability.toFixed(1)}`
+      : "";
     row.innerHTML = `
       <span class="swatch" style="background:${c.colour}"></span>
       <span>cluster ${c.id}</span>
-      <span class="meta">n=${c.count} · σ=${c.spread.toFixed(1)}</span>
+      <span class="meta">n=${c.count} · σ=${c.spread.toFixed(1)}${stabFrag}</span>
     `;
     root.appendChild(row);
   }
@@ -498,8 +515,10 @@ function bindDebugToggles() {
   // Clustering overlays.
   $("dbg-centroids").checked     = clusterDebugFlags.showCentroids;
   $("dbg-structure-edges").checked  = clusterDebugFlags.showStructureEdges;
+  $("dbg-noise-rings").checked   = clusterDebugFlags.showNoiseRings;
   $("dbg-centroids").onchange    = (e) => { clusterDebugFlags.showCentroids   = e.target.checked; loadGraphData(); };
   $("dbg-structure-edges").onchange = (e) => { clusterDebugFlags.showStructureEdges = e.target.checked; loadGraphData(); };
+  $("dbg-noise-rings").onchange  = (e) => { clusterDebugFlags.showNoiseRings  = e.target.checked; loadGraphData(); };
 
   // Physics overlays. Both are render-only (the per-link colour callback
   // reads physicsDebugFlags) so toggling doesn't rebuild graph data; we
@@ -687,25 +706,42 @@ function renderClusterModalBody(algo, params) {
     label.textContent = field.label;
     row.appendChild(label);
 
-    const range = document.createElement("input");
-    range.type = "range";
-    range.min  = String(field.min);
-    range.max  = String(field.max);
-    range.step = String(field.step);
-    range.value = String(params[field.key]);
-    row.appendChild(range);
+    if (field.kind === "select") {
+      // Dropdown control. Spans both remaining columns of the .field grid
+      // (slider track + value badge) since there's nothing to format.
+      const select = document.createElement("select");
+      select.style.cssText = "grid-column: 2 / 4; background: var(--panel-2); border: 1px solid var(--line); color: var(--text); padding: 4px 6px; border-radius: 3px; font-size: 12px;";
+      for (const opt of field.options) {
+        const o = document.createElement("option");
+        o.value = opt.value;
+        o.textContent = opt.label;
+        select.appendChild(o);
+      }
+      select.value = String(params[field.key]);
+      select.onchange = (e) => { params[field.key] = e.target.value; };
+      row.appendChild(select);
+    } else {
+      // Default: range slider (works for both kind:"range" and kind:"int").
+      const range = document.createElement("input");
+      range.type = "range";
+      range.min  = String(field.min);
+      range.max  = String(field.max);
+      range.step = String(field.step);
+      range.value = String(params[field.key]);
+      row.appendChild(range);
 
-    const val = document.createElement("span");
-    val.className = "val";
-    val.textContent = field.format(params[field.key]);
-    row.appendChild(val);
+      const val = document.createElement("span");
+      val.className = "val";
+      val.textContent = field.format(params[field.key]);
+      row.appendChild(val);
 
-    range.oninput = (e) => {
-      let v = +e.target.value;
-      if (field.kind === "int") v = v | 0;
-      params[field.key] = v;
-      val.textContent = field.format(v);
-    };
+      range.oninput = (e) => {
+        let v = +e.target.value;
+        if (field.kind === "int") v = v | 0;
+        params[field.key] = v;
+        val.textContent = field.format(v);
+      };
+    }
 
     body.appendChild(row);
 

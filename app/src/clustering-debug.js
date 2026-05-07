@@ -16,6 +16,11 @@ const CENTROID_NODE_PREFIX = "centroid:";
 export const clusterDebugFlags = {
   showCentroids: false,
   showStructureEdges: false,
+  // Mark every node where clusterResult.noiseFlags[i] === 1 with a
+  // wireframe ring. Independent of the algorithm's noiseMode — even if
+  // a noise point was absorbed into a stable cluster, this overlay
+  // surfaces the algorithm's pre-absorption decision.
+  showNoiseRings: false,
 };
 
 // Inject extra "node" entries (centroid markers) and "link" entries
@@ -81,6 +86,62 @@ export function buildCentroidMarker(THREE, cluster) {
   geom.setAttribute("position", new THREE.Float32BufferAttribute(flat, 3));
   group.add(new THREE.LineSegments(geom, mat));
   group.userData.kind = "centroid-marker";
+  return group;
+}
+
+// Build a noise-decorated data-node mesh. Returns a Group containing:
+//   - a sphere matching the node's cluster colour (replaces the default
+//     sphere that the library would draw in extend=false mode)
+//   - a wireframe ring around it (the noise marker)
+//
+// Used by main.js when nodeThreeObject is called for a data node whose
+// noiseFlags[i] === 1 and the showNoiseRings overlay is on. Independent
+// of the noiseMode the algorithm ran with — a soft-absorbed noise point
+// is still flagged in noiseFlags, so the ring still appears.
+//
+// The lib uses .nodeRelSize(2) and reads node "val" for radius scaling.
+// For a data node with val=1, the rendered sphere radius is roughly
+// nodeRelSize * cbrt(val) = 2. The ring sits outside that.
+const NOISE_RING_COLOUR = "#ffffff";
+const NOISE_SPHERE_SEGMENTS = 12;
+export function buildNoiseDecoratedNode(THREE, colourHex) {
+  const group = new THREE.Group();
+
+  // Replacement sphere matching the data node's colour. Slightly smaller
+  // than the lib's default so the ring forms a clear halo around it.
+  const sphereGeom = new THREE.SphereGeometry(1.8, NOISE_SPHERE_SEGMENTS, NOISE_SPHERE_SEGMENTS);
+  const sphereMat = new THREE.MeshLambertMaterial({
+    color: new THREE.Color(colourHex || "#cfd8e3"),
+  });
+  const sphere = new THREE.Mesh(sphereGeom, sphereMat);
+  group.add(sphere);
+
+  // Ring. Three perpendicular line loops so the marker reads as a halo
+  // from any view angle — a single planar ring becomes invisible when
+  // viewed edge-on.
+  const ringRadius = 3.5;
+  const ringSegments = 24;
+  const ringMat = new THREE.LineBasicMaterial({
+    color: new THREE.Color(NOISE_RING_COLOUR),
+    transparent: true,
+    opacity: 0.9,
+  });
+  for (const axis of ["xy", "xz", "yz"]) {
+    const verts = new Float32Array(ringSegments * 3);
+    for (let i = 0; i < ringSegments; i++) {
+      const t = (i / ringSegments) * Math.PI * 2;
+      const c = Math.cos(t) * ringRadius;
+      const s = Math.sin(t) * ringRadius;
+      if (axis === "xy") { verts[i*3] = c; verts[i*3+1] = s; verts[i*3+2] = 0; }
+      else if (axis === "xz") { verts[i*3] = c; verts[i*3+1] = 0; verts[i*3+2] = s; }
+      else { verts[i*3] = 0; verts[i*3+1] = c; verts[i*3+2] = s; }
+    }
+    const geom = new THREE.BufferGeometry();
+    geom.setAttribute("position", new THREE.BufferAttribute(verts, 3));
+    group.add(new THREE.LineLoop(geom, ringMat));
+  }
+
+  group.userData.kind = "noise-decorated-node";
   return group;
 }
 

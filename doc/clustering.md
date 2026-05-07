@@ -49,6 +49,16 @@ Every clustering algorithm must return an object of this shape.
 }
 ```
 
+### Optional fields
+
+- **`noiseFlags`** (optional, `Uint8Array(n)`) — per-node flag, 1 if the
+  node was classified as noise by the algorithm before any absorption,
+  0 otherwise. Algorithms that have no noise concept omit this entirely.
+  This is independent of `nodeCluster[i]`: a node may have
+  `noiseFlags[i] === 1` (was-noise) but `nodeCluster[i] === 2` (absorbed
+  into cluster 2). Used by debug overlays so the user can see the
+  algorithm's pre-absorption decisions.
+
 ### Field-by-field
 
 - **`method`** — string id matching an entry in the algorithm registry.
@@ -96,6 +106,13 @@ Every clustering algorithm must return an object of this shape.
   - `hdbscan`   — edges of the mutual-reachability MST.
   Used only by the clustering debug overlay; not a downstream
   dependency.
+
+### Optional-field invariants
+
+If `noiseFlags` is present, the validator checks:
+- `noiseFlags instanceof Uint8Array`
+- `noiseFlags.length === n`
+- every entry is 0 or 1
 
 ### Invariants the validator checks
 
@@ -289,3 +306,9 @@ If we ever need to break the contract, the steps are:
   `structureEdges`. Added optional `stability` (always present, may be
   NaN). Allowed `nodeCluster[i] === -1` for noise when
   `allowNoise: true`.
+- **v1.1 (2026-05-07)** — added optional `noiseFlags: Uint8Array(n)`
+  for algorithms that classify points as noise. Independent of
+  `nodeCluster[i]`: a point may be both flagged as noise AND assigned
+  to a cluster (when the algorithm uses soft absorption to fold noise
+  into the nearest stable cluster). Mutual-k-NN omits this field;
+  HDBSCAN always populates it.

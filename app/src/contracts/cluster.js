@@ -109,6 +109,21 @@ export function validateClusterResult(result, n, opts = {}) {
     fail(0 <= i && i < j && j < n,
          `structureEdges[${k}]: must satisfy 0 ≤ i < j < n (n=${n}), got [${i}, ${j}]`);
   }
+
+  // Optional noiseFlags: present only if the algorithm has a noise
+  // concept. Independent of nodeCluster[i] — a point may be flagged
+  // noise AND have a non-noise cluster id (soft absorption case).
+  if (result.noiseFlags !== undefined) {
+    fail(result.noiseFlags instanceof Uint8Array,
+         "noiseFlags must be a Uint8Array if present");
+    fail(result.noiseFlags.length === n,
+         `noiseFlags.length must equal n (${n}), got ${result.noiseFlags.length}`);
+    for (let i = 0; i < n; i++) {
+      const v = result.noiseFlags[i];
+      fail(v === 0 || v === 1,
+           `noiseFlags[${i}] must be 0 or 1, got ${v}`);
+    }
+  }
 }
 
 function fail(cond, msg) {
