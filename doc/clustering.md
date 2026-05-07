@@ -297,8 +297,14 @@ being conservative about the periphery.
     the core-distance smoothing.
   - `minClusterSize: int` (default 5; clamped to `[2, n]`) — smallest
     sub-cluster the condensation pass keeps.
+  - `selectionMethod: "eom" | "leaf"` (default `"eom"`) — how the
+    condensed tree's frontier of clusters is picked. See "Selection"
+    below.
+  - `selectionEpsilon: float ≥ 0` (default `0`, in `d_mreach` distance
+    units) — post-selection merge threshold. Mirrors sklearn's
+    `cluster_selection_epsilon`. See "Selection" below.
   - `noiseMode: "absorb" | "singletons"` (default `"absorb"`) —
-    strategy for points the EOM extraction left outside any stable
+    strategy for points the selection step left outside any stable
     cluster.
 
 **Algorithm.** Five stages, each implemented in its own helper in
@@ -335,20 +341,53 @@ tree*, gating splits on `minClusterSize`:
   continues as the parent's condensed cluster; the small side's leaves
   fall out at `λ = 1 / weight`.
 
-**(5) Stability + EOM extraction.** For each condensed cluster `C`:
+**(5) Stability + selection.** For each condensed cluster `C`:
 ```
 stability(C) = Σ_{p ∈ C} (λ_p_falls_out − λ_birth(C))
 ```
-Walk the condensed tree bottom-up. At each node:
-- if `stability(C) > Σ children's selected stability`, **select C**
-  and unselect every descendant;
-- otherwise **don't select C**; pass children's selection through.
 
-The root cluster is explicitly excluded from selection so we never
-fall back to "everything is one cluster." Selected clusters form a
-frontier in the condensed tree; every leaf's owning cluster is the
-deepest selected ancestor in that frontier. Leaves with no selected
-ancestor are *noise*.
+The `selectionMethod` parameter picks the cluster frontier:
+
+- **`eom` (default).** Walk the condensed tree bottom-up. At each
+  node:
+  - if `stability(C) > Σ children's selected stability`, **select C**
+    and unselect every descendant;
+  - otherwise **don't select C**; pass children's selection through.
+
+  The root cluster is explicitly excluded from selection so we never
+  fall back to "everything is one cluster." Standard EOM. Picks the
+  *maximally stable* frontier and is tight when the data has clean
+  density valleys. **Failure mode** — when the dendrogram is a long
+  imbalanced chain (one giant cluster nibbling small pieces, common
+  with overlapping Gaussians at high spread), every internal node has
+  modest stability relative to its giant subtree, so EOM collapses
+  to a giant cluster + a few stranded leaves. The internal sub-
+  structure is real but invisible to EOM at every level.
+- **`leaf`.** Pick every leaf of the condensed tree (clusters with
+  no children), excluding the root. Predictable cluster count, no
+  bifurcation, but produces lots of tiny clusters when
+  `minClusterSize` is small. Designed to be paired with
+  `selectionEpsilon` to control granularity.
+
+After selection, **`selectionEpsilon`** runs as a post-merge step:
+
+- For each selected cluster `C`, if its birth distance
+  (`1 / birthLambda(C)`) is **less than** `selectionEpsilon`, walk up
+  the condensed-tree parent chain to the first ancestor whose birth
+  distance is at least `selectionEpsilon`. Never select the root —
+  walks that would land on the root stop one short.
+- Selections that walk up to the same ancestor are deduplicated.
+- `selectionEpsilon = 0` disables the merge.
+
+This mirrors sklearn's `cluster_selection_epsilon` exactly: it lets
+the user say "ignore splits at scales finer than ε" without
+abandoning the density-based selection. With `leaf` mode it gives a
+smooth dial from "every leaf" (ε = 0) to "few coarse clusters"
+(ε large).
+
+Selected clusters form a frontier in the condensed tree; every leaf's
+owning cluster is the deepest selected ancestor in that frontier.
+Leaves with no selected ancestor are *noise*.
 
 **Noise handling (Stage 5).** The EOM step produces a set of stable
 labels `[0, numStableClusters)` plus possibly some noise points. The
@@ -399,9 +438,16 @@ algorithm's pre-absorption decision.
   survive condensation.
 - `minClusterSize` ↑ → splits dissolve more readily into noise →
   fewer, larger surviving clusters.
-- `noiseMode` is render-only with respect to the EOM decision — it
-  doesn't change *who* is noise, only *what label* noise points end
-  up with.
+- `selectionMethod`: `eom` is the classic stability-based frontier;
+  `leaf` is the unbiased frontier (every condensed-tree leaf). When
+  EOM bifurcates, switching to `leaf` is the typical recovery path.
+- `selectionEpsilon` ↑ → fine clusters merge into coarser ancestors →
+  fewer, larger surviving clusters. With `leaf` selection this is the
+  smooth granularity dial; with `eom` it has weaker effect (EOM
+  already prefers coarser frontiers most of the time).
+- `noiseMode` is render-only with respect to the selection decision —
+  it doesn't change *who* is noise, only *what label* noise points
+  end up with.
 
 **Algorithm-specific notes.**
 

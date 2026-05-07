@@ -133,6 +133,40 @@
   .field input[type=number] { background: var(--panel-2); border: 1px solid var(--line); color: var(--text); padding: 4px 6px; border-radius: 3px; }
   .field input[type=range] { width: 100%; }
   .field .val { font-variant-numeric: tabular-nums; color: var(--text); text-align: right; }
+
+  /* cluster-modal two-column layout (settings | evaluation) */
+  .cluster-modal-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .cluster-modal-eval {
+    border-left: 1px solid var(--line); padding-left: 16px;
+    font-size: 12px; color: var(--text);
+  }
+  .cluster-modal-eval h3 {
+    font-size: 11px; letter-spacing: .05em; text-transform: uppercase;
+    color: var(--muted); margin: 0 0 8px;
+  }
+  .cluster-modal-eval .eval-meta {
+    font-size: 10px; color: var(--muted); margin-bottom: 10px; line-height: 1.4;
+  }
+  .cluster-modal-eval .eval-row {
+    display: flex; justify-content: space-between; align-items: baseline;
+    padding: 4px 0; gap: 8px;
+  }
+  .cluster-modal-eval .eval-row .ari {
+    font-variant-numeric: tabular-nums; font-weight: 600;
+  }
+  .cluster-modal-eval .eval-row.live { border-bottom: 1px solid var(--line); margin-bottom: 8px; padding-bottom: 6px; }
+  .cluster-modal-eval .eval-empty { color: var(--muted); font-style: italic; padding: 6px 0; }
+  .cluster-modal-eval .sweep-row {
+    display: grid; grid-template-columns: 50px 1fr auto;
+    align-items: center; gap: 8px; padding: 4px 0;
+    border-top: 1px dashed var(--line); font-size: 11px;
+  }
+  .cluster-modal-eval .sweep-row:first-of-type { border-top: none; }
+  .cluster-modal-eval .sweep-row .ari { font-variant-numeric: tabular-nums; font-weight: 600; }
+  .cluster-modal-eval .sweep-row .params { color: var(--muted); font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 10px; line-height: 1.4; }
+  .cluster-modal-eval .sweep-row button { padding: 2px 6px; font-size: 10px; }
+  .cluster-modal-eval .sweep-status { font-size: 10px; color: var(--muted); margin-top: 6px; }
+  .cluster-modal-eval .sweep-row .count { color: var(--muted); font-size: 10px; }
 </style>
 </head>
 <body>
@@ -356,7 +390,7 @@
      dynamically from the active algorithm's modalSchema in the registry,
      so adding a new algorithm needs no markup edits here. -->
 <div class="modal-backdrop" id="cluster-modal">
-  <div class="modal" role="dialog" aria-labelledby="cluster-modal-title">
+  <div class="modal" role="dialog" aria-labelledby="cluster-modal-title" style="min-width: 760px;">
     <div class="modal-head">
       <h2 id="cluster-modal-title">Cluster settings</h2>
       <button class="tb-btn" id="cluster-modal-x" aria-label="Close" style="padding: 2px 8px;">✕</button>

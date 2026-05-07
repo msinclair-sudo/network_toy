@@ -21,6 +21,9 @@ import {
 } from "./generation-debug.js";
 import { getAlgorithm, listAlgorithms } from "./clustering-registry.js";
 import { validateClusterResult } from "./contracts/cluster.js";
+import { adjustedRandIndex } from "./eval/ari.js";
+import { kmeans } from "./eval/kmeans.js";
+import { sweepAlgorithm } from "./eval/sweep.js";
 import {
   decorateGraphData as decorateClusterDebug, buildCentroidMarker,
   buildNoiseDecoratedNode, clusterDebugFlags,
@@ -698,6 +701,24 @@ function renderClusterModalBody(algo, params) {
     body.appendChild(note);
   }
 
+  const cols = document.createElement("div");
+  cols.className = "cluster-modal-cols";
+  body.appendChild(cols);
+
+  const left = document.createElement("div");
+  left.className = "cluster-modal-settings";
+  cols.appendChild(left);
+
+  const right = document.createElement("div");
+  right.className = "cluster-modal-eval";
+  cols.appendChild(right);
+
+  renderClusterSettings(left, algo, params, () => updateLiveAri(algo, params));
+  renderClusterEval(right, algo, params);
+}
+
+function renderClusterSettings(container, algo, params, onChange) {
+  container.innerHTML = "";
   for (const field of algo.modalSchema) {
     const row = document.createElement("div");
     row.className = "field";
@@ -707,8 +728,6 @@ function renderClusterModalBody(algo, params) {
     row.appendChild(label);
 
     if (field.kind === "select") {
-      // Dropdown control. Spans both remaining columns of the .field grid
-      // (slider track + value badge) since there's nothing to format.
       const select = document.createElement("select");
       select.style.cssText = "grid-column: 2 / 4; background: var(--panel-2); border: 1px solid var(--line); color: var(--text); padding: 4px 6px; border-radius: 3px; font-size: 12px;";
       for (const opt of field.options) {
@@ -718,10 +737,9 @@ function renderClusterModalBody(algo, params) {
         select.appendChild(o);
       }
       select.value = String(params[field.key]);
-      select.onchange = (e) => { params[field.key] = e.target.value; };
+      select.onchange = (e) => { params[field.key] = e.target.value; onChange(); };
       row.appendChild(select);
     } else {
-      // Default: range slider (works for both kind:"range" and kind:"int").
       const range = document.createElement("input");
       range.type = "range";
       range.min  = String(field.min);
@@ -740,18 +758,194 @@ function renderClusterModalBody(algo, params) {
         if (field.kind === "int") v = v | 0;
         params[field.key] = v;
         val.textContent = field.format(v);
+        onChange();
       };
     }
 
-    body.appendChild(row);
+    container.appendChild(row);
 
     if (field.hint) {
       const hint = document.createElement("div");
       hint.style.cssText = "grid-column: 1 / -1; font-size:10px;color:var(--muted);line-height:1.4;margin:-4px 0 6px;";
       hint.textContent = field.hint;
-      body.appendChild(hint);
+      container.appendChild(hint);
     }
   }
+}
+
+/* ── cluster eval column ────────────────────────────────────────────────── */
+/* Live ARI vs the generator's originId labels, plus an on-demand grid sweep
+ * to find the parameter combination that maximises ARI. The k-means(k=K)
+ * baseline gives a "what's achievable if you knew the right K" reference;
+ * density-based methods should approach it on well-separated mixtures and
+ * fall short on overlapping ones. Cached per generation so re-opening the
+ * modal doesn't re-run the baseline. */
+
+let _kmeansCache = { genId: -1, ari: NaN, k: 0 };
+
+function renderClusterEval(container, algo, params) {
+  container.innerHTML = "";
+  if (!state.result || !state.result.nodes || state.result.nodes.length === 0) {
+    container.innerHTML = "<div class='eval-empty'>Generate first to enable evaluation.</div>";
+    return;
+  }
+
+  const groundTruth = new Int32Array(state.result.nodes.map((n) => n.originId));
+  const K = state.result.origins.length;
+
+  const head = document.createElement("h3");
+  head.textContent = "Evaluation";
+  container.appendChild(head);
+
+  const meta = document.createElement("div");
+  meta.className = "eval-meta";
+  meta.innerHTML = `Ground truth: <code>originId</code> · ${K} components, ${groundTruth.length} nodes. ARI vs originId — 1.0 = perfect, 0.0 = chance.`;
+  container.appendChild(meta);
+
+  const liveRow = document.createElement("div");
+  liveRow.className = "eval-row live";
+  liveRow.innerHTML = `<span>current params</span><span class="ari" id="eval-live-ari">—</span>`;
+  container.appendChild(liveRow);
+
+  const kmRow = document.createElement("div");
+  kmRow.className = "eval-row";
+  kmRow.innerHTML = `<span>k-means(k=${K}) baseline</span><span class="ari" id="eval-kmeans-ari">computing…</span>`;
+  container.appendChild(kmRow);
+
+  const btn = document.createElement("button");
+  btn.className = "tb-btn";
+  btn.id = "eval-sweep-btn";
+  btn.textContent = "Find best params";
+  btn.style.cssText = "margin-top: 14px; width: 100%;";
+  btn.onclick = () => runClusterSweep(algo, params, groundTruth, container);
+  container.appendChild(btn);
+
+  const status = document.createElement("div");
+  status.className = "sweep-status";
+  status.id = "eval-sweep-status";
+  container.appendChild(status);
+
+  const results = document.createElement("div");
+  results.id = "eval-sweep-results";
+  results.style.cssText = "margin-top: 8px;";
+  container.appendChild(results);
+
+  updateLiveAri(algo, params);
+  updateKmeansBaseline(K);
+}
+
+function updateLiveAri(algo, params) {
+  const el = document.getElementById("eval-live-ari");
+  if (!el) return;
+  if (!state.result || state.result.nodes.length === 0) { el.textContent = "—"; return; }
+  const groundTruth = new Int32Array(state.result.nodes.map((n) => n.originId));
+  try {
+    const r = algo.infer(state.result, params);
+    const ari = adjustedRandIndex(r.nodeCluster, groundTruth);
+    el.textContent = formatAri(ari) + ` · ${r.clusters.length} clusters`;
+  } catch (e) {
+    el.textContent = "error";
+    console.error("[eval] live ARI failed:", e);
+  }
+}
+
+function updateKmeansBaseline(K) {
+  const el = document.getElementById("eval-kmeans-ari");
+  if (!el) return;
+  // Cache by the generation result identity so repeated modal opens don't
+  // recompute. state.result is replaced wholesale on regenerate(), so a
+  // simple identity check is enough.
+  const genId = state.result;
+  if (_kmeansCache.genId === genId && _kmeansCache.k === K) {
+    el.textContent = formatAri(_kmeansCache.ari);
+    return;
+  }
+  // Yield to the renderer once so "computing…" is visible before we block.
+  setTimeout(() => {
+    const truth = new Int32Array(state.result.nodes.map((n) => n.originId));
+    const points = state.result.nodes.map((n) => n.basePos);
+    const { labels } = kmeans(points, K, { restarts: 5 });
+    const ari = adjustedRandIndex(labels, truth);
+    _kmeansCache = { genId, ari, k: K };
+    if (el && el.isConnected) el.textContent = formatAri(ari);
+  }, 0);
+}
+
+function runClusterSweep(algo, params, groundTruth, container) {
+  const btn = document.getElementById("eval-sweep-btn");
+  const status = document.getElementById("eval-sweep-status");
+  const resultsBox = document.getElementById("eval-sweep-results");
+  btn.disabled = true;
+  btn.textContent = "Sweeping…";
+  status.textContent = "running grid…";
+  resultsBox.innerHTML = "";
+
+  // Yield so the disabled state and "running" text actually paint before the
+  // synchronous sweep blocks the main thread.
+  setTimeout(() => {
+    const t0 = performance.now();
+    const { top, totalCombos } = sweepAlgorithm(algo, state.result, groundTruth, params, 5);
+    const dt = performance.now() - t0;
+
+    btn.disabled = false;
+    btn.textContent = "Find best params";
+    status.textContent = `${totalCombos} combos in ${dt.toFixed(0)}ms · top 5 by ARI:`;
+    renderSweepResults(resultsBox, top, algo, params, container);
+  }, 0);
+}
+
+function renderSweepResults(container, top, algo, params, evalContainer) {
+  container.innerHTML = "";
+  if (top.length === 0) {
+    container.innerHTML = "<div class='eval-empty'>No results.</div>";
+    return;
+  }
+  for (const row of top) {
+    const div = document.createElement("div");
+    div.className = "sweep-row";
+    div.innerHTML = `
+      <span class="ari">${formatAri(row.ari)}</span>
+      <div>
+        <div class="params">${formatParamsShort(algo, row.params)}</div>
+        <div class="count">${row.numClusters} clusters${row.error ? " · error: " + row.error : ""}</div>
+      </div>
+    `;
+    const apply = document.createElement("button");
+    apply.className = "tb-btn";
+    apply.textContent = "Apply";
+    apply.title = "Stage these params into the sliders. Press Apply at the bottom to commit.";
+    apply.onclick = () => applySweepRow(algo, params, row.params);
+    div.appendChild(apply);
+    container.appendChild(div);
+  }
+}
+
+function applySweepRow(algo, params, newParams) {
+  for (const k of Object.keys(newParams)) params[k] = newParams[k];
+  // Re-render only the settings column so the eval column (sweep results)
+  // stays put. Then refresh live ARI to reflect the new pending state.
+  const left = document.querySelector(".cluster-modal-settings");
+  if (left) renderClusterSettings(left, algo, params, () => updateLiveAri(algo, params));
+  updateLiveAri(algo, params);
+}
+
+function formatAri(ari) {
+  if (!Number.isFinite(ari)) return "—";
+  return ari.toFixed(3);
+}
+
+// Compact one-liner of the params suitable for a sweep-row label. Uses the
+// modal schema for ordering and (where present) the field's `format` to
+// render the value.
+function formatParamsShort(algo, params) {
+  const parts = [];
+  for (const field of algo.modalSchema) {
+    const v = params[field.key];
+    if (v === undefined) continue;
+    const rendered = (typeof field.format === "function") ? field.format(v) : String(v);
+    parts.push(`${field.label}=${rendered}`);
+  }
+  return parts.join(" · ");
 }
 
 /* ── left panel: force ──────────────────────────────────────────────────── */

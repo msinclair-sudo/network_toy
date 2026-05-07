@@ -31,6 +31,7 @@ export const ALGORITHMS = [
         min: 1, max: 20, step: 1,
         format: (v) => String(v),
         hint: "Top-K nearest neighbours each node considers. Larger K → more pairs are mutual → fewer, bigger clusters.",
+        sweepValues: [2, 3, 4, 5, 7, 10, 15, 20],
       },
     ],
   },
@@ -49,6 +50,7 @@ export const ALGORITHMS = [
         min: 1, max: 30, step: 1,
         format: (v) => String(v),
         hint: "Defines core distance: each node's distance to its k-th nearest neighbour. Larger values = stronger smoothing and more aggressive density-awareness.",
+        sweepValues: [1, 3, 5, 8, 12, 20],
       },
       {
         key: "minClusterSize",
@@ -57,6 +59,26 @@ export const ALGORITHMS = [
         min: 2, max: 50, step: 1,
         format: (v) => String(v),
         hint: "Smallest acceptable cluster size. Splits where one side falls below the threshold dissolve the smaller side into noise. Larger values → fewer, more substantial clusters.",
+        sweepValues: [2, 3, 5, 8, 12, 20],
+      },
+      {
+        key: "selectionMethod",
+        label: "selection",
+        kind: "select",
+        options: [
+          { value: "eom",  label: "EOM (excess of mass)" },
+          { value: "leaf", label: "Leaf (every condensed-tree leaf)" },
+        ],
+        hint: "EOM: classic — picks the most stable cluster frontier. Can collapse to ~2 clusters when blobs overlap because the dendrogram becomes a long imbalanced chain (one giant cluster nibbling small pieces). Leaf: picks every condensed-tree leaf instead — finer-grained and immune to that bifurcation, but produces lots of tiny clusters. Pair with selection epsilon to roll fine leaves up to a coarser scale.",
+      },
+      {
+        key: "selectionEpsilon",
+        label: "selection ε",
+        kind: "range",
+        min: 0, max: 80, step: 1,
+        format: (v) => (+v).toFixed(0),
+        hint: "Distance threshold (same scale as basePos distances). After EOM/leaf selection, any cluster born at a finer density level (birth distance < ε) is merged into its first ancestor whose birth distance is ≥ ε. 0 disables. Most useful with leaf mode to control granularity smoothly between 'every leaf' and 'big clusters only'.",
+        sweepValues: [0, 5, 10, 15, 20, 25, 30, 40, 60],
       },
       {
         key: "noiseMode",
@@ -67,6 +89,10 @@ export const ALGORITHMS = [
           { value: "singletons", label: "Singletons (each noise point its own cluster)" },
         ],
         hint: "What to do with noise points (those EOM left outside any stable cluster). Absorb folds them into the most likely stable cluster, weighted by mutual reachability and cluster stability. Singletons keeps each noise point as its own cluster. Either way, debug overlays can flag pre-absorption noise via Debug ▾ → noise rings.",
+        // Pin during sweeps: singletons inflates cluster count but doesn't
+        // change the algorithm's structural decision. ARI would always be
+        // worse than the matching absorb run, so sweeping it is wasted work.
+        sweepValues: ["absorb"],
       },
     ],
   },

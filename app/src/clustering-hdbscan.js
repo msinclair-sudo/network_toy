@@ -31,6 +31,21 @@ const TABLEAU10 = [
 export const defaultHdbscanParams = () => ({
   minSamples: 5,
   minClusterSize: 5,
+  // "eom"  → classic excess-of-mass extraction. Picks the maximally
+  //          stable cluster frontier. Can bifurcate (root + 1 stranded
+  //          leaf) when the dendrogram is highly imbalanced — typical
+  //          for overlapping Gaussians where one big component nibbles
+  //          tiny pieces off its edge.
+  // "leaf" → pick every leaf of the condensed tree. Finer-grained and
+  //          more uniform cluster counts; pair with selectionEpsilon to
+  //          merge tiny leaves up to a coarser scale.
+  selectionMethod: "eom",
+  // Post-selection merge threshold (in d_mreach distance units, i.e.
+  // the same scale as basePos distances). Any selected cluster whose
+  // birth distance < selectionEpsilon walks up its parent chain to the
+  // first ancestor with birth distance ≥ selectionEpsilon (never the
+  // root). 0 disables. Mirrors sklearn's `cluster_selection_epsilon`.
+  selectionEpsilon: 0,
   // "absorb"     → soft-absorb noise into the most likely stable cluster
   //                (sklearn's approximate_predict scoring). Result has no
   //                noise pseudo-cluster; noiseFlags still reports the
@@ -45,12 +60,15 @@ export function inferHdbscan(genResult, params = {}) {
   const n = nodes.length;
   const minSamples     = Math.max(1, Math.min(Math.max(1, n - 1), (params.minSamples ?? 5) | 0));
   const minClusterSize = Math.max(2, Math.min(Math.max(2, n), (params.minClusterSize ?? 5) | 0));
+  const selectionMethod  = (params.selectionMethod === "leaf") ? "leaf" : "eom";
+  const selectionEpsilon = Math.max(0, +params.selectionEpsilon || 0);
   const noiseMode      = (params.noiseMode === "singletons") ? "singletons" : "absorb";
+  const echoParams = { minSamples, minClusterSize, selectionMethod, selectionEpsilon, noiseMode };
 
   if (n === 0) {
     return {
       method: "hdbscan",
-      params: { minSamples, minClusterSize, noiseMode },
+      params: echoParams,
       clusters: [],
       nodeCluster: new Int32Array(0),
       structureEdges: [],
@@ -60,7 +78,7 @@ export function inferHdbscan(genResult, params = {}) {
   if (n === 1) {
     return {
       method: "hdbscan",
-      params: { minSamples, minClusterSize, noiseMode },
+      params: echoParams,
       clusters: [trivialCluster(0, nodes[0].basePos, 0, 1, NaN)],
       nodeCluster: new Int32Array([0]),
       structureEdges: [],
@@ -96,8 +114,13 @@ export function inferHdbscan(genResult, params = {}) {
   // 6. Compute stability for every condensed cluster.
   computeStabilities(condensed);
 
-  // 7. EOM cluster selection.
-  const selectedNodes = eomSelect(condensed);
+  // 7. Cluster selection (EOM or leaf), then optional epsilon merge.
+  let selectedNodes = (selectionMethod === "leaf")
+    ? leafSelect(condensed)
+    : eomSelect(condensed);
+  if (selectionEpsilon > 0) {
+    selectedNodes = applyEpsilonMerge(selectedNodes, condensed, selectionEpsilon);
+  }
 
   // 8. Initial labels — stable points only. Every node not under a
   //    selected condensed cluster is left as -1 here. We resolve that
@@ -136,7 +159,7 @@ export function inferHdbscan(genResult, params = {}) {
 
   return {
     method: "hdbscan",
-    params: { minSamples, minClusterSize, noiseMode },
+    params: echoParams,
     clusters,
     nodeCluster,
     structureEdges,
@@ -555,6 +578,54 @@ function eomSelect(condensed) {
 
   const out = [];
   for (let i = 0; i < condensed.length; i++) if (isSelected[i]) out.push(condensed[i]);
+  return out;
+}
+
+// Leaf-selection mode. Returns every condensed-tree node with no children
+// (excluding the root, which is never a valid cluster — and is itself a
+// leaf only in the degenerate single-cluster case where condensation
+// produced no splits). Predictable cluster count and immune to the EOM
+// "S(C) > Σ S(children-selected)" bifurcation, but produces lots of tiny
+// clusters when minClusterSize is small. Pair with selectionEpsilon to
+// roll fine leaves up to a coarser scale.
+function leafSelect(condensed) {
+  if (condensed.length === 0) return [];
+  const out = [];
+  for (const cn of condensed) {
+    if (cn.parentId === -1) continue;          // skip root
+    if (cn.childIds.length === 0) out.push(cn);
+  }
+  return out;
+}
+
+// Post-selection epsilon merge. For each currently-selected cluster, walk
+// up its parent chain until we hit an ancestor whose birth distance
+// (= 1 / birthLambda) is at least `epsilon`. Never select the root; if a
+// walk would land on the root, stop one short. De-duplicate so siblings
+// that walked up to the same ancestor only contribute it once.
+//
+// Equivalent to sklearn's `cluster_selection_epsilon`. Distance units
+// are the same as `basePos` distances (= mutual-reachability distance),
+// so the user's intuition for "merge anything finer than this scale"
+// holds directly.
+function applyEpsilonMerge(selectedNodes, condensed, epsilon) {
+  if (selectedNodes.length === 0 || epsilon <= 0) return selectedNodes;
+  // birthLambda > 1/epsilon means birth distance < epsilon → too fine.
+  const epsilonLambda = 1 / epsilon;
+  const seen = new Set();
+  const out = [];
+  for (const cn of selectedNodes) {
+    let cur = cn;
+    while (cur.parentId !== -1 && cur.birthLambda > epsilonLambda) {
+      const parent = condensed[cur.parentId];
+      if (parent.parentId === -1) break;       // never select the root
+      cur = parent;
+    }
+    if (!seen.has(cur.id)) {
+      seen.add(cur.id);
+      out.push(cur);
+    }
+  }
   return out;
 }
 
