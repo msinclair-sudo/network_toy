@@ -138,107 +138,48 @@ and main.js's sub-stage caching.
 
 ## 4. Layout dynamics: deterministic blend between two topologies
 
-Live node positions are not produced by a constraint solver any more.
-The user picks where on a continuum between two **precomputed**
-arrangements they want to see, and the per-frame work is a single
-linear interpolation.
+Live node positions are produced by linear interpolation between two
+precomputed endpoint arrangements: `basePos` (Layer 1's Gaussian-
+mixture cloud, α=0) and `alignedCitationLayout` (Layer 4's citation-
+driven layout, after per-component similarity alignment to basePos,
+α=1). The slider value `α ∈ [0, 1]` picks where on the continuum the
+user wants to see; the per-frame work is one lerp per data node.
 
-### 4.1 The two endpoints
+**See `doc/blend.md`** for:
 
-**`basePos[i]`** — the Gaussian-mixture cloud from §1, frozen at
-generation. This is the α=0 layout: every node sits exactly where the
-generation seed put it.
+- §1 the per-component similarity alignment that produces
+  `alignedCitationLayout` from the raw citation-layout output
+  (rotation + uniform scale + translation, per connected component;
+  match-RMS scale rather than Procrustes-optimal; Horn quaternion +
+  Jacobi eigendecomp for the rotation)
+- §1.5 the alignment correlation coefficient — a `[0, 1]` quality
+  metric that falls out of the alignment math for free, surfaced in
+  the Citation Layout ▾ modal and used as the ranking metric for
+  the layout sweep
+- §2 the per-frame blend — `live = (1 − α)·basePos + α·alignedCitationPos`
+  registered as a d3-force-3d hook, with `d3VelocityDecay = 1.0` so
+  no velocity integration interferes
+- §3 the recompute lanes (which trigger refreshes which buffers)
+- §4 historical context: why v3 replaced v2's spring / PBD constraint
+  solver with this deterministic blend
 
-**`alignedCitationPos[i]`** — a 3D arrangement derived from the
-citation graph alone, then rigidly aligned (per connected component)
-to basePos. This is the α=1 layout. See `doc/citation-layout.md`
-for the algorithm; the short version is "Fruchterman-Reingold force-
-directed layout in 3D, with a radial time-axis bias so older nodes
-tend toward the centre, then per-component Kabsch alignment to
-basePos."
+What's stable across the implementation (and therefore safe to rely
+on from elsewhere):
 
-### 4.2 The blend
-
-Per frame, for every data node `i`:
-
-```
-live_i  =  (1 − α) · basePos_i  +  α · alignedCitationPos_i
-```
-
-with `α ∈ [0, 1]`. Implemented in `app/src/blend/blend.js` as a
-d3-force-3d "force" hook that mutates `node.x/y/z` directly.
-`d3VelocityDecay = 1.0` so the lib's `x += vx; vx *= 0` integration
-is a no-op alongside our writes.
-
-No state, no momentum, no iteration. The slider drives a deterministic
-function of α. Round-tripping `α: 0 → 1 → 0` returns the network to
-basePos byte-identical (verified in
-`scratch/v3_phase3_smoke.py`: round-trip drift = 0.000).
-
-### 4.3 Why no constraint solver
-
-Every previous version of this app drove layout through a damped
-spring system: pairwise constraints + velocity + integration. Three
-problems compounded:
-
-- **Momentum stored energy.** Slider nudges injected impulse into
-  velocities; the network rang out for seconds afterwards.
-- **Per-tick force scaled with N.** At high citation density, every
-  node had hundreds of constraints firing per tick. The integrator
-  wasn't stable.
-- **Distance constraints are rigid-body invariant.** Asymmetric
-  impulses imparted angular momentum and the network rotated visibly
-  during α sweeps.
-
-For a "show me what the layout looks like at this blend value" demo,
-none of that statefulness is doing useful work. v3 deletes the entire
-spring/PBD layer and replaces it with a deterministic lerp between
-two static endpoints.
-
-### 4.4 Behaviour by α
-
-| α          | Live position                               | Effect                                                              |
-|------------|---------------------------------------------|---------------------------------------------------------------------|
-| 0          | `basePos`                                   | Pure embedding. Citation graph plays no role in geometry.           |
-| 0 → 1      | `(1−α)·basePos + α·alignedCitationPos`      | Smooth interpolation. Each node follows a straight line in 3-space. |
-| 1          | `alignedCitationPos`                        | Citation topology drives layout. basePos plays no role in geometry. |
-
-The blend is **linear in position**, not in edge length. An edge whose
-two endpoints are far apart in basePos and close in citationPos
-spends intermediate α values at intermediate distances — the
-interpolation is geometric, not topological. (We considered a
-"minimum-stress path" through configuration space; left for v3.1.)
-
-### 4.5 Disabled lib forces
-
-The d3-force-3d library injects defaults; we zero them so nothing
-fights the blend hook:
-
-- `charge.strength = 0` — n-body repulsion would push nodes off the
-  blend line.
-- `link.strength = 0` — the lib's default link spring is a no-op.
-  Left registered so the lib's tick scheduler doesn't trip.
-- `Graph.d3VelocityDecay(1.0)` — kills any vx/vy/vz that could
-  accumulate from drag interactions. The blend hook owns motion.
-
-### 4.6 Recompute lanes
-
-The blend force closure reads three getters every tick:
-`getBasePos`, `getAlignedCitationPos`, `getBlend`. So changes to the
-underlying buffers take effect on the next frame without
-re-registering the hook.
-
-- `state._basePos` — repopulated by `precomputeBasePos()` on every
-  regeneration. n × 3 Float32Array.
-- `state.alignedCitationLayout` — repopulated by `relayoutCitations()`
-  whenever the citation graph or the layout params change. n × 3
-  Float32Array.
-- `state.blend` — written by the slider's `oninput`. Number in `[0, 1]`.
-
-Slider drag still calls `Graph.d3ReheatSimulation()` because the
-lib's tick loop freezes when "the network looks settled" (which is
-instant under blending). Without reheat, slider drags after the
-freeze go ignored.
+- **Endpoint exactness.** At α=0, `live === basePos` byte-identical.
+  At α=1, `live === alignedCitationLayout` byte-identical.
+- **Round-trip exactness.** Sweeping α from 0 → 1 → 0 returns to
+  basePos with zero residual drift.
+- The blend is **linear in position**, not in edge length. An edge
+  whose endpoints are far apart in basePos and close in
+  citationLayout passes through every intermediate distance at
+  intermediate α. (A "minimum-stress path" alternative is wishlist
+  material; deferred.)
+- No momentum, no constraint solver, no iteration. Per-frame work is
+  O(n).
+- Per-component alignment is the **only** place in the codebase
+  where citationLayout and basePos meet — the layout module never
+  sees basePos, by encapsulation.
 
 ---
 

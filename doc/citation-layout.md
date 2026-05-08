@@ -241,103 +241,26 @@ of the layout, use FR.
 
 ---
 
-## 3. Alignment: per-component similarity transform
+## 3. Alignment to basePos
 
-`app/src/blend/align.js`. Takes basePos and the raw layout output and
-produces `alignedCitationLayout` by applying an independent
-similarity transform (rotation + uniform scale + translation) per
-connected component.
+The layout produced by either §1 or §2 sits in its own coordinate
+frame (orientation, centroid, and scale picked by the algorithm's
+internal force / stress balance, not by anything basePos says). The
+alignment step that brings it into basePos's frame — per-component
+similarity transform with match-RMS scaling — lives in the **blend**
+layer, not the layout layer, by encapsulation: the layout module
+never sees basePos.
 
-### 3.1 Why per-component (not whole-graph)
+**See `doc/blend.md` §1** for the alignment math: union-find on the
+citation graph, per-component Kabsch via Horn's quaternion, the
+match-RMS scale formula and why it's preferred over the textbook
+Procrustes-optimal scale (which collapses partially-correlated
+sources toward the target centroid), and the alignment correlation
+coefficient that falls out for free as a quality metric.
 
-A single transform across the whole graph forces a compromise:
-two components whose basePos centroids are far apart, or whose
-intrinsic densities differ, can't all be aligned simultaneously.
-Per-component handles each independently:
-
-- A component's **internal geometry** is dictated by FR. It carries
-  topological information (which nodes cite which). We preserve it
-  by applying a similarity transform — rotation × uniform scale ×
-  translation only, no per-node deformation. Uniform scaling is a
-  similarity transform, so angles and intra-component distance
-  *ratios* survive intact; only absolute scale shifts.
-- A component's **overall position, orientation, AND scale** are
-  underdetermined by topology. We pick a translation + rotation
-  that minimises RMSD to basePos and a scale that matches RMS norm.
-
-### 3.2 Singletons
-
-A degree-0 node is a singleton component. Per-component Kabsch on
-one point is just translation: the node lands exactly at its basePos.
-
-This is exactly the right answer for isolated nodes — they have zero
-topological constraint, so their citation-layout position should
-default to wherever basePos says they belong.
-
-### 3.3 Algorithm (per component)
-
-For each connected component with node ids `{i₀, i₁, …}`:
-
-1. **Centroids**:
-   ```
-   c    =  Σ citationPos[i] / m
-   bc   =  Σ basePos[i]     / m
-   ```
-2. **Cross-correlation** `S` (3×3, `a` = citationPos centred,
-   `b` = basePos centred), plus the squared-norm sums:
-   ```
-   S_xy   =  Σ a_x b_y     etc.
-   sumA²  =  Σ |a|²
-   sumB²  =  Σ |b|²
-   ```
-3. **Horn's symmetric 4×4 matrix** `N` (entries built from the `S`
-   sums; see `align.js` for the explicit construction). The
-   eigenvector of N's largest eigenvalue is the unit quaternion of
-   the optimal rotation that maps `a → b`.
-4. **Eigendecomposition** via cyclic Jacobi (50 sweeps max,
-   `1e-12` off-diagonal threshold). Pick the largest eigenvalue;
-   normalise its eigenvector to a unit quaternion `(qw, qx, qy, qz)`.
-   Build `R` from the quaternion (standard formula).
-5. **Scale**:
-   ```
-   s  =  √(sumB² / sumA²)
-   ```
-   Match-the-RMS-norm rather than the Procrustes-optimal
-   `s* = trace(R·S) / sumA²`. The two coincide for perfectly
-   aligned layouts and diverge as alignment quality drops; the
-   ratio `s_procrustes / s_match_rms` is exactly the correlation
-   coefficient between `R·a` and `b`.
-
-   Citation-driven and basePos-driven layouts are **partially**
-   correlated. Citations come out of the taste network, which biases
-   edges toward spatially-close pairs in basePos — so the topologies
-   agree about cluster structure. But FR is finding its OWN 3D
-   embedding of that topology: it has its own radial t-anchor that
-   pulls older nodes inward regardless of where basePos put them,
-   and many topologies admit multiple distinct 3D realisations.
-   Empirically the correlation coefficient comes out around 0.5.
-
-   Procrustes-optimal would shrink the source proportional to
-   alignment quality (half-correlated → half-scale), making citation
-   edges much shorter than basePos edges. We don't want that —
-   the user is reading the slider as "blend between two
-   visualisations of the same network at the same scale", and a
-   scale jump at α=1 reads as "the camera zoomed out" rather than
-   "the topology rearranged."
-
-   `s = √(sumB² / sumA²)` decouples scale from alignment quality:
-   the source's RMS extent always equals the target's, regardless
-   of how well rotation aligns them. `R` still does the orientation
-   work; `s` just keeps the visual scale comparable.
-6. **Apply** to each node in the component:
-   ```
-   alignedCitationPos[i]  =  s · R · (citationPos[i] − c)  +  bc
-   ```
-
-### 3.4 Cost
-
-`O(N + |E|)` for union-find plus the per-component math. Total:
-`O(N + |E|)` — runs in microseconds for typical sizes.
+`alignByComponent({ basePos, citationPos, edges, n })` returns
+`{ aligned, correlation }`. main.js caches both on
+`state.alignedCitationLayout` and `state.alignmentCorrelation`.
 
 ---
 
@@ -359,26 +282,29 @@ basePos and lerps each frame.
 
 ## 5. Failure modes worth knowing about
 
-- **Components overlap** if their basePos centroids happen to
-  coincide. Per-component Kabsch can't separate them — it has no
-  inter-component repulsion. Visually possibly confusing; correct
-  in terms of topology (no edges between them). An inter-component
-  spacing pass is left for a later phase.
+These are layout-side failure modes. Alignment-side failure modes
+(component overlap, two-node degeneracy, coincident-points) are
+documented in `doc/blend.md` §1.7.
 
-- **Two-node components** have a degenerate Kabsch (rotation around
-  the axis connecting the two points is undefined). The Horn solver
-  picks one valid rotation; the choice is arbitrary but consistent
-  across runs (same seed → same eigenvector pick).
+- **Very sparse graphs** (most nodes isolated) produce a layout
+  where most nodes sit near origin and the few connected components
+  float slightly off. After alignment they end up at their basePos
+  positions; the blend then does very little and the visualisation
+  is roughly basePos at any α. This is honest: a graph with no
+  citations has no citation-driven topology to render.
 
-- **Very sparse graphs** (most nodes isolated) produce an
-  alignedCitationPos where most nodes sit at their basePos and the
-  few connected components float slightly off — the blend then
-  does very little, and the visualisation is roughly basePos at any α.
-  This is honest: a graph with no citations has no citation-driven
-  topology to render.
+- **The FR outer wall activates** when a self-repelling cloud's
+  natural equilibrium exceeds `R · outerWallFraction` (default
+  `1.5 · R`). Nodes pile onto the wall surface. With `tBias` high
+  enough this never happens for realistic graphs; tune higher if
+  you see a peripheral shell where none belongs. MDS doesn't have a
+  wall — it's bounded by graph diameter directly.
 
-- **The outer wall activates** when a self-repelling cloud's natural
-  equilibrium exceeds `R · outerWallFraction`. Nodes pile onto the
-  wall surface. With `tBias` high enough this never happens for
-  realistic graphs; tune higher if you see a peripheral shell where
-  none belongs.
+- **MDS in 3D can't always satisfy every graph-distance target**
+  for graphs whose effective dimension is greater than 3 (which is
+  most non-trivial citation networks). Stress doesn't go to zero;
+  the layout is the best 3D projection. Empirically:
+  `dist=2 / dist=1` ratio comes out below 2.0 (~1.7 in our test
+  graph) instead of exactly 2.0. The chain test in
+  `scratch/v3_phase7_acceptance.mjs` gets 1.99 because a 3-node
+  path IS embeddable in 1D.
