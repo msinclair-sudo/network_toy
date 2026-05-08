@@ -145,25 +145,29 @@ only when the citation graph or layout params change — cached as
 
 ---
 
-## 2. Alignment: per-component Kabsch
+## 2. Alignment: per-component similarity transform
 
 `app/src/blend/align.js`. Takes basePos and the raw FR output and
-produces `alignedCitationLayout` by aligning each connected component
-**independently** to basePos using Kabsch.
+produces `alignedCitationLayout` by applying an independent
+similarity transform (rotation + uniform scale + translation) per
+connected component.
 
 ### 2.1 Why per-component (not whole-graph)
 
-A single rigid transform across the whole graph forces a compromise:
-two components whose basePos centroids are far apart can't both be
-aligned simultaneously. Per-component aligns each independently:
+A single transform across the whole graph forces a compromise:
+two components whose basePos centroids are far apart, or whose
+intrinsic densities differ, can't all be aligned simultaneously.
+Per-component handles each independently:
 
 - A component's **internal geometry** is dictated by FR. It carries
   topological information (which nodes cite which). We preserve it
-  by aligning rigidly — rotation + translation only, no per-node
-  deformation.
-- A component's **overall position and orientation** are
-  underdetermined by topology. We pick the choice that minimises
-  RMSD to its basePos counterparts.
+  by applying a similarity transform — rotation × uniform scale ×
+  translation only, no per-node deformation. Uniform scaling is a
+  similarity transform, so angles and intra-component distance
+  *ratios* survive intact; only absolute scale shifts.
+- A component's **overall position, orientation, AND scale** are
+  underdetermined by topology. We pick a translation + rotation
+  that minimises RMSD to basePos and a scale that matches RMS norm.
 
 ### 2.2 Singletons
 
@@ -184,23 +188,38 @@ For each connected component with node ids `{i₀, i₁, …}`:
    bc   =  Σ basePos[i]     / m
    ```
 2. **Cross-correlation** `S` (3×3, `a` = citationPos centred,
-   `b` = basePos centred):
+   `b` = basePos centred), plus the squared-norm sums:
    ```
-   S_xx  =  Σ a_x b_x        S_xy  =  Σ a_x b_y     etc.
+   S_xy   =  Σ a_x b_y     etc.
+   sumA²  =  Σ |a|²
+   sumB²  =  Σ |b|²
    ```
 3. **Horn's symmetric 4×4 matrix** `N` (entries built from the `S`
-   sums; see `align.js` for the explicit construction):
-   ```
-   The eigenvector of N's largest eigenvalue is the unit
-   quaternion of the optimal rotation that maps a → b.
-   ```
+   sums; see `align.js` for the explicit construction). The
+   eigenvector of N's largest eigenvalue is the unit quaternion of
+   the optimal rotation that maps `a → b`.
 4. **Eigendecomposition** via cyclic Jacobi (50 sweeps max,
    `1e-12` off-diagonal threshold). Pick the largest eigenvalue;
    normalise its eigenvector to a unit quaternion `(qw, qx, qy, qz)`.
-5. **Build R** from the quaternion (standard formula); **apply** to
-   each node in the component:
+   Build `R` from the quaternion (standard formula).
+5. **Scale**:
    ```
-   alignedCitationPos[i]  =  R · (citationPos[i] − c)  +  bc
+   s  =  √(sumB² / sumA²)
+   ```
+   Match-the-RMS-norm rather than the Procrustes-optimal
+   `s* = trace(R·S) / sumA²`. Procrustes-optimal minimises
+   `Σ |s·R·a − b|²` over `s`, which for **uncorrelated** layouts
+   collapses the source toward the target's centroid (when `R·a`
+   doesn't agree orientationally with `b`, the residual is minimised
+   by shrinking `s` toward 0). Citation-driven and basePos-driven
+   layouts are uncorrelated by design, so Procrustes-optimal makes
+   citation edges much shorter than basePos edges. We want the
+   visible scale to match regardless of orientation agreement, so
+   we go with the simpler `s = √(sumB² / sumA²)`. For perfectly
+   aligned layouts this and Procrustes-optimal coincide.
+6. **Apply** to each node in the component:
+   ```
+   alignedCitationPos[i]  =  s · R · (citationPos[i] − c)  +  bc
    ```
 
 ### 2.4 Cost

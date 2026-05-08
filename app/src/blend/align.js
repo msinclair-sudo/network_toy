@@ -1,33 +1,40 @@
-// Per-connected-component rigid alignment of citationPos to basePos.
+// Per-connected-component Procrustes alignment of citationPos to
+// basePos. Procrustes = Kabsch (rotation + translation) plus a
+// uniform scale factor, computed in closed form. We use the
+// similarity flavour rather than the rigid one because FR's natural
+// edge length k = (volume / n)^(1/3) is a global value that doesn't
+// know how spread-out a particular component "should be" — a
+// 20-node component whose basePos cluster is tightly packed gets
+// laid out at FR's natural density and ends up much larger than the
+// basePos arrangement of those same nodes. Without per-component
+// scale, the citation arrangement at α=1 has citation edges way
+// longer than at α=0; the user sees a jarring scale mismatch
+// rather than a topology change. Adding uniform scale per component
+// fixes that without compromising the topology — uniform scaling
+// is a similarity transform, so angles and intra-component
+// distance ratios survive intact; only the absolute scale shifts.
 //
-// The citation-layout module produces a deterministic 3D arrangement
-// in its own coordinate frame — orientation and centroid are
-// arbitrary, picked by FR's initial random seeding plus 200
-// iterations of force balance. Without anchoring it to basePos's
-// frame, the slider transition from α=0 (basePos) to α=1
-// (citationPos) makes nodes fly across the screen in arbitrary
-// directions. We fix that here.
-//
-// Per-component (not whole-graph) Kabsch is the right granularity:
+// Per-component (not whole-graph) Procrustes is the right
+// granularity:
 //
 //   - A connected citation cluster has its INTERNAL geometry
 //     dictated by FR (carries real topological information). We
-//     preserve that by aligning rigidly — rotation + translation
-//     only, no per-node deformation.
-//   - The component's overall position and orientation in space are
-//     undetermined by topology. We pick the choice that minimises
-//     RMSD to the same nodes' basePos coordinates.
-//   - An isolated node is a singleton component. Per-component
-//     Kabsch on a single point is just translation: the node lands
-//     exactly at its basePos. (Isolated nodes have zero topological
-//     constraint, so this is the right answer — their citation
-//     position should default to where they'd be without any
-//     citations at all.)
+//     preserve that by applying a similarity transform — rotation
+//     × scale × translation only, no per-node deformation.
+//   - The component's overall position, orientation, AND scale in
+//     space are undetermined by topology. We pick the choice that
+//     minimises Σ |s·R·a + t − b|² over all such transforms.
+//   - An isolated node is a singleton component. Procrustes on a
+//     single point degenerates to pure translation (no rotation, no
+//     scale defined): the node lands exactly at its basePos.
+//     Isolated nodes have zero topological constraint, so this is
+//     the right answer — their citation position should default to
+//     where basePos says they belong.
 //
-// Whole-graph Kabsch instead of per-component would force a single
-// rigid transform across the whole layout — components whose basePos
-// centroids are far apart can't all be aligned simultaneously; you
-// get a compromise that's wrong for everyone.
+// Whole-graph Procrustes instead of per-component would force a
+// single similarity transform across the whole layout — components
+// whose basePos centroids are far apart, or whose intrinsic
+// densities differ, can't all be aligned simultaneously.
 //
 // Encapsulation: this module is the ONLY place where citationPos
 // and basePos meet. The layout module never sees basePos; the
@@ -38,21 +45,24 @@ import { mulberry32 } from "../rng.js";
 
 // Compute alignedCitationPos by:
 //   1. Building connected components of the citation graph.
-//   2. For each component, computing the optimal rigid transform
-//      (rotation R + translation t) that aligns its citationPos
-//      subset to its basePos subset (Kabsch via Horn's quaternion).
+//   2. For each component, computing the optimal similarity
+//      transform (rotation R + uniform scale s + translation t)
+//      that minimises Σ |s·R·a + t − b|² where a is centred
+//      citationPos and b is centred basePos. R from Horn's
+//      quaternion (largest-eigenvalue eigenvector); s in closed
+//      form from the largest eigenvalue and the source norm.
 //   3. Applying that transform to those nodes' positions.
 //
 // Returns a freshly-allocated Float32Array(n × 3). Inputs are not
 // mutated.
 //
 // Singletons (degree-0 nodes / 1-node components) get their basePos
-// directly — no rotation defined for one point.
+// directly — no rotation or scale defined for one point.
 //
-// Two-node components: Kabsch reduces to translating the centroid
-// and rotating around the axis between the two points; we delegate
-// to the same Horn-quaternion solver, which produces a valid (if
-// non-unique) rotation.
+// Two-node components: rotation around the axis between the two
+// points is undefined, scale is well-defined (one edge length).
+// The Horn-quaternion solver picks one valid rotation; the scale
+// formula reduces to basePosEdgeLength / citationPosEdgeLength.
 export function alignByComponent({ basePos, citationPos, edges, n }) {
   if (n === 0) return new Float32Array(0);
   if (basePos.length !== n * 3) throw new Error("alignByComponent: basePos length mismatch");
@@ -83,8 +93,8 @@ export function alignByComponent({ basePos, citationPos, edges, n }) {
   return aligned;
 }
 
-// Compute Kabsch transform aligning citationPos[ids] → basePos[ids],
-// then write the transformed positions into `out`.
+// Compute optimal similarity transform aligning citationPos[ids] →
+// basePos[ids], then write the transformed positions into `out`.
 function alignSubset(ids, basePos, citationPos, out) {
   const m = ids.length;
 
@@ -97,16 +107,20 @@ function alignSubset(ids, basePos, citationPos, out) {
   cx/=m; cy/=m; cz/=m; bcx/=m; bcy/=m; bcz/=m;
 
   // Cross-correlation S = Σ a · bᵀ where a = citation−c, b = base−bc.
-  // (Reads "rotation that maps citation-centred → base-centred",
-  // i.e. R applied to citationPos relative coords yields basePos
-  // relative coords.)
+  // Reads "rotation that maps citation-centred → base-centred", i.e.
+  // R applied to citationPos relative coords yields basePos relative
+  // coords. Also accumulate Σ|a|² and Σ|b|² (sums of squared centred
+  // norms) for the scale calculation below.
   let Sxx=0,Sxy=0,Sxz=0,Syx=0,Syy=0,Syz=0,Szx=0,Szy=0,Szz=0;
+  let sumA2 = 0, sumB2 = 0;
   for (const i of ids) {
     const ax = citationPos[i*3]   - cx,  ay = citationPos[i*3+1] - cy,  az = citationPos[i*3+2] - cz;
     const bx = basePos[i*3]       - bcx, by = basePos[i*3+1]     - bcy, bz = basePos[i*3+2]     - bcz;
     Sxx += ax*bx; Sxy += ax*by; Sxz += ax*bz;
     Syx += ay*bx; Syy += ay*by; Syz += ay*bz;
     Szx += az*bx; Szy += az*by; Szz += az*bz;
+    sumA2 += ax*ax + ay*ay + az*az;
+    sumB2 += bx*bx + by*by + bz*bz;
   }
 
   // Horn's symmetric 4×4 N matrix. Eigenvector of largest eigenvalue
@@ -143,15 +157,47 @@ function alignSubset(ids, basePos, citationPos, out) {
   const r21 = 2*qy*qz + 2*qw*qx;
   const r22 = 1 - 2*qx*qx - 2*qy*qy;
 
+  // Match-the-scale rather than Procrustes-optimal. The Procrustes
+  // optimum (s = trace(R·S) / Σ|a|² = eigvals[best] / sumA2)
+  // minimises Σ |s·R·a − b|², which for UNCORRELATED layouts shrinks
+  // toward 0 — when R·a doesn't agree orientationally with b, the
+  // residual is minimised by pulling the source down to the target's
+  // centroid. Citation-driven and basePos-driven layouts are
+  // genuinely uncorrelated by design, so Procrustes-optimal gives
+  // citation edges much SHORTER than basePos edges (the user reported
+  // the opposite, longer, before any scaling was applied).
+  //
+  // What the user actually wants is "the citation arrangement should
+  // visibly sit at the same scale as the base arrangement, even if
+  // the topologies don't agree." That's match-the-RMS-norm:
+  //   s = √(Σ|b|² / Σ|a|²)
+  // which makes Σ|s·R·a|² = Σ|b|² regardless of orientation. For
+  // perfectly aligned layouts, this and Procrustes-optimal give the
+  // same s; for uncorrelated layouts, it gives the visually correct
+  // scale.
+  let s;
+  if (sumA2 < 1e-9) {
+    s = 1;          // source coincident — no scale defined, fall back
+  } else {
+    s = Math.sqrt(sumB2 / sumA2);
+  }
+  if (!Number.isFinite(s) || s <= 0) s = 1;
+
   // For each node in the component:
-  //   aligned = R · (citation − c) + bc
+  //   aligned = s · R · (citation − c) + bc
+  // Topology survives — uniform scaling is a similarity transform,
+  // so angles and intra-component distance ratios are preserved;
+  // only the absolute scale of the component shifts to match basePos.
   for (const i of ids) {
     const dx = citationPos[i*3]   - cx;
     const dy = citationPos[i*3+1] - cy;
     const dz = citationPos[i*3+2] - cz;
-    out[i*3]   = r00*dx + r01*dy + r02*dz + bcx;
-    out[i*3+1] = r10*dx + r11*dy + r12*dz + bcy;
-    out[i*3+2] = r20*dx + r21*dy + r22*dz + bcz;
+    const rx = r00*dx + r01*dy + r02*dz;
+    const ry = r10*dx + r11*dy + r12*dz;
+    const rz = r20*dx + r21*dy + r22*dz;
+    out[i*3]   = s * rx + bcx;
+    out[i*3+1] = s * ry + bcy;
+    out[i*3+2] = s * rz + bcz;
   }
 }
 
