@@ -35,7 +35,9 @@ import {
   decorateGraphData as decorateCitations, citationViewFlags, colourByInDegree,
 } from "./citations-debug.js";
 import { buildBaseEdges } from "./base-edges.js";
-import { makePbdSolver } from "./hybrid-force.js";
+import { makeBlendForce } from "./blend/blend.js";
+import { alignByComponent } from "./blend/align.js";
+import { getAlgorithm as getCitationLayoutAlgorithm } from "./citation-layout/registry.js";
 import {
   physicsDebugFlags,
   buildDisplacementOverlay, updateDisplacementOverlay,
@@ -70,12 +72,20 @@ const state = {
   citationParams: defaultCitationParams(),
   citationResult: null,
 
-  // Layer 4 — layout solver. α drives the PBD distance constraints;
-  // frozen pauses the sim. _baseDist is precomputed at generation time
-  // and read each tick by the solver via a getter.
-  alpha: 0.0,
+  // Layer 4 — citation-driven layout (Float32Array(n×3)). Recomputed
+  // when the citation graph changes via relayoutCitations(); per-frame
+  // blend reads this verbatim. Configured via citationLayoutParams.
+  citationLayout:        null,
+  alignedCitationLayout: null,
+  citationLayoutParams:  initialCitationLayoutParams(),
+
+  // Layer 5 — blend. `blend` is the slider value in [0, 1]: 0 means
+  // "show me basePos", 1 means "show me alignedCitationPos". `frozen`
+  // pauses the d3 tick loop. _basePos is the flat Float32Array(n×3)
+  // form of basePos, populated at generation time and consumed by the
+  // blend force every tick alongside alignedCitationLayout.
+  blend: 0.0,
   frozen: false,
-  _baseDist: null,
   _basePos: null,
 
   // Render mode (bottom bar). "cluster" is the production default.
@@ -108,6 +118,14 @@ function initialClusterParams() {
   return { method: algos[0].id, byAlgo };
 }
 
+// Initial citation-layout params. Single algorithm registered today
+// (Fruchterman–Reingold); structure mirrors clusterParams so future
+// algorithms can plug in.
+function initialCitationLayoutParams() {
+  const algo = getCitationLayoutAlgorithm("fruchterman-reingold");
+  return { method: algo.id, params: algo.defaultParams() };
+}
+
 function activeAlgorithm() {
   return getAlgorithm(state.clusterParams.method);
 }
@@ -122,35 +140,25 @@ function activeAlgorithmParams() {
 
 function regenerate() {
   state.result = generate(state.params);
-  precomputeBaseDist();          // Layer 4 needs ‖basePos_i − basePos_j‖
-  // Reseed live positions to basePos so α=0 is a clean visual no-op.
+  precomputeBasePos();           // basePos as a flat Float32Array(n×3)
+  // Reseed live positions to basePos so blend=0 is a clean visual no-op.
   // (Saved via liveById if you want them preserved across regens — we
   // explicitly do NOT here, because regen changes the embedding.)
   resetLivePositions();
   recluster();
 }
 
-// Pairwise Euclidean distance over basePos. Lives in main.js's state
-// (`state._baseDist`) and is read by the solver every tick via the
-// getter passed to makePbdSolver. Recomputed once per regeneration.
-function precomputeBaseDist() {
+// Flatten basePos into a Float32Array(n × 3) for fast iteration in the
+// blend force and the alignment pass. Recomputed once per regeneration.
+function precomputeBasePos() {
   const nodes = state.result.nodes;
   const n = nodes.length;
-  const d = new Float32Array(n * n);
   const bp = new Float32Array(n * 3);
   for (let i = 0; i < n; i++) {
-    const pi = nodes[i].basePos;
-    bp[i*3] = pi[0]; bp[i*3+1] = pi[1]; bp[i*3+2] = pi[2];
-    for (let j = i + 1; j < n; j++) {
-      const pj = nodes[j].basePos;
-      const dx = pi[0] - pj[0], dy = pi[1] - pj[1], dz = pi[2] - pj[2];
-      const v = Math.sqrt(dx*dx + dy*dy + dz*dz);
-      d[i * n + j] = v;
-      d[j * n + i] = v;
-    }
+    const p = nodes[i].basePos;
+    bp[i*3] = p[0]; bp[i*3+1] = p[1]; bp[i*3+2] = p[2];
   }
-  state._baseDist = d;
-  state._basePos  = bp;
+  state._basePos = bp;
 }
 
 // Drop any live position cache so the next graph rebuild seeds nodes at
@@ -194,15 +202,44 @@ function resample() {
     state.result, state.clusterResult, state.neighbourhoodResult,
     state.tasteResult, state.citationParams,
   );
+  // The citation graph changed → the citation-driven layout needs to
+  // be recomputed, then re-aligned to basePos. The blend force
+  // consumes alignedCitationLayout every tick, so this is what makes
+  // a citation reroll visible at any blend > 0.
+  relayoutCitations();
   updateStatus();
   updateCitationStatus();
   loadGraphData();
-  // Citations changing means hasCit changed, which means rest lengths for
-  // many pairs changed → reheat so the new equilibrium gets pursued.
   if (Graph && !state.frozen) {
     Graph.d3ReheatSimulation();
     Graph.resumeAnimation();
   }
+}
+
+// Compute the FR layout of the citation graph and align it per-component
+// to basePos. Pure function call — runs once when the citation graph
+// changes, cached in state.{citationLayout, alignedCitationLayout}.
+function relayoutCitations() {
+  if (!state.result || !state.citationResult) return;
+  const n = state.result.nodes.length;
+  const t = new Float32Array(n);
+  for (let i = 0; i < n; i++) t[i] = state.result.nodes[i].t;
+  const algo = getCitationLayoutAlgorithm(state.citationLayoutParams.method);
+  state.citationLayout = algo.compute({
+    n,
+    edges: state.citationResult.citations.map(c => [c.source, c.target]),
+    t,
+    // Layout seed derives from the citation sampling seed so the layout
+    // is deterministic in lock-step with the citation graph itself.
+    seed: state.citationParams.samplingSeed,
+    params: state.citationLayoutParams.params,
+  });
+  state.alignedCitationLayout = alignByComponent({
+    basePos:    state._basePos,
+    citationPos: state.citationLayout,
+    edges:      state.citationResult.citations.map(c => [c.source, c.target]),
+    n,
+  });
 }
 
 function updateStatus() {
@@ -915,20 +952,20 @@ function formatParamsShort(algo, params) {
   return parts.join(" · ");
 }
 
-/* ── left panel: force ──────────────────────────────────────────────────── */
+/* ── left panel: blend ──────────────────────────────────────────────────── */
 
 function bindForceControls() {
-  $("alpha-input").value = state.alpha;
-  $("alpha-val").textContent = state.alpha.toFixed(2);
-  // α touches force parameters only — no data invalidation. But the d3
-  // simulation's INTERNAL simAlpha decays over time and is what scales the
-  // force impulse each tick (k = STRENGTH · sMul · simAlpha · …). After
-  // the sim has cooled, dragging α will read the new value but with
-  // simAlpha ≈ alphaMin → impulse ≈ 0 → nothing moves. So we must
-  // d3ReheatSimulation() on every α change to kick simAlpha back up.
+  $("alpha-input").value = state.blend;
+  $("alpha-val").textContent = state.blend.toFixed(2);
+  // Slider drag: blend value is a pure deterministic mix between basePos
+  // and alignedCitationPos. There's no constraint solver to settle, but
+  // d3-force-3d's internal simAlpha decays over time and freezes ticks
+  // when the network "looks settled" — which it instantly does under
+  // PBD-free blending. Reheat each drag so the lib keeps ticking and
+  // our force hook keeps firing.
   $("alpha-input").oninput = (e) => {
-    state.alpha = +e.target.value;
-    $("alpha-val").textContent = state.alpha.toFixed(2);
+    state.blend = +e.target.value;
+    $("alpha-val").textContent = state.blend.toFixed(2);
     if (!Graph) return;
     if (state.frozen) return;
     Graph.d3ReheatSimulation();
@@ -1216,30 +1253,30 @@ function initGraph() {
     .cooldownTicks(Infinity)
     .warmupTicks(60);
 
-  // Disable the library's default forces: the PBD solver is the only thing
-  // determining node positions. Charge would fight cited contraction at
-  // high α; the lib's default link spring would double-count.
+  // Disable the library's default forces — the blend hook is the only
+  // thing determining node positions. Charge / link / center would all
+  // fight the deterministic blend each tick.
   const charge = Graph.d3Force("charge"); if (charge && charge.strength) charge.strength(0);
   const link   = Graph.d3Force("link");   if (link   && link.strength)   link.strength(0);
   const center = Graph.d3Force("center"); if (center && center.strength) center.strength(0);
 
-  // Register the PBD solver under the d3-force-3d "force" hook. The
-  // solver mutates node x/y/z directly (instead of vx/vy/vz like a true
-  // force would) — d3 still runs its `x += vx` integration each tick,
-  // but with vx pinned at 0 (see d3VelocityDecay below) it's a no-op.
-  // The closure reads α / hasCit / baseDist every tick via getters, so
-  // structural changes (citation reroll, etc.) take effect on the next
-  // frame without re-registration.
-  Graph.d3Force("hybrid", makePbdSolver({
-    getAlpha:    () => state.alpha,
-    getBaseDist: () => state._baseDist,
-    getHasCit:   () => state.citationResult ? state.citationResult.hasCit : null,
-    getBasePos:  () => state._basePos,
+  // Register the blend hook under d3-force-3d's "force" slot. Each
+  // tick the hook reads the current blend value + cached basePos +
+  // alignedCitationLayout (both Float32Array(n×3)) and writes
+  //   live = (1−α)·basePos + α·alignedCitationPos
+  // directly into node.x/y/z. No state, no momentum, no constraint
+  // iterations — pure deterministic linear interpolation. The closure
+  // reads everything through getters so citation reroll, blend slider
+  // drag, etc. take effect on the next frame without re-registration.
+  Graph.d3Force("blend", makeBlendForce({
+    getBasePos:            () => state._basePos,
+    getAlignedCitationPos: () => state.alignedCitationLayout,
+    getBlend:              () => state.blend,
   }));
 
-  // velocityDecay = 1 zeros velocities every tick, so any stray vx
-  // (e.g. from drag interactions) dies before the next integration
-  // adds it to position. PBD owns motion entirely.
+  // velocityDecay = 1 zeros velocities every tick. Any stray vx (drag
+  // interactions, lib internals) dies before integration touches
+  // position; the blend hook owns motion entirely.
   Graph.d3VelocityDecay(1.0);
 
   const ctrls = Graph.controls();
@@ -1274,7 +1311,7 @@ export function boot() {
   // Run the full pipeline once. Status / legend / graph data are populated
   // as side-effects of resample() at the bottom of the chain.
   state.result = generate(state.params);
-  precomputeBaseDist();
+  precomputeBasePos();
   {
     const algo = activeAlgorithm();
     state.clusterResult = algo.infer(state.result, activeAlgorithmParams());
@@ -1289,6 +1326,7 @@ export function boot() {
     state.result, state.clusterResult, state.neighbourhoodResult,
     state.tasteResult, state.citationParams,
   );
+  relayoutCitations();           // FR layout + per-component alignment
   updateStatus();
   updateCitationStatus();
 
