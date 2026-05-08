@@ -41,6 +41,7 @@ import {
   getAlgorithm as getCitationLayoutAlgorithm,
   listAlgorithms as listCitationLayoutAlgorithms,
 } from "./citation-layout/registry.js";
+import { sweepLayouts } from "./eval/layout-sweep.js";
 import {
   physicsDebugFlags,
   buildDisplacementOverlay, updateDisplacementOverlay,
@@ -78,8 +79,13 @@ const state = {
   // Layer 4 — citation-driven layout (Float32Array(n×3)). Recomputed
   // when the citation graph changes via relayoutCitations(); per-frame
   // blend reads this verbatim. Configured via citationLayoutParams.
+  // alignmentCorrelation is the [0, 1] correlation coefficient between
+  // the aligned citation layout and basePos — surfaced in the
+  // citation-layout modal as a quality metric and used as the ranking
+  // metric for the layout sweep ("Find best params").
   citationLayout:        null,
   alignedCitationLayout: null,
+  alignmentCorrelation:  NaN,
   citationLayoutParams:  initialCitationLayoutParams(),
 
   // Layer 5 — blend. `blend` is the slider value in [0, 1]: 0 means
@@ -237,12 +243,14 @@ function relayoutCitations() {
     seed: state.citationParams.samplingSeed,
     params: state.citationLayoutParams.params,
   });
-  state.alignedCitationLayout = alignByComponent({
+  const alignResult = alignByComponent({
     basePos:    state._basePos,
     citationPos: state.citationLayout,
     edges:      state.citationResult.citations.map(c => [c.source, c.target]),
     n,
   });
+  state.alignedCitationLayout = alignResult.aligned;
+  state.alignmentCorrelation  = alignResult.correlation;
 }
 
 function updateStatus() {
@@ -1035,9 +1043,217 @@ function renderCitationLayoutModalBody(algo, params) {
     note.textContent = algo.description;
     body.appendChild(note);
   }
-  // Reuse the field renderer from the cluster modal — it's algorithm-
-  // generic (iterates modalSchema and dispatches on field.kind).
-  renderClusterSettings(body, algo, params, () => {});
+  // Settings fields. Reuse the cluster-modal field renderer (it's
+  // algorithm-generic — iterates modalSchema, dispatches on field.kind).
+  // onChange schedules a debounced live correlation update — recomputing
+  // a layout per slider tick is ~50–100ms, too laggy without debouncing.
+  const settings = document.createElement("div");
+  body.appendChild(settings);
+  renderClusterSettings(settings, algo, params, () => scheduleLiveCorrelation(algo, params));
+
+  // Evaluation section. Mirrors the cluster modal's eval column but
+  // simpler — there's no ground truth like originId for layout, so we
+  // use the alignment correlation coefficient (0 = uncorrelated, 1 =
+  // perfectly aligned to basePos) as the quality metric.
+  renderCitationLayoutEval(body, algo, params);
+}
+
+/* ── citation layout eval ──────────────────────────────────────────────── */
+/* Live alignment correlation for the pending params + a "Find best params"
+ * sweep across BOTH layout algorithms × their sweepValues. Single ranking
+ * metric (the correlation coefficient) so user can directly compare what
+ * each (algorithm, params) combo produces against basePos's structure. */
+
+let _layoutLiveTimer = null;
+
+function renderCitationLayoutEval(container, algo, params) {
+  const wrap = document.createElement("div");
+  wrap.id = "citlayout-eval";
+  wrap.style.cssText = "border-top: 1px solid var(--line); margin-top: 14px; padding-top: 12px;";
+  container.appendChild(wrap);
+
+  const head = document.createElement("h3");
+  head.style.cssText = "font-size: 11px; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); margin: 0 0 8px;";
+  head.textContent = "Evaluation";
+  wrap.appendChild(head);
+
+  const meta = document.createElement("div");
+  meta.style.cssText = "font-size: 10px; color: var(--muted); margin-bottom: 10px; line-height: 1.4;";
+  meta.innerHTML = "Alignment correlation between this layout and basePos. 0 = uncorrelated random; 1 = perfectly aligned (i.e. basePos itself). Higher = layout reproduces more of basePos's structure.";
+  wrap.appendChild(meta);
+
+  const liveRow = document.createElement("div");
+  liveRow.style.cssText = "display: flex; justify-content: space-between; align-items: baseline; padding: 4px 0; border-bottom: 1px solid var(--line); margin-bottom: 8px;";
+  liveRow.innerHTML = `<span>current params</span><span class="ari" id="citlayout-live-corr" style="font-variant-numeric: tabular-nums; font-weight: 600;">computing…</span>`;
+  wrap.appendChild(liveRow);
+
+  const btn = document.createElement("button");
+  btn.className = "tb-btn";
+  btn.id = "citlayout-sweep-btn";
+  btn.textContent = "Find best params";
+  btn.style.cssText = "margin-top: 6px; width: 100%;";
+  btn.onclick = () => runLayoutSweep();
+  wrap.appendChild(btn);
+
+  const status = document.createElement("div");
+  status.style.cssText = "font-size: 10px; color: var(--muted); margin-top: 6px;";
+  status.id = "citlayout-sweep-status";
+  wrap.appendChild(status);
+
+  const results = document.createElement("div");
+  results.id = "citlayout-sweep-results";
+  results.style.cssText = "margin-top: 8px;";
+  wrap.appendChild(results);
+
+  // Initial live correlation: prefer the cached value (already
+  // computed during the most recent relayoutCitations) so the modal
+  // opens instantly without recomputing. Recompute only on param
+  // change.
+  if (algo.id === state.citationLayoutParams.method && Number.isFinite(state.alignmentCorrelation)) {
+    document.getElementById("citlayout-live-corr").textContent = state.alignmentCorrelation.toFixed(3);
+  } else {
+    scheduleLiveCorrelation(algo, params);
+  }
+}
+
+function scheduleLiveCorrelation(algo, params) {
+  if (_layoutLiveTimer) clearTimeout(_layoutLiveTimer);
+  const el = document.getElementById("citlayout-live-corr");
+  if (el) el.textContent = "computing…";
+  // Debounce: the layout compute is ~50–100 ms, too laggy to run on
+  // every slider input event. 200 ms after the last change is enough
+  // for the user to read but cheap enough to feel responsive.
+  _layoutLiveTimer = setTimeout(() => {
+    _layoutLiveTimer = null;
+    updateLiveLayoutCorrelation(algo, params);
+  }, 200);
+}
+
+function updateLiveLayoutCorrelation(algo, params) {
+  const el = document.getElementById("citlayout-live-corr");
+  if (!el) return;
+  if (!state.result || !state.citationResult) { el.textContent = "—"; return; }
+  const n = state.result.nodes.length;
+  const t = new Float32Array(n);
+  for (let i = 0; i < n; i++) t[i] = state.result.nodes[i].t;
+  const edges = state.citationResult.citations.map((c) => [c.source, c.target]);
+  try {
+    const positions = algo.compute({ n, edges, t, seed: state.citationParams.samplingSeed, params });
+    const r = alignByComponent({ basePos: state._basePos, citationPos: positions, edges, n });
+    el.textContent = Number.isFinite(r.correlation) ? r.correlation.toFixed(3) : "—";
+  } catch (e) {
+    el.textContent = "error";
+    console.error("[layout-eval] live correlation failed:", e);
+  }
+}
+
+function runLayoutSweep() {
+  const btn = document.getElementById("citlayout-sweep-btn");
+  const status = document.getElementById("citlayout-sweep-status");
+  const resultsBox = document.getElementById("citlayout-sweep-results");
+  if (!btn) return;
+  btn.disabled = true;
+  btn.textContent = "Sweeping…";
+  status.textContent = "running grid…";
+  resultsBox.innerHTML = "";
+
+  // Yield to the renderer once so the disabled state paints before
+  // the synchronous sweep blocks the main thread.
+  setTimeout(() => {
+    if (!state.result || !state.citationResult) {
+      btn.disabled = false;
+      btn.textContent = "Find best params";
+      status.textContent = "no data — generate first";
+      return;
+    }
+    const n = state.result.nodes.length;
+    const t = new Float32Array(n);
+    for (let i = 0; i < n; i++) t[i] = state.result.nodes[i].t;
+    const edges = state.citationResult.citations.map((c) => [c.source, c.target]);
+
+    const t0 = performance.now();
+    const { top, totalCombos } = sweepLayouts({
+      n, edges, t,
+      basePos: state._basePos,
+      baseSeed: state.citationParams.samplingSeed,
+      topN: 6,
+    });
+    const dt = performance.now() - t0;
+
+    btn.disabled = false;
+    btn.textContent = "Find best params";
+    status.textContent = `${totalCombos} combos in ${dt.toFixed(0)}ms · top ${top.length} by correlation:`;
+    renderLayoutSweepResults(resultsBox, top);
+  }, 0);
+}
+
+function renderLayoutSweepResults(container, top) {
+  container.innerHTML = "";
+  if (top.length === 0) {
+    container.innerHTML = "<div style='color:var(--muted);font-style:italic;padding:6px 0;'>No results.</div>";
+    return;
+  }
+  for (const row of top) {
+    const div = document.createElement("div");
+    div.style.cssText = "display: grid; grid-template-columns: 50px 1fr auto; align-items: center; gap: 8px; padding: 6px 0; border-top: 1px dashed var(--line); font-size: 11px;";
+
+    const corr = document.createElement("span");
+    corr.style.cssText = "font-variant-numeric: tabular-nums; font-weight: 600;";
+    corr.textContent = Number.isFinite(row.correlation) ? row.correlation.toFixed(3) : "—";
+    div.appendChild(corr);
+
+    const middle = document.createElement("div");
+    const algoLabel = document.createElement("div");
+    algoLabel.textContent = row.algoLabel;
+    algoLabel.style.cssText = "color: var(--text); font-size: 11px;";
+    middle.appendChild(algoLabel);
+    const paramsLine = document.createElement("div");
+    paramsLine.textContent = formatLayoutParams(row.method, row.params);
+    paramsLine.style.cssText = "color: var(--muted); font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 10px; line-height: 1.4;";
+    middle.appendChild(paramsLine);
+    if (row.error) {
+      const err = document.createElement("div");
+      err.textContent = "error: " + row.error;
+      err.style.cssText = "color: #e15759; font-size: 10px;";
+      middle.appendChild(err);
+    }
+    div.appendChild(middle);
+
+    const apply = document.createElement("button");
+    apply.className = "tb-btn";
+    apply.textContent = "Apply";
+    apply.style.cssText = "padding: 2px 6px; font-size: 10px;";
+    apply.title = "Switch to this (algorithm, params) combo and recompute the citation layout. Closes this modal.";
+    apply.onclick = () => applyLayoutSweepRow(row);
+    div.appendChild(apply);
+
+    container.appendChild(div);
+  }
+}
+
+function formatLayoutParams(method, params) {
+  // Lookup the algorithm's modalSchema for nice label/format; fall
+  // back to JSON-ish if the schema doesn't recognise a key.
+  const algo = getCitationLayoutAlgorithm(method);
+  const parts = [];
+  for (const field of algo.modalSchema) {
+    const v = params[field.key];
+    if (v === undefined) continue;
+    const rendered = (typeof field.format === "function") ? field.format(v) : String(v);
+    parts.push(`${field.label}=${rendered}`);
+  }
+  return parts.join(" · ");
+}
+
+function applyLayoutSweepRow(row) {
+  state.citationLayoutParams.method = row.method;
+  state.citationLayoutParams.params = { ...row.params };
+  closeCitationLayoutModal();
+  relayoutCitations();
+  if (Graph && !state.frozen) {
+    Graph.d3ReheatSimulation();
+    Graph.resumeAnimation();
+  }
 }
 
 /* ── left panel: blend ──────────────────────────────────────────────────── */

@@ -64,7 +64,7 @@ import { mulberry32 } from "../rng.js";
 // The Horn-quaternion solver picks one valid rotation; the scale
 // formula reduces to basePosEdgeLength / citationPosEdgeLength.
 export function alignByComponent({ basePos, citationPos, edges, n }) {
-  if (n === 0) return new Float32Array(0);
+  if (n === 0) return { aligned: new Float32Array(0), correlation: NaN };
   if (basePos.length !== n * 3) throw new Error("alignByComponent: basePos length mismatch");
   if (citationPos.length !== n * 3) throw new Error("alignByComponent: citationPos length mismatch");
 
@@ -78,23 +78,40 @@ export function alignByComponent({ basePos, citationPos, edges, n }) {
     groups.get(c).push(i);
   }
 
+  // Aggregate per-component correlation contributions to produce a
+  // single global correlation coefficient — Σ trace(R_c · S_c) /
+  // Σ √(sumA_c² · sumB_c²). Singletons contribute 0/0 (no scale or
+  // rotation defined); skip them in the aggregation. The result is
+  // a number in [0, 1] measuring how well this layout aligns with
+  // basePos: 0 = uncorrelated random, 1 = perfectly aligned.
+  let corrNumer = 0;
+  let corrDenom = 0;
+
   for (const ids of groups.values()) {
     if (ids.length === 1) {
-      // Singleton: just place at basePos.
+      // Singleton: just place at basePos. No alignment math.
       const id = ids[0];
       aligned[id*3]   = basePos[id*3];
       aligned[id*3+1] = basePos[id*3+1];
       aligned[id*3+2] = basePos[id*3+2];
       continue;
     }
-    alignSubset(ids, basePos, citationPos, aligned);
+    const stats = alignSubset(ids, basePos, citationPos, aligned);
+    if (stats && Number.isFinite(stats.traceRS) && stats.sumA2 > 0 && stats.sumB2 > 0) {
+      corrNumer += stats.traceRS;
+      corrDenom += Math.sqrt(stats.sumA2 * stats.sumB2);
+    }
   }
 
-  return aligned;
+  const correlation = corrDenom > 0 ? Math.max(0, Math.min(1, corrNumer / corrDenom)) : NaN;
+  return { aligned, correlation };
 }
 
 // Compute optimal similarity transform aligning citationPos[ids] →
-// basePos[ids], then write the transformed positions into `out`.
+// basePos[ids], write the transformed positions into `out`, and
+// return the per-component scalars the caller needs to aggregate
+// the global correlation coefficient:
+//   { traceRS: eigvals[best], sumA2, sumB2 }
 function alignSubset(ids, basePos, citationPos, out) {
   const m = ids.length;
 
@@ -210,6 +227,8 @@ function alignSubset(ids, basePos, citationPos, out) {
     out[i*3+1] = s * ry + bcy;
     out[i*3+2] = s * rz + bcz;
   }
+
+  return { traceRS: eigvals[best], sumA2, sumB2 };
 }
 
 // Connected components by union-find. Returns Int32Array(n) where
