@@ -19,17 +19,29 @@ Two-stage pipeline:
 citation graph + t + seed
     │
     ▼
-citation-layout/fr.js       →  citationPos      (FR equilibrium)
+citation-layout/{fr|mds}.js  →  citationPos    (algorithm of choice)
     │
     ▼
-blend/align.js              →  alignedCitationPos
-                                (per-component Kabsch
-                                 alignment to basePos)
+blend/align.js               →  alignedCitationPos
+                                 (per-component similarity
+                                  alignment to basePos)
 ```
+
+The layout module exposes a registry; today there are two
+algorithms with different flavours:
+
+| id                       | flavour     | what it preserves                                    |
+|--------------------------|-------------|------------------------------------------------------|
+| `fruchterman-reingold`   | cladogram   | topology only; edge LENGTHS are arbitrary force balance |
+| `mds-graph-distance`     | dendrogram  | per-pair distance ≈ graph-shortest-path distance     |
+
+User picks via the **Citation Layout ▾** menu. Phase 7 added MDS;
+the registry pattern means future additions (spectral, hierarchical
+tree-by-`t`, etc.) plug in the same way.
 
 ---
 
-## 1. Layout: Fruchterman–Reingold in 3D
+## 1. Layout: Fruchterman–Reingold in 3D (cladogram)
 
 `app/src/citation-layout/fr.js`. Standard FR in 3D with two additions:
 a **time-axis radial anchor** that biases older nodes toward the
@@ -145,14 +157,98 @@ only when the citation graph or layout params change — cached as
 
 ---
 
-## 2. Alignment: per-component similarity transform
+## 2. Layout: MDS on graph distance (dendrogram)
 
-`app/src/blend/align.js`. Takes basePos and the raw FR output and
+`app/src/citation-layout/mds.js`. Multidimensional scaling, where
+the target distance for every pair is the **graph-shortest-path
+distance** times a scale factor:
+
+```
+target_ij  =  scaleD · d_ij
+```
+
+Per-component: each connected component is its own MDS problem.
+Cross-component pairs are deliberately omitted from the stress
+function (no path → no graph distance to preserve). Singletons
+land at origin and are then translated to basePos by the alignment
+step.
+
+### 2.1 Why MDS
+
+FR is *cladogram-flavoured* — it tells you which nodes are
+connected, but edge LENGTHS are arbitrary force balance. A 1–2–3
+chain ends up with `|x_1 − x_3|` set by repulsion vs. attraction in
+the 1↔3 pair (which has no edge between them in FR's view), not by
+the fact that 1 and 3 are graph distance 2 apart.
+
+MDS is *dendrogram-flavoured* — pairwise 3D distances reflect
+pairwise graph distances. The 1–2–3 chain falls out collinear with
+`|x_1 − x_3| = 2 · |x_1 − x_2|`, exactly because `d(1, 3) = 2`.
+Verified: `scratch/v3_phase7_acceptance.mjs` chain test gets
+ratio 1.995.
+
+For larger graphs, exact ratio preservation is bounded by the
+intrinsic dimensionality of the graph relative to 3D (Phase 7
+acceptance: ratio for `d=2` pairs / `d=1` pairs is 1.68 on the
+seed=42 dense graph, instead of the chain test's 1.995 — graphs
+with high effective dimension can't be embedded in 3D without
+distortion).
+
+### 2.2 SMACOF Guttman update
+
+Stress:
+```
+σ  =  Σ_pairs ( |x_i − x_j|  −  scaleD · d_ij )²
+```
+
+Each iteration applies the Guttman transform — for every node `i`,
+replace `x_i` with the centroid of "ideal positions for i" derived
+from each pair:
+
+```
+new_x_i  =  (1 / (m−1))  ·  Σ_{j≠i}  [ x_j  +  (t_ij / |x_i−x_j|) · (x_i − x_j) ]
+```
+
+This is the standard SMACOF update; monotonically decreases stress
+on a quadratic majorant; no learning rate or temperature needed.
+Degree-normalised by construction (the `1/(m−1)` factor) so dense
+components don't blow up like a naïve gradient-descent would.
+
+For coincident pairs (`|x_i − x_j| = 0`), the limit of
+`(t_ij / |x_i−x_j|) · (x_i − x_j)` is 0, so the contribution is just
+`x_j`. Implemented as a special-case branch.
+
+Atomic Jacobi-style update: read all `x` from the previous
+iteration, compute all new `x`, then swap. No iteration-order bias.
+
+### 2.3 Cost
+
+`O(iterations · n²)` for the inner loop; `O(N · (N + |E|))` for the
+BFS that builds the graph-distance matrix once per recompute. For
+`n = 184, iterations = 200` that's around 7 M JS ops, runs in ~60
+ms. Same recompute trigger as FR.
+
+### 2.4 Initial positions + seeding
+
+Random in a cube of half-extent `scaleD/2`, seeded from the citation
+seed XOR'd with a marker constant. Deterministic for a given
+`(n, edges, t, seed, params)` tuple.
+
+`t` is accepted in the input contract for symmetry with FR but
+ignored — MDS doesn't have a time-bias mechanism (graph distance
+is the only structure it preserves). If you want time stratification
+of the layout, use FR.
+
+---
+
+## 3. Alignment: per-component similarity transform
+
+`app/src/blend/align.js`. Takes basePos and the raw layout output and
 produces `alignedCitationLayout` by applying an independent
 similarity transform (rotation + uniform scale + translation) per
 connected component.
 
-### 2.1 Why per-component (not whole-graph)
+### 3.1 Why per-component (not whole-graph)
 
 A single transform across the whole graph forces a compromise:
 two components whose basePos centroids are far apart, or whose
@@ -169,7 +265,7 @@ Per-component handles each independently:
   underdetermined by topology. We pick a translation + rotation
   that minimises RMSD to basePos and a scale that matches RMS norm.
 
-### 2.2 Singletons
+### 3.2 Singletons
 
 A degree-0 node is a singleton component. Per-component Kabsch on
 one point is just translation: the node lands exactly at its basePos.
@@ -178,7 +274,7 @@ This is exactly the right answer for isolated nodes — they have zero
 topological constraint, so their citation-layout position should
 default to wherever basePos says they belong.
 
-### 2.3 Algorithm (per component)
+### 3.3 Algorithm (per component)
 
 For each connected component with node ids `{i₀, i₁, …}`:
 
@@ -238,14 +334,14 @@ For each connected component with node ids `{i₀, i₁, …}`:
    alignedCitationPos[i]  =  s · R · (citationPos[i] − c)  +  bc
    ```
 
-### 2.4 Cost
+### 3.4 Cost
 
 `O(N + |E|)` for union-find plus the per-component math. Total:
 `O(N + |E|)` — runs in microseconds for typical sizes.
 
 ---
 
-## 3. Output contract
+## 4. Output contract
 
 `Float32Array(n × 3)`. Every value finite. Indexed by data-node id:
 
@@ -261,7 +357,7 @@ basePos and lerps each frame.
 
 ---
 
-## 4. Failure modes worth knowing about
+## 5. Failure modes worth knowing about
 
 - **Components overlap** if their basePos centroids happen to
   coincide. Per-component Kabsch can't separate them — it has no

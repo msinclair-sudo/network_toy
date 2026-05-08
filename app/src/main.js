@@ -993,10 +993,15 @@ function bindCitationLayoutModal() {
 
 function openCitationLayoutModal(methodId) {
   const algo = getCitationLayoutAlgorithm(methodId);
-  citationLayoutPending = {
-    method: algo.id,
-    params: { ...state.citationLayoutParams.params },
-  };
+  // If the user is opening a DIFFERENT algorithm than the active one,
+  // load that algorithm's defaults — current params are for the old
+  // algorithm and probably have keys that don't apply (and miss keys
+  // that do). If they're opening the SAME algorithm, preserve their
+  // current settings.
+  const params = (methodId === state.citationLayoutParams.method)
+    ? { ...state.citationLayoutParams.params }
+    : algo.defaultParams();
+  citationLayoutPending = { method: algo.id, params };
   $("citlayout-modal-title").textContent = algo.label + " — settings";
   renderCitationLayoutModalBody(algo, citationLayoutPending.params);
   $("citlayout-modal").classList.add("open");
