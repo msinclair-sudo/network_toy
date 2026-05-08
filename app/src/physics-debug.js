@@ -1,51 +1,17 @@
-// Physics debug — overlays for the hybrid spring force.
+// Physics debug — overlays for the layout solver.
 //
-// Two visual modes (independent, both togglable):
-//   - tensionCitations: colour citation edges by the live (d − ℓ) / d of
-//     their spring. Stretched → warm, compressed → cool, neutral → grey.
-//   - tensionBase: same idea but for base edges. Useful to see how the
-//     network of "uncited" springs absorbs the deformation as α rises.
-//
-// Tension is read from the float32 cache the force writes every tick. The
-// per-link material-clone hook in main.js calls `colourForTension` once
-// per frame for matching link kinds.
+// Currently one toggle:
+//   - showDisplacement: draws a coloured line from each node's live
+//     position to its Kabsch-aligned basePos, encoding non-rigid
+//     deformation only (rigid translation + rotation drift removed
+//     by the alignment).
 
 export const physicsDebugFlags = {
-  tensionCitations: false,
-  tensionBase: false,
   showDisplacement: false,
 };
 
-// Map stiffness-weighted tension t ∈ [-MAX_TENSION, MAX_TENSION] to a
-// colour. The force writes s · (d − ℓ)/d into the cache (so cited springs
-// at α=5 reach |t|=5, not 1). We normalise by MAX_TENSION here so the
-// gradient spans the full α range.
-//   t = 0          → neutral grey
-//   t > 0          → magenta-red (stretched)
-//   t < 0          → cyan-blue (compressed)
-// STRETCH is deliberately pushed away from orange so it does not collide
-// with the default citation edge colour (#ff6b35) — otherwise stretched
-// cited springs look indistinguishable from un-overlaid citations.
-// Linear interpolation in RGB space, clamped.
-import { MAX_TENSION } from "./hybrid-force.js";
-
 const NEUTRAL = [140, 140, 150];
 const STRETCH = [255,  30, 110];
-const COMPRESS= [ 50, 180, 255];
-export function colourForTension(t) {
-  if (!isFinite(t)) return rgb(NEUTRAL);
-  if (t === 0) return rgb(NEUTRAL);
-  const target = t > 0 ? STRETCH : COMPRESS;
-  const m = Math.min(1, Math.abs(t) / MAX_TENSION);
-  return rgb([
-    Math.round(NEUTRAL[0] + (target[0] - NEUTRAL[0]) * m),
-    Math.round(NEUTRAL[1] + (target[1] - NEUTRAL[1]) * m),
-    Math.round(NEUTRAL[2] + (target[2] - NEUTRAL[2]) * m),
-  ]);
-}
-function rgb([r, g, b]) {
-  return "#" + [r, g, b].map(v => v.toString(16).padStart(2, "0")).join("");
-}
 
 // Cyclic Jacobi eigendecomposition for a symmetric 4×4 matrix.
 // Input N is row-major Float64Array(16). Returns {eigvals, V} where V is

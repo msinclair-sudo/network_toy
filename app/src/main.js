@@ -35,9 +35,9 @@ import {
   decorateGraphData as decorateCitations, citationViewFlags, colourByInDegree,
 } from "./citations-debug.js";
 import { buildBaseEdges } from "./base-edges.js";
-import { makeHybridForce, makeTensionCache } from "./hybrid-force.js";
+import { makePbdSolver } from "./hybrid-force.js";
 import {
-  physicsDebugFlags, colourForTension,
+  physicsDebugFlags,
   buildDisplacementOverlay, updateDisplacementOverlay,
 } from "./physics-debug.js";
 
@@ -70,13 +70,13 @@ const state = {
   citationParams: defaultCitationParams(),
   citationResult: null,
 
-  // Layer 4 — physics. α drives the hybrid spring; frozen pauses the sim.
-  // _baseDist is precomputed at generation time; _tensionCache is written
-  // every tick by the force and read by debug overlays.
+  // Layer 4 — layout solver. α drives the PBD distance constraints;
+  // frozen pauses the sim. _baseDist is precomputed at generation time
+  // and read each tick by the solver via a getter.
   alpha: 0.0,
   frozen: false,
   _baseDist: null,
-  _tensionCache: null,
+  _basePos: null,
 
   // Render mode (bottom bar). "cluster" is the production default.
   colourBy: "cluster",
@@ -123,7 +123,6 @@ function activeAlgorithmParams() {
 function regenerate() {
   state.result = generate(state.params);
   precomputeBaseDist();          // Layer 4 needs ‖basePos_i − basePos_j‖
-  state._tensionCache = makeTensionCache(state.result.nodes.length);
   // Reseed live positions to basePos so α=0 is a clean visual no-op.
   // (Saved via liveById if you want them preserved across regens — we
   // explicitly do NOT here, because regen changes the embedding.)
@@ -132,14 +131,16 @@ function regenerate() {
 }
 
 // Pairwise Euclidean distance over basePos. Lives in main.js's state
-// (`state._baseDist`) and is read by the force every tick via the getter
-// passed to makeHybridForce. Recomputed once per regeneration.
+// (`state._baseDist`) and is read by the solver every tick via the
+// getter passed to makePbdSolver. Recomputed once per regeneration.
 function precomputeBaseDist() {
   const nodes = state.result.nodes;
   const n = nodes.length;
   const d = new Float32Array(n * n);
+  const bp = new Float32Array(n * 3);
   for (let i = 0; i < n; i++) {
     const pi = nodes[i].basePos;
+    bp[i*3] = pi[0]; bp[i*3+1] = pi[1]; bp[i*3+2] = pi[2];
     for (let j = i + 1; j < n; j++) {
       const pj = nodes[j].basePos;
       const dx = pi[0] - pj[0], dy = pi[1] - pj[1], dz = pi[2] - pj[2];
@@ -149,6 +150,7 @@ function precomputeBaseDist() {
     }
   }
   state._baseDist = d;
+  state._basePos  = bp;
 }
 
 // Drop any live position cache so the next graph rebuild seeds nodes at
@@ -245,38 +247,10 @@ function colourForNode(node) {
 }
 
 function colourForLink(link) {
-  // Physics-debug overrides take precedence: when tension visualisation is
-  // on for that link kind, colour by the live spring tension rather than
-  // the user's chosen edge colour.
-  if (link.kind === "citation") {
-    if (physicsDebugFlags.tensionCitations) {
-      const t = readTension(link);
-      if (t !== null) return colourForTension(t);
-    }
-    return state.view.citColour;
-  }
-  if (link.kind === "base") {
-    if (physicsDebugFlags.tensionBase) {
-      const t = readTension(link);
-      if (t !== null) return colourForTension(t);
-    }
-    return state.view.baseColour;
-  }
+  if (link.kind === "citation")      return state.view.citColour;
+  if (link.kind === "base")          return state.view.baseColour;
   if (link.kind === "structure-edge") return "#5dd39e";   // cluster-debug
   return genColourForLink(link, state.result.origins);
-}
-
-// Read live tension from the per-pair cache for a graph-data link.
-// 3d-force-graph reifies link.source / link.target into node objects after
-// graphData(); before then they're raw ids. Handle both.
-function readTension(link) {
-  const cache = state._tensionCache;
-  if (!cache) return null;
-  const n = state.result.nodes.length;
-  const sId = typeof link.source === "object" ? link.source.id : link.source;
-  const tId = typeof link.target === "object" ? link.target.id : link.target;
-  if (typeof sId !== "number" || typeof tId !== "number") return null;
-  return cache[sId * n + tId];
 }
 
 // Per-link opacity. Base uses a power transform (mid-tones matter most when
@@ -523,14 +497,7 @@ function bindDebugToggles() {
   $("dbg-structure-edges").onchange = (e) => { clusterDebugFlags.showStructureEdges = e.target.checked; loadGraphData(); };
   $("dbg-noise-rings").onchange  = (e) => { clusterDebugFlags.showNoiseRings  = e.target.checked; loadGraphData(); };
 
-  // Physics overlays. Both are render-only (the per-link colour callback
-  // reads physicsDebugFlags) so toggling doesn't rebuild graph data; we
-  // just nudge the link-colour function so the lib applies it.
-  $("dbg-tension-cit").checked   = physicsDebugFlags.tensionCitations;
-  $("dbg-tension-base").checked  = physicsDebugFlags.tensionBase;
   $("dbg-displacement").checked  = physicsDebugFlags.showDisplacement;
-  $("dbg-tension-cit").onchange  = (e) => { physicsDebugFlags.tensionCitations = e.target.checked; if (Graph) Graph.linkColor(colourForLink); };
-  $("dbg-tension-base").onchange = (e) => { physicsDebugFlags.tensionBase      = e.target.checked; if (Graph) Graph.linkColor(colourForLink); };
   $("dbg-displacement").onchange = (e) => { physicsDebugFlags.showDisplacement = e.target.checked; ensureDisplacementOverlay(); };
 }
 
@@ -1249,27 +1216,31 @@ function initGraph() {
     .cooldownTicks(Infinity)
     .warmupTicks(60);
 
-  // Disable the library's default forces: hybrid spring is the only force
-  // shaping the layout. Charge would fight cited contraction at high α and
-  // produce shake; the lib's default link spring would double-count.
+  // Disable the library's default forces: the PBD solver is the only thing
+  // determining node positions. Charge would fight cited contraction at
+  // high α; the lib's default link spring would double-count.
   const charge = Graph.d3Force("charge"); if (charge && charge.strength) charge.strength(0);
   const link   = Graph.d3Force("link");   if (link   && link.strength)   link.strength(0);
   const center = Graph.d3Force("center"); if (center && center.strength) center.strength(0);
 
-  // Register the hybrid spring. Force closure reads α / hasCit / baseDist
-  // every tick via getters, so structural changes (citation reroll, etc)
-  // take effect on the next frame without re-registration.
-  Graph.d3Force("hybrid", makeHybridForce({
-    getAlpha:        () => state.alpha,
-    getBaseDist:     () => state._baseDist,
-    getHasCit:       () => state.citationResult ? state.citationResult.hasCit : null,
-    getTensionCache: () => state._tensionCache,
+  // Register the PBD solver under the d3-force-3d "force" hook. The
+  // solver mutates node x/y/z directly (instead of vx/vy/vz like a true
+  // force would) — d3 still runs its `x += vx` integration each tick,
+  // but with vx pinned at 0 (see d3VelocityDecay below) it's a no-op.
+  // The closure reads α / hasCit / baseDist every tick via getters, so
+  // structural changes (citation reroll, etc.) take effect on the next
+  // frame without re-registration.
+  Graph.d3Force("hybrid", makePbdSolver({
+    getAlpha:    () => state.alpha,
+    getBaseDist: () => state._baseDist,
+    getHasCit:   () => state.citationResult ? state.citationResult.hasCit : null,
+    getBasePos:  () => state._basePos,
   }));
 
-  // High velocity decay = a lot of damping = slow, smooth settling. Value
-  // chosen so dragging α doesn't ping nodes around — they ease into the
-  // new equilibrium. Hardcoded; not a user knob.
-  Graph.d3VelocityDecay(0.7);
+  // velocityDecay = 1 zeros velocities every tick, so any stray vx
+  // (e.g. from drag interactions) dies before the next integration
+  // adds it to position. PBD owns motion entirely.
+  Graph.d3VelocityDecay(1.0);
 
   const ctrls = Graph.controls();
   if (ctrls) {
@@ -1304,7 +1275,6 @@ export function boot() {
   // as side-effects of resample() at the bottom of the chain.
   state.result = generate(state.params);
   precomputeBaseDist();
-  state._tensionCache = makeTensionCache(state.result.nodes.length);
   {
     const algo = activeAlgorithm();
     state.clusterResult = algo.infer(state.result, activeAlgorithmParams());
@@ -1329,7 +1299,7 @@ export function boot() {
     // expose for debugging in DevTools console
     window.__nt = {
       Graph, state, physicsDebugFlags, citationViewFlags,
-      colourForLink, opacityForLink, readTension,
+      colourForLink, opacityForLink,
       linkMatCache: _linkMatCache,
     };
   });
