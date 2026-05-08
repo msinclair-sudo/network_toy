@@ -37,7 +37,10 @@ import {
 import { buildBaseEdges } from "./base-edges.js";
 import { makeBlendForce } from "./blend/blend.js";
 import { alignByComponent } from "./blend/align.js";
-import { getAlgorithm as getCitationLayoutAlgorithm } from "./citation-layout/registry.js";
+import {
+  getAlgorithm as getCitationLayoutAlgorithm,
+  listAlgorithms as listCitationLayoutAlgorithms,
+} from "./citation-layout/registry.js";
 import {
   physicsDebugFlags,
   buildDisplacementOverlay, updateDisplacementOverlay,
@@ -952,20 +955,100 @@ function formatParamsShort(algo, params) {
   return parts.join(" · ");
 }
 
+/* ── topbar: Citation Layout ▾ menu + citation-layout settings modal ────── */
+/* Mirrors the Cluster ▾ pattern. Menu is built from the citation-layout
+ * registry — one item per algorithm. Picking one opens the settings modal
+ * preloaded with that algorithm's pending params; the body is rendered
+ * from modalSchema via renderClusterSettings (which is algorithm-generic
+ * despite its name). */
+
+let citationLayoutPending = null;        // { method, params } staged for Apply
+
+function bindCitationLayoutMenu() {
+  const list = $("menu-citlayout-list");
+  list.innerHTML = "";
+  for (const algo of listCitationLayoutAlgorithms()) {
+    const btn = document.createElement("button");
+    btn.className = "menu-item";
+    btn.textContent = algo.label;
+    btn.onclick = () => {
+      $("menu-citlayout").classList.remove("open");
+      openCitationLayoutModal(algo.id);
+    };
+    list.appendChild(btn);
+  }
+}
+
+function bindCitationLayoutModal() {
+  $("citlayout-modal-cancel").onclick = closeCitationLayoutModal;
+  $("citlayout-modal-x").onclick      = closeCitationLayoutModal;
+  $("citlayout-modal-apply").onclick  = commitCitationLayoutModalAndApply;
+  $("citlayout-modal").addEventListener("click", (e) => {
+    if (e.target.id === "citlayout-modal") closeCitationLayoutModal();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && $("citlayout-modal").classList.contains("open")) closeCitationLayoutModal();
+  });
+}
+
+function openCitationLayoutModal(methodId) {
+  const algo = getCitationLayoutAlgorithm(methodId);
+  citationLayoutPending = {
+    method: algo.id,
+    params: { ...state.citationLayoutParams.params },
+  };
+  $("citlayout-modal-title").textContent = algo.label + " — settings";
+  renderCitationLayoutModalBody(algo, citationLayoutPending.params);
+  $("citlayout-modal").classList.add("open");
+}
+
+function closeCitationLayoutModal() {
+  $("citlayout-modal").classList.remove("open");
+  citationLayoutPending = null;
+}
+
+function commitCitationLayoutModalAndApply() {
+  if (!citationLayoutPending) return;
+  state.citationLayoutParams.method = citationLayoutPending.method;
+  state.citationLayoutParams.params = { ...citationLayoutPending.params };
+  closeCitationLayoutModal();
+  // Layout params changed → recompute citationLayout + alignedCitationLayout.
+  // Don't re-roll citations; only the LAYOUT depends on these params.
+  relayoutCitations();
+  if (Graph && !state.frozen) {
+    Graph.d3ReheatSimulation();
+    Graph.resumeAnimation();
+  }
+}
+
+function renderCitationLayoutModalBody(algo, params) {
+  const body = $("citlayout-modal-body");
+  body.innerHTML = "";
+  if (algo.description) {
+    const note = document.createElement("div");
+    note.style.cssText = "font-size:11px;color:var(--muted);line-height:1.5;margin-bottom:12px;";
+    note.textContent = algo.description;
+    body.appendChild(note);
+  }
+  // Reuse the field renderer from the cluster modal — it's algorithm-
+  // generic (iterates modalSchema and dispatches on field.kind).
+  renderClusterSettings(body, algo, params, () => {});
+}
+
 /* ── left panel: blend ──────────────────────────────────────────────────── */
 
 function bindForceControls() {
-  $("alpha-input").value = state.blend;
-  $("alpha-val").textContent = state.blend.toFixed(2);
+  $("blend-input").value = state.blend;
+  $("blend-val").textContent = state.blend.toFixed(2);
   // Slider drag: blend value is a pure deterministic mix between basePos
   // and alignedCitationPos. There's no constraint solver to settle, but
   // d3-force-3d's internal simAlpha decays over time and freezes ticks
-  // when the network "looks settled" — which it instantly does under
-  // PBD-free blending. Reheat each drag so the lib keeps ticking and
-  // our force hook keeps firing.
-  $("alpha-input").oninput = (e) => {
+  // when the network "looks settled" — which is instant under deterministic
+  // blending. Reheat each drag so the lib keeps ticking and our blend
+  // force hook keeps firing.
+  $("blend-input").oninput = (e) => {
     state.blend = +e.target.value;
-    $("alpha-val").textContent = state.blend.toFixed(2);
+    $("blend-val").textContent = state.blend.toFixed(2);
     if (!Graph) return;
     if (state.frozen) return;
     Graph.d3ReheatSimulation();
@@ -1303,6 +1386,8 @@ export function boot() {
   bindTopbar();
   bindClusterMenu();
   bindClusterModal();
+  bindCitationLayoutMenu();
+  bindCitationLayoutModal();
   bindForceControls();
   bindCitationControls();
   bindCitationModal();

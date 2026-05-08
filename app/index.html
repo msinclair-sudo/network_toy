@@ -206,6 +206,17 @@
       </div>
     </div>
 
+    <!-- Citation Layout ▾ — one menu item per registered layout
+         algorithm. Picking one opens the citation-layout settings
+         modal with that algorithm's params. Items populated from
+         the registry by main.js bindCitationLayoutMenu(). -->
+    <div class="menu" id="menu-citlayout">
+      <button class="tb-btn">Citation Layout ▾</button>
+      <div class="menu-list" id="menu-citlayout-list">
+        <!-- populated by main.js -->
+      </div>
+    </div>
+
     <!-- Debug ▾ (overlay toggles, live). Grouped by layer with dividers
          so toggles for one layer don't get tangled up with another. -->
     <div class="menu" id="menu-debug">
@@ -241,14 +252,14 @@
        reshaping this panel. -->
   <div id="left">
     <div class="group">
-      <h3>Force</h3>
+      <h3>Blend</h3>
       <div class="row">
-        <label style="width: 70px;">α</label>
-        <input type="range" id="alpha-input" min="0" max="1" step="0.005" value="0" style="flex: 1 1 auto;">
-        <span class="val" id="alpha-val" style="font-variant-numeric: tabular-nums; color: var(--text); min-width: 2.5em; text-align: right;">0.00</span>
+        <label style="width: 70px;">blend</label>
+        <input type="range" id="blend-input" min="0" max="1" step="0.005" value="0" style="flex: 1 1 auto;">
+        <span class="val" id="blend-val" style="font-variant-numeric: tabular-nums; color: var(--text); min-width: 2.5em; text-align: right;">0.00</span>
       </div>
       <div style="font-size: 10px; color: var(--muted); line-height: 1.5; margin-top: 4px;">
-        α=0: layout = embedding · α=1: cited pairs collapse · α&gt;1: cited pairs collapse harder
+        0: basePos (generation embedding) · 1: citation-driven layout (per-component aligned to basePos)
       </div>
     </div>
     <div class="group">
@@ -399,6 +410,25 @@
     <div class="modal-foot">
       <button class="tb-btn" id="cluster-modal-cancel">Cancel</button>
       <button class="tb-btn primary" id="cluster-modal-apply">Apply</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── citation layout settings modal ───────────────────────────────────── -->
+<!-- One modal serves every citation-layout algorithm. Body rendered from
+     the active algorithm's modalSchema in app/src/citation-layout/registry.js. -->
+<div class="modal-backdrop" id="citlayout-modal">
+  <div class="modal" role="dialog" aria-labelledby="citlayout-modal-title">
+    <div class="modal-head">
+      <h2 id="citlayout-modal-title">Citation layout settings</h2>
+      <button class="tb-btn" id="citlayout-modal-x" aria-label="Close" style="padding: 2px 8px;">✕</button>
+    </div>
+    <div class="modal-body" id="citlayout-modal-body">
+      <!-- populated by main.js openCitationLayoutModal() -->
+    </div>
+    <div class="modal-foot">
+      <button class="tb-btn" id="citlayout-modal-cancel">Cancel</button>
+      <button class="tb-btn primary" id="citlayout-modal-apply">Apply</button>
     </div>
   </div>
 </div>
