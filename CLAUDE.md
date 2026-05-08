@@ -29,17 +29,21 @@ v3 architecture: **two precomputed topologies, blended deterministically per fra
 ```
 generation.js                       Layer 1  Gaussian-mixture sampling → {origins, nodes:[{basePos,t,originId}]}
         ↓
-clustering-registry.js              Layer 2  pluggable clustering (mutual k-NN, HDBSCAN, …) → ClusterResult contract
+clustering-registry.js              Layer 2  pluggable clustering (mutual k-NN, HDBSCAN) → ClusterResult contract
         ↓
 citations/registry.js               Layer 3  citation-generation registry — taste-network is the only entry today;
   taste-network.js                            internally runs neighbourhoods → taste → per-pair sampling.
                                               Public contract: { hasCit, inDeg, edges, citations, pools }.
         ↓
-citation-layout/registry.js         Layer 4  citation-driven 3D arrangement. FR-3D today; pure function of
-  fr.js                                       (n, edges, t, seed). Sees nothing from Layers 1–3 except the
-                                              public CitationResult.
+citation-layout/registry.js         Layer 4  citation-driven 3D arrangement. Two algorithms today:
+  fr.js                                         FR (cladogram-flavoured, force-directed, time-axis radial anchor)
+  mds.js                                        MDS (dendrogram-flavoured, SMACOF on graph-distance)
+                                              Pure function of (n, edges, t, seed). Sees nothing from
+                                              Layers 1–3 except the public CitationResult.
         ↓
-blend/align.js                      Layer 5a per-component Kabsch alignment of citationPos to basePos → alignedCitationLayout
+blend/align.js                      Layer 5a per-component similarity alignment (rotation + match-RMS scale +
+                                              translation) of citationPos to basePos → alignedCitationLayout.
+                                              Returns alignmentCorrelation ∈ [0, 1] alongside.
 blend/blend.js                      Layer 5b per-frame lerp: live = (1−α)·basePos + α·alignedCitationPos
 ```
 
@@ -48,7 +52,7 @@ Key invariants:
 - **`basePos` is frozen at generation** and is the semantic ground truth for the α=0 endpoint of the blend. Layers 2/3 read it; Layer 4 deliberately does not.
 - **`originId` ≠ cluster ID.** `originId` is the generator's mixture-component label (kept for debug viz of the generator only). Cluster IDs come from Layer 2 inferring structure from `basePos`.
 - **The blend is linear in position.** The slider drives a deterministic function of α; round-tripping `0 → 1 → 0` returns the network to basePos byte-identical. There is no constraint solver, no momentum, no Kabsch each tick.
-- **Layout module isolation.** `citation-layout/fr.js` does not import basePos, clusters, or anything else from outside its own inputs. Per-component Kabsch alignment in `blend/align.js` is the only place where citationPos and basePos meet.
+- **Layout module isolation.** `citation-layout/{fr,mds}.js` does not import basePos, clusters, or anything else from outside its own inputs. Per-component similarity alignment in `blend/align.js` is the only place where citationPos and basePos meet.
 
 ### Per-frame blend wiring (the part that's easy to break)
 
@@ -56,8 +60,9 @@ Key invariants:
 
 `main.js` owns:
 - `state._basePos` — flat `Float32Array(n × 3)`, recomputed once per regeneration.
-- `state.citationLayout` — raw FR output, recomputed in `relayoutCitations()` whenever the citation graph or layout params change.
-- `state.alignedCitationLayout` — `state.citationLayout` after per-component Kabsch alignment to basePos. This is what the blend hook actually consumes.
+- `state.citationLayout` — raw output of the active citation-layout algorithm (FR or MDS), recomputed in `relayoutCitations()` whenever the citation graph or layout params change.
+- `state.alignedCitationLayout` — `state.citationLayout` after per-component similarity alignment to basePos. This is what the blend hook actually consumes.
+- `state.alignmentCorrelation` — `[0, 1]` quality metric returned by alignment alongside the buffer; surfaced as a live reading in the Citation Layout ▾ modal.
 - `state.blend` — number in `[0, 1]`, written by the slider's `oninput`.
 
 `d3VelocityDecay = 1.0` is required: it pins velocities at zero so the lib's `x += vx; vx *= 0` integration is a no-op alongside the blend hook's direct writes to `node.x/y/z`.
@@ -72,7 +77,7 @@ Each stage has its own re-run lane so a downstream parameter change doesn't redo
 - `recluster()` — Layer 2, then `reneighbour()`.
 - `reneighbour()` → `retaste()` → `resample()` — each runs only its sub-stage downward.
 - `resample()` ends by calling `relayoutCitations()` so the new citation graph immediately produces a new `alignedCitationLayout` for the blend.
-- `relayoutCitations()` — Layer 4 (FR via the registry) + Layer 5a (alignment via `blend/align.js`). Cached. Re-runs on citation change OR citation-layout-params change.
+- `relayoutCitations()` — Layer 4 (active layout algorithm via the citation-layout registry) + Layer 5a (similarity alignment via `blend/align.js`, also computing `alignmentCorrelation`). Cached. Re-runs on citation change OR citation-layout-params change.
 
 Modules don't read `state`; `main.js` calls them with explicit args and stores results back into `state.<layer>Result`.
 
@@ -84,6 +89,15 @@ Three registries all follow the same shape:
 - `citation-layout/registry.js` (Layer 4)
 
 Each entry exposes `{ id, label, description, defaultParams, infer | compute, modalSchema }`. The corresponding settings modal (Cluster ▾, Citations ▾, Citation Layout ▾) is rendered from the active algorithm's `modalSchema` — adding a new algorithm = one new entry, no UI markup edits.
+
+### Eval surface
+
+Two registries have parameter-sweep tooling exposed to the user:
+
+- **Cluster** modal has a "Find best params" sweep that ranks (algorithm × params) combinations by ARI vs `originId` (ground truth from generation). Top results listed with per-row Apply. Lives in `app/src/eval/` (`ari.js`, `kmeans.js`, `sweep.js`).
+- **Citation Layout** modal has the same UX, but ranks by `alignmentCorrelation` instead of ARI (no ground-truth labels for layouts). Crosses both algorithms (FR + MDS). `app/src/eval/layout-sweep.js`.
+
+Both sweeps read each field's `sweepValues` array from the algorithm's `modalSchema` to build the cartesian grid — so adding a new algorithm with sensible `sweepValues` makes it sweepable for free.
 
 ### THREE / 3d-force-graph load order
 
