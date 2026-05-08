@@ -207,16 +207,32 @@ For each connected component with node ids `{i₀, i₁, …}`:
    s  =  √(sumB² / sumA²)
    ```
    Match-the-RMS-norm rather than the Procrustes-optimal
-   `s* = trace(R·S) / sumA²`. Procrustes-optimal minimises
-   `Σ |s·R·a − b|²` over `s`, which for **uncorrelated** layouts
-   collapses the source toward the target's centroid (when `R·a`
-   doesn't agree orientationally with `b`, the residual is minimised
-   by shrinking `s` toward 0). Citation-driven and basePos-driven
-   layouts are uncorrelated by design, so Procrustes-optimal makes
-   citation edges much shorter than basePos edges. We want the
-   visible scale to match regardless of orientation agreement, so
-   we go with the simpler `s = √(sumB² / sumA²)`. For perfectly
-   aligned layouts this and Procrustes-optimal coincide.
+   `s* = trace(R·S) / sumA²`. The two coincide for perfectly
+   aligned layouts and diverge as alignment quality drops; the
+   ratio `s_procrustes / s_match_rms` is exactly the correlation
+   coefficient between `R·a` and `b`.
+
+   Citation-driven and basePos-driven layouts are **partially**
+   correlated. Citations come out of the taste network, which biases
+   edges toward spatially-close pairs in basePos — so the topologies
+   agree about cluster structure. But FR is finding its OWN 3D
+   embedding of that topology: it has its own radial t-anchor that
+   pulls older nodes inward regardless of where basePos put them,
+   and many topologies admit multiple distinct 3D realisations.
+   Empirically the correlation coefficient comes out around 0.5.
+
+   Procrustes-optimal would shrink the source proportional to
+   alignment quality (half-correlated → half-scale), making citation
+   edges much shorter than basePos edges. We don't want that —
+   the user is reading the slider as "blend between two
+   visualisations of the same network at the same scale", and a
+   scale jump at α=1 reads as "the camera zoomed out" rather than
+   "the topology rearranged."
+
+   `s = √(sumB² / sumA²)` decouples scale from alignment quality:
+   the source's RMS extent always equals the target's, regardless
+   of how well rotation aligns them. `R` still does the orientation
+   work; `s` just keeps the visual scale comparable.
 6. **Apply** to each node in the component:
    ```
    alignedCitationPos[i]  =  s · R · (citationPos[i] − c)  +  bc

@@ -157,24 +157,35 @@ function alignSubset(ids, basePos, citationPos, out) {
   const r21 = 2*qy*qz + 2*qw*qx;
   const r22 = 1 - 2*qx*qx - 2*qy*qy;
 
-  // Match-the-scale rather than Procrustes-optimal. The Procrustes
-  // optimum (s = trace(R·S) / Σ|a|² = eigvals[best] / sumA2)
-  // minimises Σ |s·R·a − b|², which for UNCORRELATED layouts shrinks
-  // toward 0 — when R·a doesn't agree orientationally with b, the
-  // residual is minimised by pulling the source down to the target's
-  // centroid. Citation-driven and basePos-driven layouts are
-  // genuinely uncorrelated by design, so Procrustes-optimal gives
-  // citation edges much SHORTER than basePos edges (the user reported
-  // the opposite, longer, before any scaling was applied).
+  // Match-the-RMS-norm scale rather than Procrustes-optimal scale.
+  // The two coincide when the layouts are perfectly aligned and
+  // diverge as alignment quality drops:
   //
-  // What the user actually wants is "the citation arrangement should
-  // visibly sit at the same scale as the base arrangement, even if
-  // the topologies don't agree." That's match-the-RMS-norm:
-  //   s = √(Σ|b|² / Σ|a|²)
-  // which makes Σ|s·R·a|² = Σ|b|² regardless of orientation. For
-  // perfectly aligned layouts, this and Procrustes-optimal give the
-  // same s; for uncorrelated layouts, it gives the visually correct
-  // scale.
+  //   s_procrustes  =  trace(R·S) / Σ|a|²    = eigvals[best] / sumA2
+  //   s_match_rms   =  √( Σ|b|² / Σ|a|² )
+  //
+  // The ratio s_procrustes / s_match_rms is the cosine of the
+  // alignment angle in (sumA², sumB²)-normalised space — a
+  // correlation coefficient between R·a and b. For citation-driven
+  // and basePos-driven layouts this comes out around 0.5 in
+  // practice: citations ARE generated from basePos (the taste
+  // network biases edges toward spatially-close pairs in basePos),
+  // so the topologies are correlated; but FR finds its own 3D
+  // embedding of that topology (its own radial t-anchor, its own
+  // per-component density), so the absolute positions and
+  // orientations disagree even when the topology agrees.
+  //
+  // Procrustes-optimal would minimise RMSD by shrinking the source
+  // proportional to alignment quality — half-correlated → half the
+  // size. That makes citation edges visibly shorter than basePos
+  // edges. We don't want that; we want the citation arrangement
+  // to sit at the same VISUAL SCALE as basePos so the user can
+  // compare topologies without the slider zooming out at α=1.
+  //
+  // s = √(Σ|b|² / Σ|a|²) achieves that: source's RMS norm equals
+  // target's, regardless of how well orientations agree. R still
+  // does the orientation work; s decouples scale from alignment
+  // quality so partial correlation doesn't shrink the layout.
   let s;
   if (sumA2 < 1e-9) {
     s = 1;          // source coincident — no scale defined, fall back
