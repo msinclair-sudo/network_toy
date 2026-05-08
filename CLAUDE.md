@@ -24,7 +24,7 @@ node --check app/src/<file>.js
 
 ## Architecture
 
-v3 architecture: **two precomputed topologies, blended deterministically per frame**. Each layer is a pure function with its own seed; downstream layers see only the previous layer's public contract. Math references: `doc/dynamics.md` (overall pipeline + blend), `doc/clustering.md` (Layer 2), `doc/citation-layout.md` (Layer 4). The full v3 design rationale (and what got rejected) is in `doc/v3-plan.md`.
+v3 architecture: **two precomputed topologies, blended deterministically per frame**. Each layer is a pure function with its own seed; downstream layers see only the previous layer's public contract. Math references: `doc/dynamics.md` (overall pipeline + blend), `doc/clustering.md` (Layer 2), `doc/citations.md` (Layer 3), `doc/citation-layout.md` (Layer 4). The full v3 design rationale (and what got rejected) is in `doc/v3-plan.md`.
 
 ```
 generation.js                       Layer 1  Gaussian-mixture sampling → {origins, nodes:[{basePos,t,originId}]}
