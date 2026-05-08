@@ -95,6 +95,7 @@ doc:
 - `doc/citations.md` — Layer 3 contract + the taste-network algorithm's four stages
 - `doc/citation-layout.md` — Layer 4 algorithms (FR force formulae, MDS / SMACOF)
 - `doc/blend.md` — Layer 5 (alignment math, blend formula, correlation metric, why deterministic blend rather than a constraint solver)
+- `doc/scaling.md` — toy-vs-real-data scaling analysis: which layers' big-O carries to `n = 800k` base / 1.9M citations, where the cliffs are, and the trade-offs at each (Barnes–Hut FR, pivot/landmark MDS, sparse k-NN clustering, sparse `hasCit`)
 
 ## UI layout
 

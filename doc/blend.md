@@ -190,8 +190,18 @@ params").
 
 `O(N + |E|)` for union-find on the citation graph + per-component
 math (3×3 cross-covariance and 4×4 Jacobi eigendecomp per component).
-Sub-millisecond for typical sizes. Runs once when the citation graph
-or layout params change; cached on `state.alignedCitationLayout`.
+Sub-millisecond for typical toy sizes.
+
+**Scaling.** This layer is one of the few in the pipeline that
+scales naturally to the real-data regime. At `n = 800k` and
+`|E| = 1.9M`, alignment is `~2.7M` integer ops + per-component
+Jacobi over a 4×4 matrix (constant per component, total cost
+proportional to component count, not `n`). Expect sub-second wall
+time even at full scale. The per-component pattern is the right
+abstraction at any scale — see `doc/scaling.md` §2.6.
+
+Runs once when the citation graph or layout params change; cached
+on `state.alignedCitationLayout`.
 
 ### 1.7 Failure modes
 
@@ -246,8 +256,11 @@ deterministic round-trip property is hard to give up.
   `scratch/v3_phase3_smoke.py`).
 - **No oscillation, no overshoot, no momentum.** The slider is a pure
   animation parameter; nothing accumulates.
-- **N-independent.** Per-frame work is `n` lerps, independent of
-  citation density or graph structure.
+- **N-independent per node.** Per-frame work is `n` lerps,
+  independent of citation density or graph structure. At `n = 800k`
+  and 60 fps that's 48 M lerps/s — trivial in any reasonable
+  runtime, and the only Layer-5 cost that scales linearly with `n`
+  rather than with component count.
 
 ### 2.3 Implementation
 

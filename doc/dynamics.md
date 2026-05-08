@@ -11,6 +11,12 @@ The pipeline has four stages, each with its own math:
 
 Section 5 lists the controls and what each one actually drives.
 
+**For the real-data port (n = 800k base, 1.9M citations):** see
+`doc/scaling.md` for which layers scale unchanged, which need
+replacement, and the trade-offs at each cliff. The per-layer docs
+below also each have a "Scaling characteristics" subsection that
+points back to `scaling.md` for cross-cutting decisions.
+
 ---
 
 ## 1. Generation: where nodes come from

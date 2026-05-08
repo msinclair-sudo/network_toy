@@ -155,7 +155,7 @@ the code (or update this doc + the changelog in §6).
   `app/src/neighbourhoods.js` + `app/src/citation-taste.js` +
   `app/src/citations.js`.
 - **Registry id:** `taste-network`
-- **Default params:** union of all four sub-stages' defaults — see §4.1.6.
+- **Default params:** union of all four sub-stages' defaults — see §4.1.7.
 
 Citations are directed edges `i → j` meaning "i cites j", subject to
 `t_i > t_j` (newer cites older). The algorithm produces them in **four
@@ -222,10 +222,10 @@ For each neighbourhood `Ng` belonging to cluster `c`, draw a small
 
 **Pass 1 — independent draws.** For each `Ng`:
 ```
-favCount  ~  max(1, round(Poisson(favouritesMean)))
+favCount  ~  max(1, Poisson(favouritesMean))     (Knuth's algorithm; integer-valued)
+favCount  =  min(favCount, numClusters - 1)
 T(Ng)_1   =  sampleWithoutReplacement(otherClusters_for(c), favCount)
 ```
-Cap `favCount` at `numClusters - 1`.
 
 **Pass 2 — distance-decaying shared-taste tilt.** Each neighbourhood
 `Ng ∈ c` redraws its taste with a prior that gives more weight to
@@ -301,9 +301,11 @@ target `d` proportional to:
 weight(d)  ∝  triangleScore(c, d)        for d ∉ T(Ng)_2 ∪ {c}
 weight(d)  =  0                          otherwise
 ```
-Then with probability `transitiveBoost · ρ(Ng) · normaliser`, swap one
-entry of `T(Ng)_2` with `d`. (The normaliser caps acceptance at 1 even
-if the score is large.)
+Then with probability `transitiveBoost · ρ(Ng) · (score / maxScore)`,
+swap one entry of `T(Ng)_2` with `d`. The `score / maxScore` factor
+normalises against the strongest signal in the dataset, so the
+acceptance probability is `≤ transitiveBoost · ρ(Ng) ≤ 1` (since
+`transitiveBoost`, `ρ`, and the score ratio are each in `[0, 1]`).
 
 **At most one swap per neighbourhood per pass.** The pass runs once
 over the whole dataset, in deterministic order, with `tasteSeed`.
@@ -389,7 +391,42 @@ public output). When a future algorithm doesn't have a "taste"
 concept, that overlay won't have anything to draw — which is correct,
 the overlay is taste-network-specific.
 
-#### 4.1.6 Default params
+#### 4.1.6 Scaling characteristics
+
+The taste-network algorithm has multiple `O(n²)` and `O(n² · K)`
+components that are toy-scale only. From hot to cold:
+
+- **Stage 4 pair enumeration (`citations.js`).** Iterates every
+  ordered pair `(i, j)` with `t_i > t_j`. Cost: `O(n²)`. At
+  `n = 800k` that is `3.2 × 10¹¹` enumerations — infeasible without
+  locality-aware candidate generation.
+- **`hasCit: Uint8Array(n²)`** in the `CitationResult` contract.
+  At `n = 800k` that is a `640 GB` allocation. The contract assumes
+  this is the canonical pair-membership representation; at scale it
+  must be replaced with a sparse equivalent (CSR, hash set keyed on
+  `i*n + j`, or per-source sorted target lists).
+- **Stage 1 neighbourhood mutual k-NN (`neighbourhoods.js`).** Per
+  cluster, builds the local pairwise distance matrix. Cost: `Σ_c
+  m_c²` where `m_c` is cluster `c`'s size. At scale this depends on
+  cluster-size distribution — a single giant cluster makes it `O(n²)`,
+  many small clusters make it tractable. Same fix as global k-NN
+  clustering (§4.3 of `clustering.md`): ANN-based candidate sets.
+- **Stage 2 sibling kernel (`citation-taste.js`).** For each
+  neighbourhood, sums a Gaussian kernel over every sibling
+  neighbourhood in the same cluster. Cost: `O(NG_c²)` per cluster,
+  where `NG_c` is the number of neighbourhoods in cluster `c`. Small
+  in practice (`NG_c << m_c`); not a scaling cliff.
+- **Stage 3 triangle scoring.** `O(numClusters² · max(|T_cluster|))`.
+  Bounded by cluster count, not node count. Not a scaling cliff.
+
+The intra/cross decomposition and the cluster-level taste model are
+still useful conceptual frames for *analysing* observed citation
+patterns at scale, even when the four-stage *generative* model is no
+longer used. See `doc/scaling.md` §2.3 for the real-data port — the
+short version is that real citations are observed, so Layer 3 is
+skipped entirely; what carries over is the analysis vocabulary.
+
+#### 4.1.7 Default params
 
 The full bag of defaults handed to `infer`:
 

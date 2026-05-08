@@ -151,9 +151,14 @@ same `Float32Array` output.
 ### 1.4 Cost
 
 `O(iterations · (n² + |E|))`. For `n = 400, iterations = 200,
-|E| = 2500` that's around 32 M JS ops, runs in ~50 ms. Recomputed
-only when the citation graph or layout params change — cached as
-`state.citationLayout`.
+|E| = 2500` that's around 32 M floating-point ops; expect ~1 s on
+modern V8 (hardware-dependent). Recomputed only when the citation
+graph or layout params change — cached as `state.citationLayout`.
+
+The `n²` term is the all-pairs repulsion sum and is the binding cost
+at scale. See `doc/scaling.md` §2.5 for what this means at 800k+ and
+what alternatives exist (Barnes–Hut, SGD-based force-directed, or
+abandoning FR for MDS / spectral).
 
 ---
 
@@ -223,10 +228,24 @@ iteration, compute all new `x`, then swap. No iteration-order bias.
 
 ### 2.3 Cost
 
-`O(iterations · n²)` for the inner loop; `O(N · (N + |E|))` for the
-BFS that builds the graph-distance matrix once per recompute. For
-`n = 184, iterations = 200` that's around 7 M JS ops, runs in ~60
-ms. Same recompute trigger as FR.
+`O(iterations · m²)` per component for the SMACOF inner loop;
+`O(m · (m + |E_c|))` for the per-component BFS. For
+`n = 184, iterations = 200` that's around 7 M floating-point ops on
+typical synthetic data; sub-second wall time on modern V8.
+
+The cost scales with **largest component size**, not total `n` —
+this is the major structural advantage over FR. Cross-component
+pairs are deliberately omitted from the stress function, so a graph
+with many small components is much cheaper than a single giant
+component of the same total size. See `doc/scaling.md` §2.5 for
+what this means at 800k+ when most citation graphs have a giant
+component, and what the alternatives are (pivot/landmark MDS,
+spectral layout, t-SNE / UMAP).
+
+The component BFS also materialises an `m × m` distance matrix per
+component. At `m = 700k` (a giant connected component) that is
+`~2 PB` at i32 — same scaling cliff as the full-graph distance
+matrix in HDBSCAN.
 
 ### 2.4 Initial positions + seeding
 

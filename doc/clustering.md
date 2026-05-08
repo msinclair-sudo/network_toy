@@ -464,6 +464,32 @@ algorithm's pre-absorption decision.
 
 ---
 
+## 4.3 Scaling characteristics
+
+Both registered algorithms materialise pairwise distances and are
+therefore O(n²) in time and memory.
+
+- **Mutual k-NN (§4.1).** For each node, sorts the `n − 1` candidate
+  distances to find its top-K. Cost: `O(n² log n)` time, `O(n)`
+  working memory per node (no persistent matrix). Tolerable up to a
+  few thousand nodes.
+- **HDBSCAN (§4.2).** Stage 1 builds the **full pairwise distance
+  matrix** explicitly (`O(n²)` time and memory). At `n = 800k` that
+  is `640 GB` at f64 — infeasible. Stages 2–5 (core distance, MST,
+  condensation, EOM) are then `O(n²)` or `O(n²)` with a `log n`
+  factor for the MST.
+
+Both are toy-scale only. See `doc/scaling.md` §2.2 for the real-data
+options (sparse k-NN graph from ANN libraries, GPU HDBSCAN, or
+graph-community methods like Leiden) and how each preserves or
+sacrifices the contract above.
+
+The cluster contract itself — `nodeCluster`, `clusters[].centre`,
+`stability`, `noiseFlags` — has no scale dependency and carries over
+unchanged regardless of which algorithm produces it.
+
+---
+
 ## 5. Pipeline rerun semantics
 
 The clustering layer sits between generation and neighbourhoods. Any
