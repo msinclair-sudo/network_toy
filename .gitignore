@@ -22,3 +22,6 @@ Thumbs.db
 
 # claude code workspace files (kept locally, not shared)
 .claude/
+
+# diagnostic harnesses and acceptance scripts kept locally, not shared
+scratch/

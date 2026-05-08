@@ -254,54 +254,109 @@ The taste stage emits:
 
 ---
 
-## 4. Layout dynamics: the hybrid spring force
+## 4. Layout dynamics: deterministic blend between two topologies
 
-This is the only force acting on nodes. It runs every physics tick.
+Live node positions are not produced by a constraint solver any more.
+The user picks where on a continuum between two **precomputed**
+arrangements they want to see, and the per-frame work is a single
+linear interpolation.
 
-**Pairwise spring, every pair.** For every unordered pair `(i, j)` with `i < j`, compute a rest length `ℓ_ij` and a strength multiplier `s_ij`:
+### 4.1 The two endpoints
+
+**`basePos[i]`** — the Gaussian-mixture cloud from §1, frozen at
+generation. This is the α=0 layout: every node sits exactly where the
+generation seed put it.
+
+**`alignedCitationPos[i]`** — a 3D arrangement derived from the
+citation graph alone, then rigidly aligned (per connected component)
+to basePos. This is the α=1 layout. See `doc/citation-layout.md`
+for the algorithm; the short version is "Fruchterman-Reingold force-
+directed layout in 3D, with a radial time-axis bias so older nodes
+tend toward the centre, then per-component Kabsch alignment to
+basePos."
+
+### 4.2 The blend
+
+Per frame, for every data node `i`:
 
 ```
-semRest_ij  =  ‖basePos_i − basePos_j‖              (frozen at generation)
-
-if pair is cited (hasCit[i,j] == 1):
-    ℓ_ij  =  max(0, (1 − α) · semRest_ij)
-    s_ij  =  max(1, α)
-else:
-    ℓ_ij  =  semRest_ij
-    s_ij  =  1
+live_i  =  (1 − α) · basePos_i  +  α · alignedCitationPos_i
 ```
 
-Then apply the spring update to live positions `(x_i, y_i, z_i)`:
-```
-Δ          =  x_j − x_i        (vector)
-d          =  ‖Δ‖   (floored at 1e-6)
-k          =  STRENGTH · s_ij · simAlpha · (d − ℓ_ij) / d
-v_i  +=  k · Δ
-v_j  −=  k · Δ
-```
-with `STRENGTH = 0.04`. `simAlpha` is d3-force-3d's own decaying simulation alpha (the cooling schedule), not the user-facing α.
+with `α ∈ [0, 1]`. Implemented in `app/src/blend/blend.js` as a
+d3-force-3d "force" hook that mutates `node.x/y/z` directly.
+`d3VelocityDecay = 1.0` so the lib's `x += vx; vx *= 0` integration
+is a no-op alongside our writes.
 
-After all pairs are processed in a tick, d3-force-3d applies its standard velocity decay (`d3VelocityDecay = 0.55`) and integrates positions.
+No state, no momentum, no iteration. The slider drives a deterministic
+function of α. Round-tripping `α: 0 → 1 → 0` returns the network to
+basePos byte-identical (verified in
+`scratch/v3_phase3_smoke.py`: round-trip drift = 0.000).
 
-**Behaviour by region of α:**
+### 4.3 Why no constraint solver
 
-| α        | Cited pair rest | Cited pair strength | Effect                                                          |
-|----------|-----------------|---------------------|-----------------------------------------------------------------|
-| 0        | `semRest`       | 1                   | Every pair pulls to its semantic rest length. Layout = embedding.|
-| 0 → 1    | `(1−α)·semRest` | 1                   | Cited pairs linearly contract. Uncited pairs unchanged.         |
-| 1        | 0               | 1                   | Cited pairs rest length = 0 (want to overlap).                  |
-| α > 1    | 0 (clamped)     | α                   | Cited pairs still want to overlap, *and* pull harder.           |
+Every previous version of this app drove layout through a damped
+spring system: pairwise constraints + velocity + integration. Three
+problems compounded:
 
-**Why the clamp at α > 1.** Without clamping, `ℓ_ij` would go negative for cited pairs. The spring force `k = STRENGTH·(d − ℓ)/d` is then unbounded as `d → 0` (large negative `ℓ`, tiny `d`, ratio explodes), which produces visible oscillation/shake on cited pairs. Clamping `ℓ` at 0 and routing the "extra pull" through `s_ij = α` instead gives a bounded force that scales monotonically with α.
+- **Momentum stored energy.** Slider nudges injected impulse into
+  velocities; the network rang out for seconds afterwards.
+- **Per-tick force scaled with N.** At high citation density, every
+  node had hundreds of constraints firing per tick. The integrator
+  wasn't stable.
+- **Distance constraints are rigid-body invariant.** Asymmetric
+  impulses imparted angular momentum and the network rotated visibly
+  during α sweeps.
 
-**The cascade.** Uncited nodes still move when their neighbours move, because every pair has a base spring at `semRest`, regardless of citation. Force propagates through the network of base springs; α never touches the uncited springs directly.
+For a "show me what the layout looks like at this blend value" demo,
+none of that statefulness is doing useful work. v3 deletes the entire
+spring/PBD layer and replaces it with a deterministic lerp between
+two static endpoints.
 
-**Other forces are explicitly disabled:**
-- `charge.strength = 0` — no n-body repulsion. (Repulsion fights the cited-pair contraction at high α and produces oscillation.)
-- `link.strength = 0` — the library's default link spring is a no-op. (The hybrid force above replaces it; the link force is left registered so the library's tick scheduler doesn't trip.)
-- Cooldown: `cooldownTicks = Infinity`. The simulation runs forever; pause is via the Freeze button (`Graph.pauseAnimation()`).
+### 4.4 Behaviour by α
 
-**Equilibrium intuition.** With α = 0, every pair has rest length equal to its original embedding distance, so the system is at equilibrium at the embedding. Turn α up: cited pairs want to be closer than the embedding suggests; uncited pairs still want their original distance. The system settles into a compromise where citation-dense regions contract and the rest of the embedding deforms around them. At α ≫ 1, cited subgraphs collapse to near-points.
+| α          | Live position                               | Effect                                                              |
+|------------|---------------------------------------------|---------------------------------------------------------------------|
+| 0          | `basePos`                                   | Pure embedding. Citation graph plays no role in geometry.           |
+| 0 → 1      | `(1−α)·basePos + α·alignedCitationPos`      | Smooth interpolation. Each node follows a straight line in 3-space. |
+| 1          | `alignedCitationPos`                        | Citation topology drives layout. basePos plays no role in geometry. |
+
+The blend is **linear in position**, not in edge length. An edge whose
+two endpoints are far apart in basePos and close in citationPos
+spends intermediate α values at intermediate distances — the
+interpolation is geometric, not topological. (We considered a
+"minimum-stress path" through configuration space; left for v3.1.)
+
+### 4.5 Disabled lib forces
+
+The d3-force-3d library injects defaults; we zero them so nothing
+fights the blend hook:
+
+- `charge.strength = 0` — n-body repulsion would push nodes off the
+  blend line.
+- `link.strength = 0` — the lib's default link spring is a no-op.
+  Left registered so the lib's tick scheduler doesn't trip.
+- `Graph.d3VelocityDecay(1.0)` — kills any vx/vy/vz that could
+  accumulate from drag interactions. The blend hook owns motion.
+
+### 4.6 Recompute lanes
+
+The blend force closure reads three getters every tick:
+`getBasePos`, `getAlignedCitationPos`, `getBlend`. So changes to the
+underlying buffers take effect on the next frame without
+re-registering the hook.
+
+- `state._basePos` — repopulated by `precomputeBasePos()` on every
+  regeneration. n × 3 Float32Array.
+- `state.alignedCitationLayout` — repopulated by `relayoutCitations()`
+  whenever the citation graph or the layout params change. n × 3
+  Float32Array.
+- `state.blend` — written by the slider's `oninput`. Number in `[0, 1]`.
+
+Slider drag still calls `Graph.d3ReheatSimulation()` because the
+lib's tick loop freezes when "the network looks settled" (which is
+instant under blending). Without reheat, slider drags after the
+freeze go ignored.
 
 ---
 
@@ -314,18 +369,22 @@ After all pairs are processed in a tick, d3-force-3d applies its standard veloci
 | `neighbourK`                                         | Stage 1 (neighbourhoods)               | re-neighbour → re-taste → resample                                    |
 | `favouritesMean`, `sharedTaste`, `tasteRange`, `transitiveBoost` | Stages 2 + 3 (taste)                   | re-taste → resample                                                   |
 | `tasteSeed`, *Randomize taste*                       | Stages 2 + 3                           | re-taste → resample                                                   |
-| `density`, `intraRate`, `crossRate`                  | Stage 4 budget                         | resample                                                              |
-| `epsilonIntra`, `epsilonCross`                       | Stage 4 base rates                     | resample                                                              |
-| `samplingSeed`, *Randomize sampling*                 | Stage 4                                | resample                                                              |
-| `α` (alpha, future)                                  | Force parameters                       | reheat (no regen, no resample)                                        |
-| `baseDensity` (visual)                               | Visible base edges only                | rebuild graph data (no physics change)                                |
+| `density`, `intraRate`, `crossRate`                  | Stage 4 budget                         | resample → relayout                                                   |
+| `epsilonIntra`, `epsilonCross`                       | Stage 4 base rates                     | resample → relayout                                                   |
+| `samplingSeed`, *Randomize sampling*                 | Stage 4                                | resample → relayout                                                   |
+| Citation Layout ▾ algorithm switch / layout-modal sliders | Citation-layout params (FR knobs)     | relayout (FR + per-component alignment)                              |
+| `blend` (slider)                                     | Per-frame interpolation factor only    | reheat (no recompute; blend force re-reads each tick)                |
+| `baseDensity` (visual)                               | Visible base edges only                | rebuild graph data (no layout change)                                |
 | Freeze                                               | Sim pause                              | `Graph.pauseAnimation/resumeAnimation`                                |
 | edge toggles, colours, γ                             | Render only                            | rebuild graph data / refresh                                          |
 
-**Important non-couplings** (these used to be coupled and are now separated):
-- `baseDensity` is **purely visual**. The physics uses every pair's `basePos` distance regardless of how many base edges are drawn.
-- Cluster IDs are **only** used by citation generation as a grouping. They have no effect on the spring force.
-- Colour-by mode is render-only; it does not change physics or topology.
+**Important non-couplings:**
+- `baseDensity` is **purely visual**. The blend uses every pair's
+  `basePos` regardless of how many base edges are drawn.
+- Cluster IDs are **only** used by citation generation as a grouping.
+  They have no effect on either layout endpoint.
+- Colour-by mode is render-only; it does not change layout or
+  topology.
 
 ---
 
@@ -334,11 +393,18 @@ After all pairs are processed in a tick, d3-force-3d applies its standard veloci
 Once generation runs, these are immutable until the next regeneration:
 - `basePos[i]` for every node
 - `t_i` for every node
-- `_baseDist[i,j]` (precomputed `‖basePos_i − basePos_j‖`)
+- `state._basePos` (flat `Float32Array(n×3)` form of basePos, used by
+  the blend force and the alignment pass)
 
-Cluster IDs are immutable until the active clustering algorithm or any of its params change (or regeneration). See `clustering.md` §5.
+Cluster IDs are immutable until the active clustering algorithm or
+any of its params change (or regeneration). See `clustering.md` §5.
 
-Neighbourhood IDs are immutable until `neighbourK` changes (or any upstream change).
+Neighbourhood IDs are immutable until `neighbourK` changes (or any
+upstream change).
+
+`alignedCitationLayout` is immutable until the citation graph or the
+citation-layout params change (`relayoutCitations()` re-runs FR and
+the per-component Kabsch alignment in one pass).
 
 Per-neighbourhood taste sets `T(Ng)` are immutable until any Stage 2/3 knob changes or `tasteSeed` is rolled (or any upstream change).
 
