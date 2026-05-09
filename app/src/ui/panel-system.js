@@ -190,7 +190,10 @@ function errorPlaceholder(type, err) {
 function defaultConfigFor(typeId) {
   switch (typeId) {
     case "viewer-3d":
-      return { rotateSpeed: 0.3, zoomSpeed: 0.3, panSpeed: 0.3, smoothMotion: false };
+      return {
+        rotateSpeed: 0.3, zoomSpeed: 0.3, panSpeed: 0.3, smoothMotion: false,
+        colourMode:  "cluster:finest",
+      };
     default:
       return {};
   }

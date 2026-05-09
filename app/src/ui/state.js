@@ -92,7 +92,10 @@ const state = {
         {
           id:     "p-viewer-3d",
           type:   "viewer-3d",
-          config: { rotateSpeed: 0.3, zoomSpeed: 0.3, panSpeed: 0.3, smoothMotion: false },
+          config: {
+            rotateSpeed: 0.3, zoomSpeed: 0.3, panSpeed: 0.3, smoothMotion: false,
+            colourMode:  "cluster:finest",
+          },
         },
       ],
     },

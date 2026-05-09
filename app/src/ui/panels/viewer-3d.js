@@ -47,9 +47,85 @@ const DEFAULT_CAMERA = {
   smoothMotion: false,
 };
 
+const DEFAULT_COLOUR_MODE = "cluster:finest";
+
+// "cluster:finest" → always last level
+// "cluster:N"      → level index N
+// "origin"         → generator origin colour
+// "t"              → gradient on node.t (cool → warm)
+// "inDeg"          → gradient on citation in-degree (cool → warm)
+function getColourModeOptions(state) {
+  const opts = [];
+  const levels = state.clusterLevels || [];
+  if (levels.length > 0) {
+    opts.push({ value: "cluster:finest", label: `Cluster (finest, L${levels.length - 1})` });
+    for (let i = 0; i < levels.length; i++) {
+      opts.push({
+        value: `cluster:${i}`,
+        label: levels.length > 1 ? `Cluster (level ${i})` : "Cluster",
+      });
+    }
+  }
+  if (state.genResult && state.genResult.origins) {
+    opts.push({ value: "origin", label: "Origin (generator label)" });
+  }
+  opts.push({ value: "t", label: "Time (t)" });
+  if (state.citationResult) {
+    opts.push({ value: "inDeg", label: "Citation in-degree" });
+  }
+  return opts;
+}
+
+// Resolve the cluster-result for a given mode. Returns null for non-cluster modes.
+function clusterResultForMode(state, mode) {
+  if (!mode || !mode.startsWith("cluster")) return null;
+  const levels = state.clusterLevels || [];
+  if (levels.length === 0) return null;
+  if (mode === "cluster:finest") return levels[levels.length - 1].clusterResult;
+  const idx = parseInt(mode.slice(8), 10);
+  if (Number.isFinite(idx) && idx >= 0 && idx < levels.length) {
+    return levels[idx].clusterResult;
+  }
+  return levels[levels.length - 1].clusterResult;
+}
+
+function tGradient(t) {
+  // Cool blue → warm orange linearly on a fixed palette.
+  const stops = [
+    [0.00, [97, 175, 239]],     // accent blue
+    [0.50, [191, 188, 168]],    // muted middle
+    [1.00, [242, 142, 43]],     // warm orange
+  ];
+  return interpStops(stops, Math.max(0, Math.min(1, t)));
+}
+function inDegGradient(v) {
+  // Faint grey (0) → bright accent (1).
+  const stops = [
+    [0.00, [80, 90, 110]],
+    [1.00, [97, 175, 239]],
+  ];
+  return interpStops(stops, Math.max(0, Math.min(1, v)));
+}
+function interpStops(stops, t) {
+  for (let i = 1; i < stops.length; i++) {
+    if (t <= stops[i][0]) {
+      const [t0, c0] = stops[i - 1];
+      const [t1, c1] = stops[i];
+      const f = (t - t0) / Math.max(1e-9, t1 - t0);
+      const r = Math.round(c0[0] + (c1[0] - c0[0]) * f);
+      const g = Math.round(c0[1] + (c1[1] - c0[1]) * f);
+      const b = Math.round(c0[2] + (c1[2] - c0[2]) * f);
+      return `rgb(${r}, ${g}, ${b})`;
+    }
+  }
+  const last = stops[stops.length - 1][1];
+  return `rgb(${last[0]}, ${last[1]}, ${last[2]})`;
+}
+
 export function mount(container, _state, config = {}, tabContext = null) {
   // Apply config defaults — anything missing uses DEFAULT_CAMERA.
   const cam = { ...DEFAULT_CAMERA, ...config };
+  let colourMode = config.colourMode || DEFAULT_COLOUR_MODE;
 
   // The lib needs an absolutely-sized div to anchor itself in.
   container.innerHTML = "";
@@ -63,6 +139,13 @@ export function mount(container, _state, config = {}, tabContext = null) {
   graphDiv.style.inset    = "0";
   container.appendChild(graphDiv);
 
+  // Hoist these so the overlays' callbacks don't hit TDZ if they fire
+  // synchronously during build.
+  let Graph = null;
+  let lastDataRevision = -1;
+  let resizeObs = null;
+  let lastSelection = null;
+
   // Settings overlay (gear button + popup with sliders).
   const settingsRoot = buildSettingsOverlay(container, cam, (newCam) => {
     Object.assign(cam, newCam);
@@ -70,10 +153,22 @@ export function mount(container, _state, config = {}, tabContext = null) {
     persistCamConfig(newCam);
   });
 
-  let Graph = null;
-  let lastDataRevision = -1;
-  let resizeObs = null;
-  let lastSelection = null;       // tracked for re-paint without rebuild
+  // Colour-mode overlay (top-left dropdown). Updated reactively
+  // whenever state changes (e.g. new cluster levels appear).
+  const colourOverlay = buildColourModeOverlay({
+    initial: colourMode,
+    getOptions: () => getColourModeOptions(getState()),
+    onChange:  (mode) => {
+      colourMode = mode;
+      persistTabPartial({ colourMode: mode });
+      if (Graph && Graph.refresh) Graph.refresh();
+      // also re-paint via accessor re-evaluation
+      if (Graph) Graph.nodeColor(nodeColour);
+    },
+  });
+  container.appendChild(colourOverlay.root);
+
+  // (Graph / lastDataRevision / resizeObs / lastSelection hoisted above)
 
   function init() {
     if (!window.ForceGraph3D) {
@@ -129,20 +224,16 @@ export function mount(container, _state, config = {}, tabContext = null) {
     const liveById = readLivePositions(Graph);
     for (const n of s.genResult.nodes) {
       const cid = s.clusterResult ? s.clusterResult.nodeCluster[n.id] : -1;
-      const cluster = (cid >= 0 && s.clusterResult) ? s.clusterResult.clusters[cid] : null;
-      const colour = cluster ? cluster.colour : "#888888";
-
       const seed = liveById.get(n.id);
+      // Carry whatever per-node fields the colour modes / labels need.
+      // Colours themselves are computed on the fly via the nodeColor
+      // accessor (so swapping mode without rebuilding works).
       nodes.push({
-        id:    n.id,
-        kind:  "node",
-        t:     n.t,
+        id:        n.id,
+        kind:      "node",
+        t:         n.t,
+        originId:  n.originId,
         clusterId: cid,
-        colour,
-        // Seed live position from the previous graph tick if present;
-        // otherwise from basePos directly. Without a seed, the lib
-        // would put new nodes at random positions and the first frame
-        // would jump.
         x: seed ? seed.x : (s._basePos ? s._basePos[n.id*3]   : 0),
         y: seed ? seed.y : (s._basePos ? s._basePos[n.id*3+1] : 0),
         z: seed ? seed.z : (s._basePos ? s._basePos[n.id*3+2] : 0),
@@ -171,18 +262,56 @@ export function mount(container, _state, config = {}, tabContext = null) {
     Graph.d3ReheatSimulation();
   }
 
-  // Colour a node based on cluster + current selection state.
-  // - No selection: render its native cluster colour.
-  // - Selection of "cluster": dim non-selected to a faint grey,
-  //   keep selected cluster at full saturation.
-  // Reads getState() each call (called per node, lib-driven).
+  // Colour a node based on the active colour mode + current selection.
+  // - Mode resolves the base colour (cluster level / origin / t / in-deg).
+  // - Selection (always against the FINEST cluster level — that's what
+  //   the cluster table emits) dims non-selected nodes to slate.
+  // Reads getState() each call (the lib invokes this per node, per tick).
   function nodeColour(n) {
-    const sel = getState().selection;
-    if (!sel || sel.type !== "cluster" || sel.id == null) {
-      return n.colour || "#888";
+    const s = getState();
+    const base = baseColourFor(n, s, colourMode);
+
+    const sel = s.selection;
+    if (!sel || sel.type !== "cluster" || sel.id == null) return base;
+
+    // Selection cluster id is in the finest level (that's what the
+    // cluster table panel currently exposes).
+    const finest = s.clusterLevels && s.clusterLevels[s.clusterLevels.length - 1];
+    if (!finest) return base;
+    const cid = finest.clusterResult.nodeCluster[n.id];
+    return cid === sel.id ? base : "#3a3f4a";
+  }
+
+  function baseColourFor(n, state, mode) {
+    if (mode && mode.startsWith("cluster")) {
+      const cr = clusterResultForMode(state, mode);
+      if (cr) {
+        const cid = cr.nodeCluster[n.id];
+        const cluster = cid >= 0 ? cr.clusters[cid] : null;
+        return cluster ? cluster.colour : "#888";
+      }
+      return "#888";
     }
-    if (n.clusterId === sel.id) return n.colour || "#888";
-    return "#3a3f4a";   // dimmed slate
+    if (mode === "origin") {
+      const origins = state.genResult && state.genResult.origins;
+      if (origins && n.originId != null && origins[n.originId]) {
+        return origins[n.originId].colour;
+      }
+      return "#888";
+    }
+    if (mode === "t") {
+      return tGradient(+n.t || 0);
+    }
+    if (mode === "inDeg") {
+      const cit = state.citationResult;
+      if (cit && cit.inDeg) {
+        let max = 1;
+        for (let i = 0; i < cit.inDeg.length; i++) if (cit.inDeg[i] > max) max = cit.inDeg[i];
+        return inDegGradient(cit.inDeg[n.id] / max);
+      }
+      return "#888";
+    }
+    return "#888";
   }
 
   // Re-evaluate node colours without rebuilding graphData. Cheap;
@@ -238,6 +367,12 @@ export function mount(container, _state, config = {}, tabContext = null) {
     setTabConfig(tabContext.slot, tabContext.tabId, { ...cam });
   }
 
+  // Same for colour-mode and other tab-local config bits.
+  function persistTabPartial(partial) {
+    if (!tabContext) return;
+    setTabConfig(tabContext.slot, tabContext.tabId, partial);
+  }
+
   // Initial mount.
   init();
   if (Graph) rebuildData();
@@ -253,8 +388,12 @@ export function mount(container, _state, config = {}, tabContext = null) {
         rebuildData();
         lastDataRevision = s.engineRevision;
         lastSelection = s.selection;
+        // New engine output may have added/removed cluster levels —
+        // refresh the dropdown options.
+        colourOverlay.refreshOptions();
         return;
       }
+
       // Selection-only change: re-paint colours, no rebuild.
       const selChanged =
         !lastSelection ||
@@ -271,6 +410,7 @@ export function mount(container, _state, config = {}, tabContext = null) {
         resizeObs = null;
       }
       if (settingsRoot) settingsRoot.remove();
+      if (colourOverlay && colourOverlay.root) colourOverlay.root.remove();
 
       // 3d-force-graph teardown is racy: an in-flight tick (from
       // TrackballControls' own update loop) can fire after
@@ -294,6 +434,53 @@ export function mount(container, _state, config = {}, tabContext = null) {
         });
       }
     },
+  };
+}
+
+/* ── colour-mode overlay (top-left) ────────────────────────────────── */
+
+function buildColourModeOverlay({ initial, getOptions, onChange }) {
+  const root = document.createElement("div");
+  root.className = "viewer-3d-colour-mode";
+
+  const label = document.createElement("span");
+  label.className = "viewer-3d-colour-mode-label";
+  label.textContent = "Colour by:";
+  root.appendChild(label);
+
+  const select = document.createElement("select");
+  select.className = "viewer-3d-colour-mode-select";
+  root.appendChild(select);
+
+  let current = initial;
+
+  function rebuildOptions() {
+    const opts = getOptions();
+    select.innerHTML = "";
+    for (const o of opts) {
+      const opt = document.createElement("option");
+      opt.value = o.value;
+      opt.textContent = o.label;
+      if (o.value === current) opt.selected = true;
+      select.appendChild(opt);
+    }
+    // Preserve `current` even if it's not yet in the option list —
+    // initial mount runs before the engine has populated clusters,
+    // so "cluster:finest" won't match until after first regenerate.
+    // The select will visually show its first option until the saved
+    // mode reappears, at which point it'll re-select naturally.
+  }
+
+  select.addEventListener("change", () => {
+    current = select.value;
+    onChange(current);
+  });
+
+  rebuildOptions();
+
+  return {
+    root,
+    refreshOptions: rebuildOptions,
   };
 }
 
