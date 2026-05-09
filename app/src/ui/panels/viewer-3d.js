@@ -30,9 +30,14 @@ export const DESCRIPTION = "Live blend visualisation; per-frame interpolation be
 const R_GLOBAL = 60;        // matches generation.js's working half-extent
 
 const DEFAULT_CAMERA = {
-  rotateSpeed: 1.0,    // OrbitControls native default; legacy was 2.2 (felt twitchy)
-  zoomSpeed:   1.0,    // legacy was 2.5
-  panSpeed:    1.0,    // legacy was 1.6
+  rotateSpeed:  1.0,    // OrbitControls/TrackballControls native default; legacy was 2.2
+  zoomSpeed:    1.0,    // legacy was 2.5
+  panSpeed:     1.0,    // legacy was 1.6
+  // 3d-force-graph uses TrackballControls. staticMoving=false (its default)
+  // gives the camera inertia/coasting after mouse release — the "acceleration"
+  // feel. We default to true (no inertia, click-and-stick) and let the user
+  // re-enable smooth motion via the settings popup if they want it.
+  smoothMotion: false,
 };
 
 export function mount(container, _state, config = {}) {
@@ -179,10 +184,18 @@ export function mount(container, _state, config = {}) {
     if (!Graph) return;
     const ctrls = Graph.controls();
     if (!ctrls) return;
-    ctrls.rotateSpeed   = cam.rotateSpeed;
-    ctrls.zoomSpeed     = cam.zoomSpeed;
-    ctrls.panSpeed      = cam.panSpeed;
-    ctrls.enableDamping = false;
+    ctrls.rotateSpeed = cam.rotateSpeed;
+    ctrls.zoomSpeed   = cam.zoomSpeed;
+    ctrls.panSpeed    = cam.panSpeed;
+    // staticMoving is the TrackballControls switch for "no inertia."
+    // dynamicDampingFactor only matters when staticMoving=false; we
+    // still set it so toggling smoothMotion back on gives a sensible
+    // damping rate without the user having to find another knob.
+    ctrls.staticMoving           = !cam.smoothMotion;
+    ctrls.dynamicDampingFactor   = cam.smoothMotion ? 0.2 : 0;
+    // OrbitControls equivalent — kept defensive in case 3d-force-graph
+    // is ever switched to controlType('orbit'). Otherwise no-op.
+    if ("enableDamping" in ctrls) ctrls.enableDamping = !!cam.smoothMotion;
   }
 
   // Persist the camera config back into state.panels.primary.config
@@ -263,11 +276,20 @@ function buildSettingsOverlay(container, cam, onChange) {
   popup.appendChild(speedRow("Zoom",   "zoomSpeed",   cam.zoomSpeed,   cam, onChange));
   popup.appendChild(speedRow("Pan",    "panSpeed",    cam.panSpeed,    cam, onChange));
 
+  popup.appendChild(toggleRow(
+    "Smooth motion",
+    "smoothMotion",
+    cam.smoothMotion,
+    cam,
+    onChange,
+    "Camera inertia after mouse release. Off = click-and-stick.",
+  ));
+
   const hint = document.createElement("div");
   hint.style.fontSize = "10px";
   hint.style.color = "var(--text-faint)";
   hint.style.marginTop = "6px";
-  hint.textContent = "1.0 = OrbitControls native; >1 faster";
+  hint.textContent = "1.0 = native speed; >1 faster";
   popup.appendChild(hint);
 
   root.appendChild(popup);
@@ -283,6 +305,33 @@ function buildSettingsOverlay(container, cam, onChange) {
   });
 
   return root;
+}
+
+function toggleRow(labelText, key, value, cam, onChange, title = "") {
+  const row = document.createElement("div");
+  row.className = "viewer-3d-settings-row toggle";
+  row.title = title;
+
+  const label = document.createElement("label");
+  label.textContent = labelText;
+  row.appendChild(label);
+
+  const wrap = document.createElement("div");
+  wrap.style.gridColumn = "2 / 4";
+  wrap.style.display = "flex";
+  wrap.style.justifyContent = "flex-end";
+
+  const input = document.createElement("input");
+  input.type = "checkbox";
+  input.checked = !!value;
+  input.addEventListener("change", (e) => {
+    cam[key] = e.target.checked;
+    onChange({ [key]: e.target.checked });
+  });
+  wrap.appendChild(input);
+  row.appendChild(wrap);
+
+  return row;
 }
 
 function speedRow(labelText, key, value, cam, onChange) {
