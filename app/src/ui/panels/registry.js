@@ -6,9 +6,9 @@
 // New panel types slot in here as one entry — same pattern as
 // clustering / citation-layout registries on the engine side.
 
-import * as Placeholder   from "./placeholder.js";
-import * as Viewer3D      from "./viewer-3d.js";
-import * as ClusterTable  from "./cluster-table.js";
+import * as Placeholder from "./placeholder.js";
+import * as Viewer3D    from "./viewer-3d.js";
+import * as NodeTable   from "./node-table.js";
 
 const entries = new Map();
 
@@ -24,7 +24,7 @@ function register(mod) {
 
 register(Placeholder);
 register(Viewer3D);
-register(ClusterTable);
+register(NodeTable);
 
 // Future entries (mounted as their modules come online):
 // register(await import("./viewer-2d.js"));        // slice 6

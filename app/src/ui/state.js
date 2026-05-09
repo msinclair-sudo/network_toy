@@ -100,9 +100,9 @@ const state = {
       ],
     },
     secondary: {
-      activeTabId: "s-cluster-table",
+      activeTabId: "s-node-table",
       tabs: [
-        { id: "s-cluster-table", type: "cluster-table", config: {} },
+        { id: "s-node-table", type: "node-table", config: { source: "auto" } },
       ],
     },
     bottom: {

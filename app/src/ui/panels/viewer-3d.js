@@ -264,22 +264,40 @@ export function mount(container, _state, config = {}, tabContext = null) {
 
   // Colour a node based on the active colour mode + current selection.
   // - Mode resolves the base colour (cluster level / origin / t / in-deg).
-  // - Selection (always against the FINEST cluster level — that's what
-  //   the cluster table emits) dims non-selected nodes to slate.
-  // Reads getState() each call (the lib invokes this per node, per tick).
+  // - Selection dims non-matching nodes to slate. Selection types:
+  //     {type:"cluster", level:N, id}  — node belongs to that cluster at level N
+  //     {type:"origin",  id}           — node has that originId
+  //     {type:"node",    id}           — only that node id matches
+  //     {type:"tBin", binIdx}          — (no viewer dimming yet)
   function nodeColour(n) {
     const s = getState();
     const base = baseColourFor(n, s, colourMode);
-
     const sel = s.selection;
-    if (!sel || sel.type !== "cluster" || sel.id == null) return base;
+    if (!sel || !sel.type) return base;
 
-    // Selection cluster id is in the finest level (that's what the
-    // cluster table panel currently exposes).
-    const finest = s.clusterLevels && s.clusterLevels[s.clusterLevels.length - 1];
-    if (!finest) return base;
-    const cid = finest.clusterResult.nodeCluster[n.id];
-    return cid === sel.id ? base : "#3a3f4a";
+    const matched = nodeMatchesSelection(n, s, sel);
+    if (matched === null) return base;          // selection type doesn't dim
+    return matched ? base : "#3a3f4a";
+  }
+
+  function nodeMatchesSelection(n, s, sel) {
+    if (sel.type === "cluster") {
+      const levels = s.clusterLevels || [];
+      if (levels.length === 0) return null;
+      const lvlIdx = (sel.level == null)
+        ? levels.length - 1
+        : Math.max(0, Math.min(levels.length - 1, sel.level));
+      const cl = levels[lvlIdx];
+      if (!cl) return null;
+      return cl.clusterResult.nodeCluster[n.id] === sel.id;
+    }
+    if (sel.type === "origin") {
+      return n.originId === sel.id;
+    }
+    if (sel.type === "node") {
+      return n.id === sel.id;
+    }
+    return null;   // tBin or unknown — no dimming
   }
 
   function baseColourFor(n, state, mode) {
