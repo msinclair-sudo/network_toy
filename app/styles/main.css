@@ -199,15 +199,50 @@ html, body {
   border-bottom: 2px solid var(--accent);
 }
 
-.panel-tab .panel-tab-spacer { flex: 1; }
+.panel-tab .panel-tab-label {
+  margin-right: 4px;
+}
+
+.panel-tab .panel-tab-close {
+  display: inline-block;
+  margin-left: 6px;
+  width: 14px;
+  height: 14px;
+  line-height: 12px;
+  text-align: center;
+  border-radius: 2px;
+  color: var(--text-faint);
+  font-size: 14px;
+  cursor: pointer;
+  user-select: none;
+}
+.panel-tab .panel-tab-close:hover {
+  background: var(--err);
+  color: white;
+}
+
+.panel-tab.slot-name {
+  font-style: italic;
+  pointer-events: none;
+  border-right: none;
+}
+
+.panel-tab-spacer { flex: 1; }
 .panel-tab-add {
-  padding: 0 10px;
+  padding: 0 12px;
   color: var(--text-faint);
   font-size: 16px;
-  align-self: center;
+  align-self: stretch;
+  display: flex;
+  align-items: center;
   cursor: pointer;
+  border-right: 1px solid var(--border);
+  user-select: none;
 }
-.panel-tab-add:hover { color: var(--accent); }
+.panel-tab-add:hover {
+  color: var(--accent);
+  background: var(--bg);
+}
 
 .panel-content {
   overflow: auto;
@@ -621,7 +656,7 @@ td.cluster-table-spread, td.cluster-table-stab { width: 50px; }
   text-align: right;
 }
 
-/* ── modal root ─────────────────────────────────────────────────────── */
+/* ── modal root + dialogs ──────────────────────────────────────────── */
 
 #modal-root {
   position: fixed;
@@ -632,4 +667,133 @@ td.cluster-table-spread, td.cluster-table-stab { width: 50px; }
 
 #modal-root > * {
   pointer-events: auto;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.modal-dialog {
+  background: var(--bg-2);
+  border: 1px solid var(--border-light);
+  border-radius: 6px;
+  min-width: 380px;
+  max-width: min(640px, 92vw);
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.55);
+  overflow: hidden;
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-3);
+}
+.modal-title {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.modal-close {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  font-size: 22px;
+  line-height: 1;
+  width: 24px;
+  height: 24px;
+  border-radius: 3px;
+  cursor: pointer;
+  padding: 0;
+}
+.modal-close:hover {
+  background: var(--err);
+  color: white;
+}
+
+.modal-body {
+  flex: 1;
+  overflow: auto;
+  padding: 14px;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-3);
+}
+.modal-action {
+  background: var(--bg-3);
+  border: 1px solid var(--border-light);
+  color: var(--text);
+  padding: 5px 14px;
+  border-radius: 3px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.modal-action:hover { border-color: var(--accent); color: var(--accent); }
+.modal-action.primary {
+  background: var(--accent-dim);
+  border-color: var(--accent-dim);
+  color: white;
+}
+.modal-action.primary:hover { background: var(--accent); border-color: var(--accent); color: white; }
+.modal-action:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* ── panel-picker modal ─────────────────────────────────────────────── */
+
+.panel-picker-list {
+  display: grid;
+  gap: 6px;
+  grid-template-columns: 1fr;
+}
+
+.panel-picker-item {
+  text-align: left;
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 10px 12px;
+  cursor: pointer;
+  color: var(--text);
+  font-family: var(--font-ui);
+  width: 100%;
+}
+.panel-picker-item:hover {
+  border-color: var(--accent);
+  background: var(--bg);
+}
+
+.panel-picker-item-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 2px;
+}
+.panel-picker-item-desc {
+  font-size: 11px;
+  color: var(--text-dim);
+  line-height: 1.4;
+}
+
+.panel-picker-empty {
+  padding: 16px;
+  text-align: center;
+  color: var(--text-faint);
 }

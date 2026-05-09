@@ -1,74 +1,116 @@
-// Panel system. Each slot (primary / secondary / bottom) hosts
-// one active panel at a time. Tab strip at the top lets the user
-// switch panel types; "+" opens a menu of registered panel types.
+// Panel system — multi-tab edition.
 //
-// Each slot DOM container is in index.html — we mount tabs into
-// `.panel-tabs` and the panel into `.panel-content`.
+// Each slot (primary / secondary / bottom) holds an array of tabs;
+// one is active at a time. Tab strip shows one tab per entry, plus
+// a "+" button at the end for adding new ones via the panel-picker
+// modal. Each tab has a small "×" close button.
 //
 // State coupling:
-//   state.panels[slot] = { type, config }
-// Switching the type swaps which panel is mounted; config is
-// passed to the panel's mount().
+//   state.panels[slot] = { activeTabId, tabs: [{ id, type, config }] }
+//
+// Panel module contract:
+//   mount(container, state, config, tabContext) → { update(state), destroy() }
+// where tabContext = { slot, tabId } so panels can persist their own
+// config (e.g. viewer-3d's camera settings).
 
-import { getState, subscribe, setPanel } from "./state.js";
-import { getPanelType, listPanelTypes } from "./panels/registry.js";
+import { getState, subscribe, addTab, closeTab, setActiveTab } from "./state.js";
+import { getPanelType, listPanelTypes }                       from "./panels/registry.js";
+import { openPanelPickerModal }                               from "./modals/panel-picker.js";
 
 const SLOTS = ["primary", "secondary", "bottom"];
 
-const slotInstances = new Map();   // slot → { instance, type }
+// Per-slot tracking. panelsRef lets us skip tab-strip rebuilds when
+// only state.blend (or other unrelated slices) changed.
+const slotInstances = new Map();   // slot → { panelsRef, instance, tabId }
 
 export function mountPanelSystem() {
-  for (const slot of SLOTS) {
-    const slotEl = document.querySelector(`.panel-slot[data-slot="${slot}"]`);
-    if (!slotEl) continue;
-    renderTabs(slot, slotEl);
-    renderActivePanel(slot, slotEl);
-  }
+  for (const slot of SLOTS) initSlot(slot);
 
   subscribe((state) => {
     for (const slot of SLOTS) {
       const slotEl = document.querySelector(`.panel-slot[data-slot="${slot}"]`);
       if (!slotEl) continue;
-      const current = slotInstances.get(slot);
       const desired = state.panels[slot];
-      // Re-mount when panel type changes.
-      if (!current || current.type !== desired.type) {
-        renderActivePanel(slot, slotEl);
+      const tracked = slotInstances.get(slot);
+
+      // Tabs / active changed → re-render strip and possibly remount.
+      if (!tracked || tracked.panelsRef !== desired) {
         renderTabs(slot, slotEl);
-      } else if (current.instance && current.instance.update) {
-        current.instance.update(state);
+        if (!tracked || tracked.tabId !== desired.activeTabId) {
+          renderActivePanel(slot, slotEl);
+        }
+      }
+
+      // Always deliver fresh state to the active instance.
+      const t = slotInstances.get(slot);
+      if (t && t.instance && t.instance.update) {
+        try { t.instance.update(state); }
+        catch (e) { console.error("[panel-system] panel update threw:", e); }
       }
     }
   });
 }
 
+function initSlot(slot) {
+  const slotEl = document.querySelector(`.panel-slot[data-slot="${slot}"]`);
+  if (!slotEl) return;
+  renderTabs(slot, slotEl);
+  renderActivePanel(slot, slotEl);
+}
+
 function renderTabs(slot, slotEl) {
   const tabsEl = slotEl.querySelector(".panel-tabs");
   if (!tabsEl) return;
-  const state = getState();
-  const activeType = state.panels[slot].type;
+  const slotState = getState().panels[slot];
 
   tabsEl.innerHTML = "";
 
-  // Single active-type indicator + dropdown to swap.
-  // (Multi-tab windowing is future work; for now one panel per slot.)
-  const tab = document.createElement("div");
-  tab.className = "panel-tab active";
-  const typeMeta = getPanelType(activeType);
-  tab.textContent = typeMeta.label || activeType;
-  tab.title = typeMeta.description || "";
-  tab.addEventListener("click", () => openPanelTypeMenu(slot, tab));
-  tabsEl.appendChild(tab);
+  // One tab per entry, with × close button.
+  for (const tab of slotState.tabs) {
+    const meta = getPanelType(tab.type);
+    const tabEl = document.createElement("div");
+    tabEl.className = "panel-tab" + (tab.id === slotState.activeTabId ? " active" : "");
+    tabEl.title = meta.description || meta.label || "";
 
-  // "+" doesn't add a new tab in this slice — it's a hint that
-  // multi-tab windowing is planned.
+    const label = document.createElement("span");
+    label.className = "panel-tab-label";
+    label.textContent = meta.label || tab.type;
+    label.addEventListener("click", () => setActiveTab(slot, tab.id));
+    tabEl.appendChild(label);
+
+    const closeBtn = document.createElement("span");
+    closeBtn.className = "panel-tab-close";
+    closeBtn.title = "Close tab";
+    closeBtn.textContent = "×";
+    closeBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      closeTab(slot, tab.id);
+    });
+    tabEl.appendChild(closeBtn);
+
+    tabsEl.appendChild(tabEl);
+  }
+
+  // "+" button at the end of the actual tabs.
+  const addBtn = document.createElement("div");
+  addBtn.className = "panel-tab-add";
+  addBtn.title = "Add panel…";
+  addBtn.textContent = "+";
+  addBtn.addEventListener("click", () => {
+    openPanelPickerModal(slot, (typeId) => {
+      addTab(slot, typeId, defaultConfigFor(typeId));
+    });
+  });
+  tabsEl.appendChild(addBtn);
+
+  // Spacer + slot-name label on the right.
   const spacer = document.createElement("div");
   spacer.className = "panel-tab-spacer";
   spacer.style.flex = "1";
   tabsEl.appendChild(spacer);
 
   const slotLabel = document.createElement("div");
-  slotLabel.className = "panel-tab";
+  slotLabel.className = "panel-tab slot-name";
   slotLabel.style.color = "var(--text-faint)";
   slotLabel.style.cursor = "default";
   slotLabel.textContent = slot;
@@ -78,59 +120,78 @@ function renderTabs(slot, slotEl) {
 function renderActivePanel(slot, slotEl) {
   const contentEl = slotEl.querySelector(".panel-content");
   if (!contentEl) return;
-  const state = getState();
-  const { type, config } = state.panels[slot];
+  const slotState = getState().panels[slot];
 
   // Tear down previous instance for this slot.
   const prev = slotInstances.get(slot);
   if (prev && prev.instance && prev.instance.destroy) {
     try { prev.instance.destroy(); } catch (e) { console.warn(e); }
   }
+  contentEl.innerHTML = "";
 
-  const meta = getPanelType(type);
-  const instance = meta.mount(contentEl, state, config || {});
-  slotInstances.set(slot, { instance, type });
-}
-
-// Inline dropdown listing every registered panel type.
-function openPanelTypeMenu(slot, anchor) {
-  // Tear down any existing menu.
-  document.querySelectorAll(".panel-type-menu").forEach(el => el.remove());
-
-  const menu = document.createElement("div");
-  menu.className = "topbar-menu-dropdown panel-type-menu";
-  menu.style.display = "block";
-  menu.style.position = "fixed";
-
-  const rect = anchor.getBoundingClientRect();
-  menu.style.top  = `${rect.bottom}px`;
-  menu.style.left = `${rect.left}px`;
-
-  for (const t of listPanelTypes()) {
-    const item = document.createElement("div");
-    item.className = "topbar-menu-item";
-    item.textContent = t.label;
-    item.title = t.description;
-    item.addEventListener("click", () => {
-      setPanel(slot, t.id, {
-        label: t.label,
-        hint:  t.description || `${t.label} panel`,
-      });
-      menu.remove();
-    });
-    menu.appendChild(item);
+  // No active tab → empty hint.
+  if (!slotState.activeTabId || slotState.tabs.length === 0) {
+    contentEl.appendChild(emptySlotHint());
+    slotInstances.set(slot, { panelsRef: slotState, instance: null, tabId: null });
+    return;
   }
 
-  document.body.appendChild(menu);
+  const tab = slotState.tabs.find(t => t.id === slotState.activeTabId);
+  if (!tab) {
+    slotInstances.set(slot, { panelsRef: slotState, instance: null, tabId: null });
+    return;
+  }
 
-  // Click-outside to close.
-  setTimeout(() => {
-    const closer = (e) => {
-      if (!menu.contains(e.target)) {
-        menu.remove();
-        document.removeEventListener("click", closer, true);
-      }
-    };
-    document.addEventListener("click", closer, true);
-  }, 0);
+  const meta = getPanelType(tab.type);
+  const tabContext = { slot, tabId: tab.id };
+  let instance = null;
+  try {
+    instance = meta.mount(contentEl, getState(), tab.config || {}, tabContext);
+  } catch (e) {
+    console.error(`[panel-system] failed to mount ${tab.type}:`, e);
+    contentEl.innerHTML = "";
+    contentEl.appendChild(errorPlaceholder(tab.type, e));
+  }
+  slotInstances.set(slot, { panelsRef: slotState, instance, tabId: tab.id });
+}
+
+function emptySlotHint() {
+  const root = document.createElement("div");
+  root.className = "placeholder-panel";
+  const title = document.createElement("div");
+  title.className = "placeholder-title";
+  title.textContent = "No panel";
+  const hint = document.createElement("div");
+  hint.className = "placeholder-hint";
+  hint.innerHTML = "Click <strong>+</strong> in the tab bar to add one.";
+  root.appendChild(title);
+  root.appendChild(hint);
+  return root;
+}
+
+function errorPlaceholder(type, err) {
+  const root = document.createElement("div");
+  root.className = "placeholder-panel";
+  const title = document.createElement("div");
+  title.className = "placeholder-title";
+  title.textContent = `Failed to mount: ${type}`;
+  const hint = document.createElement("div");
+  hint.className = "placeholder-hint";
+  hint.style.color = "var(--err)";
+  hint.textContent = String(err && err.message ? err.message : err);
+  root.appendChild(title);
+  root.appendChild(hint);
+  return root;
+}
+
+// Default configs for a freshly-added tab. Centralised so picking
+// "viewer-3d" from the +-modal seeds it with sensible camera speeds
+// rather than empty {}.
+function defaultConfigFor(typeId) {
+  switch (typeId) {
+    case "viewer-3d":
+      return { rotateSpeed: 0.3, zoomSpeed: 0.3, panSpeed: 0.3, smoothMotion: false };
+    default:
+      return {};
+  }
 }

@@ -18,6 +18,7 @@ function register(mod) {
     label:       mod.LABEL || mod.ID,
     description: mod.DESCRIPTION || "",
     mount:       mod.mount,
+    singleton:   !!mod.SINGLETON,    // panel-picker filters singletons already mounted
   });
 }
 

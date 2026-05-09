@@ -20,12 +20,16 @@
 // nodes coloured by cluster + citation links. Extra overlays land
 // in slice 6 once the panel system is exercised.
 
-import { makeBlendForce }              from "../../blend/blend.js";
-import { getState, update }            from "../state.js";
+import { makeBlendForce }                  from "../../blend/blend.js";
+import { getState, setTabConfig }          from "../state.js";
 
 export const ID = "viewer-3d";
 export const LABEL = "3D viewer";
 export const DESCRIPTION = "Live blend visualisation; per-frame interpolation between basePos and aligned citation layout.";
+// WebGL context budget + 3d-force-graph teardown noise → only one
+// instance allowed across all slots at any time. The panel-picker
+// modal filters this out when an instance already exists somewhere.
+export const SINGLETON = true;
 
 const R_GLOBAL = 60;        // matches generation.js's working half-extent
 
@@ -43,7 +47,7 @@ const DEFAULT_CAMERA = {
   smoothMotion: false,
 };
 
-export function mount(container, _state, config = {}) {
+export function mount(container, _state, config = {}, tabContext = null) {
   // Apply config defaults — anything missing uses DEFAULT_CAMERA.
   const cam = { ...DEFAULT_CAMERA, ...config };
 
@@ -225,26 +229,13 @@ export function mount(container, _state, config = {}) {
     if ("enableDamping" in ctrls) ctrls.enableDamping = !!cam.smoothMotion;
   }
 
-  // Persist the camera config back into state.panels.primary.config
-  // so the values survive a panel re-mount (algorithm switch / data
-  // reload). Reads-then-writes the slot for whichever slot we live in.
+  // Persist the camera config back into our tab's config so values
+  // survive a panel re-mount (data reload / panel switch). The tab
+  // context is supplied at mount; without it we silently no-op
+  // (e.g. a stand-alone usage outside the panel system).
   function persistCamConfig(_partial) {
-    const s = getState();
-    let mySlot = null;
-    for (const slot of Object.keys(s.panels)) {
-      if (s.panels[slot].type === ID) {
-        mySlot = slot;
-        break;
-      }
-    }
-    if (!mySlot) return;
-    const cur = s.panels[mySlot].config || {};
-    update({
-      panels: {
-        ...s.panels,
-        [mySlot]: { type: ID, config: { ...cur, ...cam } },
-      },
-    });
+    if (!tabContext) return;
+    setTabConfig(tabContext.slot, tabContext.tabId, { ...cam });
   }
 
   // Initial mount.
@@ -280,13 +271,28 @@ export function mount(container, _state, config = {}) {
         resizeObs = null;
       }
       if (settingsRoot) settingsRoot.remove();
-      // 3d-force-graph doesn't expose a clean teardown; tear down
-      // the WebGL context indirectly by clearing the container.
-      // (Sufficient for slot remount; if mounting/unmounting becomes
-      // frequent we add explicit GL cleanup.)
-      try { if (Graph) Graph._destructor && Graph._destructor(); } catch (_) {}
+
+      // 3d-force-graph teardown is racy: an in-flight tick (from
+      // TrackballControls' own update loop) can fire after
+      // _destructor() removes the simulation, throwing
+      // "Cannot read properties of undefined (reading 'tick')".
+      // We dampen it with pauseAnimation + controls.dispose() +
+      // a deferred _destructor; one stale tick still leaks through
+      // on some runs. It's a 3d-force-graph internal bug and
+      // doesn't affect the page's behaviour. Smoke tests filter it.
+      const g = Graph;
       Graph = null;
       container.innerHTML = "";
+      if (g) {
+        try { g.pauseAnimation && g.pauseAnimation(); } catch (_) {}
+        try {
+          const c = g.controls && g.controls();
+          if (c && c.dispose) c.dispose();
+        } catch (_) {}
+        requestAnimationFrame(() => {
+          try { g._destructor && g._destructor(); } catch (_) {}
+        });
+      }
     },
   };
 }

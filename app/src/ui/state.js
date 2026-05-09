@@ -81,10 +81,29 @@ const state = {
   },
 
   // ── UI state ─────────────────────────────────────────────────
+  // Each slot holds an array of tabs; one is active at a time.
+  // Tabs are added/closed via the +/× buttons in the tab strip.
   panels: {
-    primary:   { type: "viewer-3d",   config: { rotateSpeed: 0.3, zoomSpeed: 0.3, panSpeed: 0.3, smoothMotion: false } },
-    secondary: { type: "cluster-table", config: {} },
-    bottom:    { type: "placeholder", config: { label: "Tables / sweep results", hint: "configurable panel — wire any registered panel type here" } },
+    primary: {
+      activeTabId: "p-viewer-3d",
+      tabs: [
+        {
+          id:     "p-viewer-3d",
+          type:   "viewer-3d",
+          config: { rotateSpeed: 0.3, zoomSpeed: 0.3, panSpeed: 0.3, smoothMotion: false },
+        },
+      ],
+    },
+    secondary: {
+      activeTabId: "s-cluster-table",
+      tabs: [
+        { id: "s-cluster-table", type: "cluster-table", config: {} },
+      ],
+    },
+    bottom: {
+      activeTabId: null,
+      tabs: [],
+    },
   },
   selection: { type: null, id: null },
   filter: null,
@@ -113,10 +132,61 @@ export function subscribe(fn) {
   return () => subscribers.delete(fn);
 }
 
-// Helpers for common nested updates.
-export function setPanel(slot, type, config = {}) {
+// ── Panel/tab helpers ──────────────────────────────────────────────
+// Slot shape: { activeTabId, tabs: [{ id, type, config }] }
+// Each tab has a unique id within the slot; close removes by id and
+// auto-switches active to a neighbour. Add returns the new tab id.
+
+function genTabId(slot) {
+  return `${slot}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+}
+
+export function addTab(slot, type, config = {}) {
+  const cur = state.panels[slot];
+  if (!cur) throw new Error(`unknown slot "${slot}"`);
+  const id = genTabId(slot);
   update({
-    panels: { ...state.panels, [slot]: { type, config } },
+    panels: {
+      ...state.panels,
+      [slot]: {
+        activeTabId: id,
+        tabs: [...cur.tabs, { id, type, config }],
+      },
+    },
+  });
+  return id;
+}
+
+export function closeTab(slot, tabId) {
+  const cur = state.panels[slot];
+  if (!cur) return;
+  const tabs = cur.tabs.filter(t => t.id !== tabId);
+  let activeTabId = cur.activeTabId;
+  if (activeTabId === tabId) {
+    activeTabId = tabs.length > 0 ? tabs[tabs.length - 1].id : null;
+  }
+  update({
+    panels: { ...state.panels, [slot]: { activeTabId, tabs } },
+  });
+}
+
+export function setActiveTab(slot, tabId) {
+  const cur = state.panels[slot];
+  if (!cur || cur.activeTabId === tabId) return;
+  if (!cur.tabs.some(t => t.id === tabId)) return;
+  update({
+    panels: { ...state.panels, [slot]: { ...cur, activeTabId: tabId } },
+  });
+}
+
+export function setTabConfig(slot, tabId, partialConfig) {
+  const cur = state.panels[slot];
+  if (!cur) return;
+  const tabs = cur.tabs.map(t =>
+    t.id === tabId ? { ...t, config: { ...t.config, ...partialConfig } } : t
+  );
+  update({
+    panels: { ...state.panels, [slot]: { ...cur, tabs } },
   });
 }
 
