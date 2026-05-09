@@ -1,9 +1,23 @@
 # Plan — converging the toy and the real pipeline
 
-**Status:** lock-in ahead of build. The decisions below are
-committed; sequencing is rough but each phase is independently
-deliverable. Pairs with `doc/clustering-research.md` for the
-research that justifies the picks.
+**Status:** in-flight. Decisions below are committed; the
+sequencing in §6 has been substantially revised to reflect what's
+actually been built. Pairs with `doc/clustering-research.md` for
+the research that justifies the picks.
+
+**Current state (2026-05-10):** the toy has been substantially
+re-shelled with a new UI architecture (workflow chart + multi-tab
+panels + modal infrastructure) that wasn't itemised in the
+original plan but turned out to be the prerequisite for almost
+everything else. Multi-level clustering with global / within-parent
+scope is live. Mode-aware "node table" legend follows whatever's
+colouring the 3D viewer. Selection is generalised across cluster /
+origin / node types. `connected-components` is the first new
+algorithm registered.
+
+**Not yet started:** dim-reduction layer, bridge analysis (the
+multi-scale derivation we discussed), real-pipeline Python port
+(Layer 4/5a in scoring app), `Validate ▾` modal, method manual.
 
 The vision: **one method, two surfaces.** The toy (`app/`) stays
 as the low-dim interactive sandbox where researchers explore the
@@ -77,29 +91,34 @@ The toy maintains **two independent dim-reduction outputs**:
 Real pipeline only needs the clustering reduction (it visualises
 via UMAP-2d in the scoring app, separately).
 
-### 2.2 Hierarchical `ClusterResult` contract
+### 2.2 Multi-level clustering (replaces the planned hierarchical contract extension)
 
-Current contract has flat `nodeCluster: Int32Array`. Real pipeline
-emits paths (`L1.4.2`). Extend additively:
+**Done — but not the way originally planned.** The original idea
+was to extend `ClusterResult` with optional `nodePath` /
+`clusterTree` fields. Instead we kept the contract flat and
+added a sibling slot:
 
-```ts
-{
-  ...existing flat fields...,
-  nodePath?:    string[],             // optional, e.g. "L1.4.2"
-  clusterTree?: {
-    [path: string]: {
-      parent:    string | null,
-      children:  string[],
-      depth:     number,
-      ...existing per-cluster fields...
-    }
-  },
-}
+```js
+state.clusterLevels = [
+  { uid, scope: "global" | "within-parent", clusterResult: ClusterResult },
+  ...
+];
+state.clusterResult = clusterLevels[finest].clusterResult;   // backward-compat alias
 ```
 
-Validator: if `nodePath` is present, every entry must be a valid
-path in `clusterTree`; depths consistent; `nodeCluster` matches
-the top-level slice. Flat algorithms keep working unchanged.
+Each level is an ordinary `ClusterResult` — the contract didn't
+change, every existing panel kept working, and "what level am I
+looking at?" is just an array index.
+
+The `scope` flag per level decides whether the algorithm runs
+globally (re-cluster the whole dataset at finer resolution) or
+within each parent cluster's members. The first level is always
+global; subsequent levels can mix freely.
+
+Same algorithm across all levels (single dropdown in the modal).
+Per-level algorithm choice (originally planned) was deferred — the
+single-algorithm story is cleaner for the user-facing narrative and
+nothing has yet pushed back on it.
 
 ### 2.3 Two α parameters (real + toy)
 
@@ -165,26 +184,31 @@ Other sweeps still apply:
 
 ### 3.2 Clustering registry (additions to existing toy)
 
-Currently registered in toy: mutual k-NN, HDBSCAN. Real pipeline:
-recursive Leiden CPM.
+Originally registered in toy: `mutualKNN`, `hdbscan`. Real
+pipeline: recursive Leiden CPM (separate codebase, not yet
+ported).
 
-Adding (each = one registry entry):
+| ID | Where | Status | Notes |
+|----|-------|--------|-------|
+| `mutualKNN` | toy | ✓ original | reciprocal k-NN connected components |
+| `hdbscan` | toy | ✓ original | density-based; cuML port pending for scale |
+| `connected-components` | toy | ✓ added 2026-05-10 | top-k k-NN (no mutuality), CCs; baseline |
+| `leiden-cpm` | toy | pending | single-level Leiden baseline |
+| `leiden-recursive` | toy + real | pending | recursive multi-level (toy already supports the multi-level shell; just needs the algorithm) |
+| `infomap` | toy + real | pending | citation-flow-aware second opinion |
+| `sparse-spectral` | toy + real | pending | `eigsh` on sparse Laplacian |
+| `kmeans-cosine` | toy | pending | spherical k-means baseline |
+| `birch-ward` | toy + real | pending | BIRCH preprocessor → Ward |
+| `dpc-knn` | toy + real | pending | UP-DPC / ANN-DPC on sparse k-NN |
 
-| ID | Where | Notes |
-|----|-------|-------|
-| `hdbscan` | toy + real | extend existing toy entry; cuML at scale |
-| `leiden-cpm` | toy | single-level baseline |
-| `leiden-recursive` | toy + real | port real-pipeline algorithm to toy |
-| `infomap` | toy + real | citation-flow-aware second opinion |
-| `sparse-spectral` | toy + real | `eigsh` on sparse Laplacian |
-| `kmeans-cosine` | toy | spherical k-means baseline |
-| `birch-ward` | toy + real | composition: BIRCH 810k → 10k leaves → Ward |
-| `dpc-knn` | toy + real | UP-DPC / ANN-DPC on sparse k-NN |
-| `connected-components` | toy | trivial validator stress-test |
+User has explicitly said no more *primary* clustering algorithms
+are urgent for now; the multi-level + scope mechanism does most of
+what was needed for sub-clustering. Adding more algorithms remains
+mechanical (~50–300 lines per entry) when the need arises.
 
 Each clustering entry declares its preferred input shape (raw
 embedding, dim-reduced, sparse graph). The pipeline orchestrator
-runs the right dim-reduction first.
+will run the right dim-reduction first once that layer is built.
 
 ### 3.3 Locked default configuration
 
@@ -219,42 +243,88 @@ sweep tooling.
 
 ### 3.4 Recursion + research focus targets
 
-Current real pipeline does recursive Leiden upfront (full tree to
-depth 5). Two extensions:
+**Done — different mechanism from the original plan.** The
+original sketched a `recluster_subset(parent_path, node_ids,
+params)` verb plus per-level algorithm choice. What landed
+instead is:
 
-- **`recluster_subset` operation**: takes
-  `(parent_path, node_ids, params)`, emits child partition.
-  Triggered on demand from the UI; doesn't require full rebuild.
-- **Per-level algorithm choice**: L1 might be Leiden, L2 inside a
-  focus area might be HDBSCAN (different topology assumption).
-  Each level is a separate registry call. The hierarchical
-  `ClusterResult` contract (§2.2) supports this without further
-  changes — depth is recorded per cluster, algorithm id per
-  cluster too.
+- **Multi-level with `scope` per level.** `scope: "global"`
+  re-clusters the full dataset at finer resolution; `scope:
+  "within-parent"` runs the algorithm within each previous-level
+  cluster's members and stitches the results into a globally-
+  numbered `ClusterResult`. User mixes both modes per level via
+  the modal (workflow chart → Clustering node → + Add level).
+- **Same algorithm across all levels.** Per the user's call:
+  better story, apples-to-apples comparison across resolutions.
+  Per-level algorithm choice was deferred indefinitely.
+- **No on-demand `recluster_subset`.** Apply commits all levels
+  at once. Cheap at toy scale; would need revisiting at real-data
+  scale (each Apply = full pipeline rerun on 810 k).
 
-This addresses the "same algorithm at every level isn't always
-right" limitation the user flagged.
+The "research focus targets" use case is satisfied by the
+within-parent scope: pick a coarse Layer 0, then Layer 1 with
+within-parent scope subdivides each L0 cluster independently.
+
+**Pending (the multi-scale boundary analysis):** the real
+research question — "where are the boundaries between coarse
+clusters?" — needs an additional layer that consumes two
+adjacent `clusterLevels` and derives a per-node boundary score
+plus bridge-cluster list. Promoted to a numbered item in §6.
 
 ### 3.5 Stability metrics
 
-Two-tier (per `clustering-research.md` §1):
+Two-tier (per `clustering-research.md` §1).
+
+**Status:** partial.
 
 **Always-visible (cheap, free)**: per-algorithm intrinsic metric.
-- HDBSCAN → `relative_validity_` (DBCV) + per-cluster persistence
-- Leiden → modularity Q
-- Spectral → eigengap
-- k-means / GMM → sampled silhouette + BIC for GMM
-- Mutual k-NN → component-size distribution
+- HDBSCAN → ✓ `stability` field per cluster (legacy contract;
+  surfaces in node-table as the `stab.` column)
+- Leiden → pending (modularity Q; lands when leiden registers)
+- Spectral → pending (eigengap)
+- k-means / GMM → pending (sampled silhouette + BIC)
+- Mutual k-NN → ✓ implicit (component-size distribution visible
+  via the cluster source rows in node-table)
 
-**On-demand (`Validate ▾` modal)**: bootstrap-Jaccard on a fixed
-50 k subsample, B = 25 reclusterings, per-cluster max-Jaccard
-with Hennig thresholds (≥ 0.85 stable, 0.6–0.75 doubtful, < 0.6
-not a cluster).
+**Cross-algorithm disagreement** is now *implicit* via the
+node-table's mode-aware design: pin the table to one source
+while the viewer colours by another, and disagreement is
+visually apparent. Quantitative ARI across algorithms is a
+follow-up; currently disagreement is qualitative.
 
-**Cross-algorithm disagreement** as a per-paper signal: papers
-Leiden and HDBSCAN cluster differently are exactly the
-"genuinely ambiguous" set worth surfacing. Free; just compute
-ARI between two cluster assignments.
+**On-demand (`Validate ▾` modal)**: pending. Bootstrap-Jaccard
+on a 50 k subsample (Hennig thresholds: ≥ 0.85 stable, 0.6–0.75
+doubtful, < 0.6 not a cluster). Modal infrastructure is built
+(`modals/modal.js`), so this is just a new modal entry + the
+bootstrap loop in the engine.
+
+---
+
+### 3.6 UI infrastructure (built; wasn't in the original plan)
+
+The original plan implicitly assumed the existing toy UI could
+host every layer addition. In practice the legacy single-panel
+shell couldn't accommodate multi-level clustering, mode-aware
+legends, or per-layer algorithm modals. The pre-requisite work
+turned into a substantial UI re-architecture, all done at toy
+scale and committed under `app/src/ui/`:
+
+| Subsystem | What it does |
+|-----------|--------------|
+| **Workflow chart** | SVG DAG of the pipeline (left rail). Each method node click opens its algorithm modal. State dots colour-coded fresh / stale / not-run. |
+| **Multi-tab panel system** | Three slots (primary / secondary / bottom). Each holds an array of tabs with × close + + add. + opens the **panel-picker** modal listing registered panel types. Singletons (e.g. viewer-3d) filtered when already mounted. |
+| **Modal infrastructure** | `modals/modal.js` (generic dialog), `modals/algorithm-modal.js` (single-level layer config — used for citation layout), `modals/clustering-modal.js` (multi-level — algorithm + per-level params + scope toggle + ± levels), `modals/panel-picker.js`. |
+| **Layer descriptors** | `modals/layer-descriptors.js` returns `{label, openModal()}` per workflow-chart node. Adding a new layer = one new descriptor function. |
+| **Mode-aware node-table** | Right-side panel that doubles as the legend for whatever's colouring the viewer. Source dropdown: Auto (follow viewer) / Cluster level N / Origin / Time / In-degree. |
+| **Generalised selection** | `state.selection = {type, level?, id, …}` covering cluster (per-level), origin, node, time-bin. viewer-3d's nodeColour dimming routes by type. |
+| **Colour-by dropdown in viewer-3d** | Top-left overlay; options auto-derived from current state. |
+| **Camera UX** | Settings overlay (top-right), 0–1 speed sliders, no-inertia default. |
+| **State container** | Vanilla `getState / update / subscribe` plus typed actions (`setTabConfig`, `addTab`, `setSelection`, `setLayerParams`, etc.). |
+
+This work made every subsequent toy slice cheap. Future
+algorithms register in one file and flow through workflow chart →
+modal → engine → viewer-3d colouring → node-table legend
+automatically.
 
 ---
 
@@ -311,52 +381,113 @@ Final shape — to converge on once integration is in flight:
 ## 6. Sequencing
 
 Each phase is independently deliverable; order is flexible.
+Status legend: ✓ done · ◐ partial · ☐ pending · ↻ done differently.
 
-1. **Dim-reduction layer.** Build the registry, contract, and
-   validator. Register `identity`, `pca`, `umap`, `pacmap`,
-   `viz-umap`. Toy adopts dim-reduction as a precursor to
-   clustering.
-2. **Hierarchical `ClusterResult` extension.** Additive contract
-   change; validator update. Register a single-level Leiden in
-   the toy as the simplest hierarchical-capable test case.
-3. **Recursive Leiden + per-level algorithm choice.** Implement
-   `recluster_subset`; demo per-level algorithm choice on a small
-   toy example.
-4. **HDBSCAN on UMAP-50 in the toy.** Wire the locked default
-   configuration end-to-end at toy scale. Validate via the ARI
-   dim-sweep that 50-d is enough for our test data.
-5. **Citation-layout for the real pipeline.** Pivot MDS per
-   Leiden component (already in the layout registry). Python port
-   of layout algorithms.
-6. **Per-component alignment + `alignmentCorrelation` at scale.**
-   `blend/align.js` ported to Python; runs against real-pipeline
-   outputs. Surface correlation per cluster as a column.
-7. **Per-frame blend in the scoring app.** Slider drives α;
-   plotly scattergl repaints. Integration becomes user-visible.
-8. **Stability metrics**: cheap always-visible per-algorithm,
-   on-demand bootstrap-Jaccard `Validate ▾` modal.
-9. **`doc/method-manual.md`.** Once 1–8 are stable.
+### 6.0 UI infrastructure (was implicit; took a substantial slice) ✓
+Workflow chart, multi-tab panels, modal infrastructure,
+mode-aware node-table, generalised selection, colour-by
+dropdown, camera UX, state container. See §3.6. Done over
+multiple commits 2026-05-08 → 2026-05-10. Pre-requisite for
+almost everything below.
 
-Compression / subsampling for "real data in the toy" is a
-parallel track, deferred.
+### 6.1 Multi-level clustering (was item 2 + 3) ✓ ↻
+`state.clusterLevels` array + global / within-parent scope per
+level. Same algorithm across all levels. Modal with ± levels
+done. **Different from the original plan** (no `nodePath`
+contract extension, no `recluster_subset` verb, no per-level
+algorithm choice) — the simpler design told a better story.
+
+### 6.2 First new clustering algorithm registered ✓
+`connected-components` lives. Demonstrates the registry-entry
+pattern works end-to-end (workflow modal swap → engine cascade
+→ viewer-3d recolour → node-table reflows). User has paused
+adding more clustering algorithms to focus on the multi-level
+analysis story.
+
+### 6.3 Bridge analysis (the multi-scale derivation) ☐  **next priority**
+Consumes two adjacent `clusterLevels` (coarse + fine). Derives:
+- per-fine-cluster `coarseShares` histogram
+- per-node `boundaryScore` (entropy or `1 − max(coarseShare)`)
+- list of bridge clusters (fine clusters spanning ≥2 coarse)
+- coarse-adjacency graph weighted by shared fine clusters
+
+Surfaces:
+- new `boundaryScore` colour mode in viewer-3d
+- new `bridge` source in node-table
+- new `bridgeAdjacency` source (one row per coarse-coarse pair)
+
+No engine contract change — the analysis is a derivation on top
+of existing `clusterLevels`. ~150 lines analysis + ~50 lines per
+new node-table source.
+
+### 6.4 Dim-reduction layer ☐
+Build `app/src/dimred/` with `identity` + `pca` minimum, then
+`umap` / `pacmap`. Adds the missing Layer 1.5 to the workflow
+chart. At toy scale this is mostly architectural (basePos is
+already 3-d so reduction is near-noop); becomes load-bearing
+when the real-data port begins. Was originally item 1; demoted
+because nothing currently blocks on it at toy scale.
+
+### 6.5 Stability `Validate ▾` modal ☐
+Bootstrap-Jaccard on a fixed 50 k subsample, B = 25, per-cluster
+max-Jaccard. Hennig thresholds. Modal infra is built; this is
+just the engine bootstrap loop + a result-rendering modal body.
+
+### 6.6 Real-data pipeline ports ☐
+Was items 5–7 in the original plan. Pending until the toy work
+stabilises.
+- Layer 4 (citation layout) — pivot MDS per Leiden component, in
+  Python.
+- Layer 5a (alignment) — `blend/align.js` ported to Python;
+  runs on real-pipeline outputs.
+- Layer 5b (per-frame blend) — α slider in scoring app; plotly
+  scattergl repaints.
+
+### 6.7 ARI dim-sweep validation ☐
+Was item 4 (and §2.5). Depends on dim-reduction (6.4) being live.
+Run the same clustering at UMAP target dim ∈ {30, 50, 100, 200},
+ARI between resulting partitions, threshold check.
+
+### 6.8 `doc/method-manual.md` ☐
+Was item 9. Still too early.
+
+### Parallel track (deferred)
+
+Compression / subsampling for "real data in the toy" — load a
+~10 k subsample of the 810 k corpus into the toy for interactive
+exploration. Out of scope for the immediate plan.
 
 ---
 
 ## 7. Open questions to resolve as we go
 
-Not pre-deciding these — they need data and judgment:
+### Resolved
 
-- **Hierarchical contract precise shape.** `nodePath` strings vs
-  per-level array vs explicit tree? Decide when registering the
-  first hierarchical algorithm.
-- **Stopping predicate for recursion.** Leaf-size? Coherence
-  threshold? Modularity gain? Depends on what the research
-  questions actually need.
+- ~~**Hierarchical contract precise shape.**~~ Resolved by going
+  with a flat `state.clusterLevels` array of ordinary
+  `ClusterResult`s — no contract extension needed. See §2.2.
+- ~~**Per-level algorithm choice.**~~ Deferred (single algorithm
+  across levels per user's call). Revisit if a use case appears.
+
+### Still open (need data or judgment)
+
+- **Boundary-score definition** for §6.3 bridge analysis. Three
+  candidates: entropy of coarse-membership; `1 − max(coarseShare)`;
+  count of distinct coarse clusters in the fine cluster. Each
+  weights small minority shares differently. Pick when 6.3 starts.
+- **Stopping predicate for recursion.** Currently the user
+  controls level count manually via the modal's `+ Add level`.
+  At real-data scale we may want an auto-stop: leaf-size threshold,
+  coherence threshold, or modularity-gain. Not urgent at toy scale.
 - **Subsample size for the toy at real-data shape.** 5 k? 10 k?
   20 k? Empirical, deferred to large-data compression work.
 - **ARI dim-sweep verdict.** If `ARI(50, 100) < 0.9` on real data,
   bump default to 100-d. Currently 50-d is a defensible starting
-  point.
+  point. Resolved when 6.4 + 6.7 land.
 - **`min_cluster_size` for HDBSCAN at 810 k.** 100 is a defensible
   starting point (≈ 0.01% of n); the cluster-sweep eval will
   refine on real data.
+- **Quantitative cross-algorithm disagreement metric.** Currently
+  qualitative (eyeball the legend vs colouring). When it becomes a
+  workflow step, decide between ARI per-pair, AMI, or per-paper
+  agreement count.
