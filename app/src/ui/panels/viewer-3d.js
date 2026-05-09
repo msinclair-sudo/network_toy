@@ -30,9 +30,12 @@ export const DESCRIPTION = "Live blend visualisation; per-frame interpolation be
 const R_GLOBAL = 60;        // matches generation.js's working half-extent
 
 const DEFAULT_CAMERA = {
-  rotateSpeed:  1.0,    // OrbitControls/TrackballControls native default; legacy was 2.2
-  zoomSpeed:    1.0,    // legacy was 2.5
-  panSpeed:     1.0,    // legacy was 1.6
+  // Speeds are 0..1 fractions of TrackballControls' native rate (1.0 native).
+  // Defaults of 0.3 are ~3× slower than native for finer control on dense
+  // graphs; user can dial up to 1.0 in 0.01 steps via the settings popup.
+  rotateSpeed:  0.3,
+  zoomSpeed:    0.3,
+  panSpeed:     0.3,
   // 3d-force-graph uses TrackballControls. staticMoving=false (its default)
   // gives the camera inertia/coasting after mouse release — the "acceleration"
   // feel. We default to true (no inertia, click-and-stick) and let the user
@@ -289,7 +292,7 @@ function buildSettingsOverlay(container, cam, onChange) {
   hint.style.fontSize = "10px";
   hint.style.color = "var(--text-faint)";
   hint.style.marginTop = "6px";
-  hint.textContent = "1.0 = native speed; >1 faster";
+  hint.textContent = "0–1 fraction of native speed";
   popup.appendChild(hint);
 
   root.appendChild(popup);
@@ -344,9 +347,9 @@ function speedRow(labelText, key, value, cam, onChange) {
 
   const input = document.createElement("input");
   input.type = "range";
-  input.min = "0.1";
-  input.max = "3.0";
-  input.step = "0.05";
+  input.min = "0";
+  input.max = "1";
+  input.step = "0.01";
   input.value = String(value);
   row.appendChild(input);
 
