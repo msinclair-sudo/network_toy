@@ -7,6 +7,7 @@
 // clustering / citation-layout registries on the engine side.
 
 import * as Placeholder from "./placeholder.js";
+import * as Viewer3D    from "./viewer-3d.js";
 
 const entries = new Map();
 
@@ -20,9 +21,9 @@ function register(mod) {
 }
 
 register(Placeholder);
+register(Viewer3D);
 
 // Future entries (mounted as their modules come online):
-// register(await import("./viewer-3d.js"));        // slice 2
 // register(await import("./cluster-table.js"));    // slice 3
 // register(await import("./viewer-2d.js"));        // slice 6
 // register(await import("./cluster-tree.js"));     // slice 6

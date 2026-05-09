@@ -32,11 +32,32 @@ const state = {
   },
 
   // ── pipeline outputs (one per layer; null until run) ─────────
-  generation:  null,    // { genResult, basePos, ... }
-  dimred:      null,    // { algoId, output, dim, ... }
-  clustering:  null,    // { algoId, clusterResult, ... }
-  citations:   null,    // { algoId, citationResult, ... }
-  layout:      null,    // { algoId, citationLayout, alignedLayout, alignmentCorr, ... }
+  // Stored flat at state root for direct getter access from the
+  // blend hook and per-panel rendering — mirrors the legacy main.js
+  // shape so engine modules can be ported without restructuring.
+  genResult:             null,    // Layer 1 output: {origins, nodes:[{id, basePos, t, originId}]}
+  _basePos:              null,    // Float32Array(n × 3) — flattened basePos, blend force input
+  clusterResult:         null,    // Layer 2 output: ClusterResult contract
+  neighbourhoodResult:   null,    // taste-network internal: {neighbourhoods, nodeNeighbourhood}
+  tasteResult:           null,    // taste-network internal: {tasteByNeighbourhood, tasteByCluster}
+  citationResult:        null,    // Layer 3 output: CitationResult contract
+  citationLayout:        null,    // Layer 4 output: Float32Array(n × 3) raw layout positions
+  alignedCitationLayout: null,    // Layer 5a output: Float32Array(n × 3) — blend force input
+  alignmentCorrelation:  NaN,     // Layer 5a quality metric ∈ [0, 1]
+
+  // Bumps every time the pipeline runs (full or partial).
+  // Panels watch this to know when to rebuild their cached views.
+  engineRevision:        0,
+
+  // Layer-specific algorithm params. Populated lazily on first
+  // pipeline run from each registry's defaultParams().
+  layerParams: {
+    neighbourhood: null,
+    taste:         null,
+    citations:     null,
+    clustering:    null,    // { method, byAlgo: { algoId: params } }
+    layout:        null,    // { method, params }
+  },
 
   // ── pipeline freshness ───────────────────────────────────────
   // states: "not-run" | "stale" | "fresh" | "error"
@@ -61,7 +82,7 @@ const state = {
 
   // ── UI state ─────────────────────────────────────────────────
   panels: {
-    primary:   { type: "placeholder", config: { label: "3D viewer", hint: "viewer-3d panel — slice 2 of the build" } },
+    primary:   { type: "viewer-3d",   config: {} },
     secondary: { type: "placeholder", config: { label: "Cluster table", hint: "cluster-table panel — slice 3 of the build" } },
     bottom:    { type: "placeholder", config: { label: "Tables / sweep results", hint: "configurable panel — wire any registered panel type here" } },
   },
@@ -127,5 +148,15 @@ export function setToyParam(key, value) {
       ...state.dataSource,
       config: { ...state.dataSource.config, [key]: value },
     },
+  });
+}
+
+export function bumpEngineRevision() {
+  update({ engineRevision: state.engineRevision + 1 });
+}
+
+export function setLayerParams(layer, params) {
+  update({
+    layerParams: { ...state.layerParams, [layer]: params },
   });
 }

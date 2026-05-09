@@ -14,32 +14,37 @@
 
 import { getState, subscribe } from "./state.js";
 
-// Hand layout. y-positions are in SVG-local coords; the SVG itself
-// scales width to fit the rail.
+// Single-column DAG laid out vertically. Citations is a *method*
+// node here (toy generates them via taste-network); for real-data
+// mode it becomes an input node and the toy's path through the
+// chart stays the same.
+//
+// y-positions are in SVG-local units; the SVG itself scales width
+// to fit the rail.
 const NODES = [
   // [id, label, x, y, kind]   kind: "input" | "method"
-  { id: "data",       label: "Data",          x:  90, y:  20, kind: "input"  },
-  { id: "dimred",     label: "Dim reduction", x:  90, y:  80, kind: "method" },
-  { id: "clustering", label: "Clustering",    x:  90, y: 140, kind: "method" },
-  { id: "citations",  label: "Citations",     x:  20, y: 200, kind: "input"  },
-  { id: "layout",     label: "Cit. layout",   x:  90, y: 200, kind: "method" },
-  { id: "alignment",  label: "Alignment",     x:  90, y: 260, kind: "method" },
-  { id: "blend",      label: "Blend",         x:  90, y: 320, kind: "method" },
+  { id: "data",       label: "Data",         x: 10, y:  10, kind: "input"  },
+  { id: "dimred",     label: "Dim reduce",   x: 10, y:  62, kind: "method" },
+  { id: "clustering", label: "Clustering",   x: 10, y: 114, kind: "method" },
+  { id: "citations",  label: "Citations",    x: 10, y: 166, kind: "method" },
+  { id: "layout",     label: "Cit. layout",  x: 10, y: 218, kind: "method" },
+  { id: "alignment",  label: "Alignment",    x: 10, y: 270, kind: "method" },
+  { id: "blend",      label: "Blend",        x: 10, y: 322, kind: "method" },
 ];
 
 const EDGES = [
   ["data",       "dimred"],
   ["dimred",     "clustering"],
-  ["clustering", "layout"],
+  ["clustering", "citations"],
   ["citations",  "layout"],
   ["layout",     "alignment"],
   ["alignment",  "blend"],
 ];
 
-const NODE_W = 140;
-const NODE_H = 38;
-const VIEWBOX_W = 180;
-const VIEWBOX_H = 360;
+const NODE_W = 200;
+const NODE_H = 40;
+const VIEWBOX_W = 220;
+const VIEWBOX_H = 372;
 
 export function mountWorkflowChart() {
   const root = document.getElementById("workflow-chart");

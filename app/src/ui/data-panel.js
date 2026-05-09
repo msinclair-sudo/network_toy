@@ -7,6 +7,7 @@
 // Mode is driven by state.dataSource.mode.
 
 import { getState, subscribe, setToyParam, setLayerState } from "./state.js";
+import * as engine from "./engine.js";
 
 export function mountDataPanel() {
   const root = document.getElementById("data-panel");
@@ -54,15 +55,12 @@ function renderToyMode(state) {
   genBtn.textContent = "Generate ▶";
   genBtn.title = "Re-run Layer 1 (generation) and cascade.";
   genBtn.addEventListener("click", () => {
-    // Engine wiring in slice 2; for now mark layers stale and log.
-    setLayerState("data", "fresh");
-    setLayerState("dimred", "stale");
-    setLayerState("clustering", "stale");
-    setLayerState("citations", "stale");
-    setLayerState("layout", "stale");
-    setLayerState("alignment", "stale");
-    setLayerState("blend", "stale");
-    console.log("[data-panel] Generate ▶ — engine wiring pending (slice 2)");
+    try {
+      engine.regenerate();
+    } catch (e) {
+      console.error("[data-panel] regenerate failed:", e);
+      setLayerState("data", "error");
+    }
   });
   actions.appendChild(genBtn);
 

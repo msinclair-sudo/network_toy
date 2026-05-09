@@ -16,6 +16,7 @@ import { mountDataPanel }      from "./data-panel.js";
 import { mountWorkflowChart }  from "./workflow-chart.js";
 import { mountPanelSystem }    from "./panel-system.js";
 import { setBlend, getState, subscribe } from "./state.js";
+import * as engine             from "./engine.js";
 
 export function boot() {
   mountTopbar();
@@ -24,8 +25,16 @@ export function boot() {
   mountPanelSystem();
   mountBlendSlider();
 
-  console.log("[ui] new shell mounted. Engine wiring lands in slice 2.");
-  console.log("[ui] state:", getState());
+  // Run the toy pipeline once so the 3D viewer has data on first
+  // paint. Wrapped in rAF so the panel system has finished mounting
+  // its initial DOM (the viewer-3d panel queries its container size
+  // from layout).
+  requestAnimationFrame(() => {
+    try { engine.regenerate(); }
+    catch (e) { console.error("[ui] initial pipeline run failed:", e); }
+  });
+
+  console.log("[ui] shell mounted; engine wired.");
 }
 
 function mountBlendSlider() {
