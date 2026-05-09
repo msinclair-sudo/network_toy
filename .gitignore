@@ -24,5 +24,8 @@ Thumbs.db
 .claude/
 CLAUDE.md
 
+# UI plan — working note, not part of the tracked docs
+doc/ui.md
+
 # diagnostic harnesses and acceptance scripts kept locally, not shared
 scratch/

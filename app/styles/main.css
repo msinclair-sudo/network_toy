@@ -1,0 +1,457 @@
+/* network toy — new shell layout
+   structure follows doc/ui.md §2.
+   stays close to the legacy aesthetic (dark, monospace-friendly, compact).
+*/
+
+:root {
+  --bg:           #1a1d22;
+  --bg-2:         #21252b;
+  --bg-3:         #282c34;
+  --border:       #353a42;
+  --border-light: #4a5260;
+  --text:         #d7dae0;
+  --text-dim:     #9aa1ab;
+  --text-faint:   #6c7280;
+  --accent:       #61afef;
+  --accent-dim:   #4a8ac0;
+  --ok:           #98c379;
+  --warn:         #e5c07b;
+  --err:          #e06c75;
+  --not-run:      #6c7280;
+  --left-rail-w:  280px;
+  --right-rail-w: 320px;
+  --bottom-h:     220px;
+  --topbar-h:     36px;
+  --font-mono:    ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  --font-ui:      system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100vh;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  overflow: hidden;
+}
+
+/* ── topbar ─────────────────────────────────────────────────────────── */
+
+#topbar {
+  height: var(--topbar-h);
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  gap: 4px;
+  user-select: none;
+}
+
+#topbar .topbar-menu {
+  position: relative;
+  padding: 4px 10px;
+  cursor: pointer;
+  border-radius: 3px;
+  font-size: 13px;
+  color: var(--text);
+}
+
+#topbar .topbar-menu:hover {
+  background: var(--bg-3);
+}
+
+#topbar .topbar-menu.open {
+  background: var(--bg-3);
+}
+
+#topbar .topbar-menu-dropdown {
+  display: none;
+  position: absolute;
+  top: 100%;
+  left: 0;
+  min-width: 220px;
+  background: var(--bg-2);
+  border: 1px solid var(--border-light);
+  border-radius: 4px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+  z-index: 100;
+  padding: 4px 0;
+}
+
+#topbar .topbar-menu.open .topbar-menu-dropdown {
+  display: block;
+}
+
+#topbar .topbar-menu-item {
+  padding: 6px 12px;
+  cursor: pointer;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+#topbar .topbar-menu-item:hover {
+  background: var(--bg-3);
+  color: var(--accent);
+}
+
+#topbar .topbar-menu-item.disabled {
+  color: var(--text-faint);
+  cursor: not-allowed;
+}
+
+#topbar .topbar-menu-item.disabled:hover {
+  background: transparent;
+  color: var(--text-faint);
+}
+
+#topbar .topbar-menu-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 4px 0;
+}
+
+#topbar .topbar-spacer {
+  flex: 1;
+}
+
+#topbar .topbar-seed {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+#topbar .topbar-seed input {
+  width: 64px;
+  background: var(--bg-3);
+  color: var(--text);
+  border: 1px solid var(--border);
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+/* ── layout grid ────────────────────────────────────────────────────── */
+
+#layout {
+  height: calc(100vh - var(--topbar-h));
+  display: grid;
+  grid-template-columns: var(--left-rail-w) 1fr var(--right-rail-w);
+  grid-template-rows: 1fr var(--bottom-h);
+  grid-template-areas:
+    "left primary secondary"
+    "left bottom  bottom";
+}
+
+#left-rail {
+  grid-area: left;
+  background: var(--bg-2);
+  border-right: 1px solid var(--border);
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  overflow: hidden;
+}
+
+#primary-panel { grid-area: primary; }
+#secondary-panel { grid-area: secondary; background: var(--bg-2); border-left: 1px solid var(--border); }
+#bottom-panel { grid-area: bottom; background: var(--bg-2); border-top: 1px solid var(--border); }
+
+.panel-slot {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  overflow: hidden;
+}
+
+.panel-tabs {
+  height: 28px;
+  background: var(--bg-3);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: stretch;
+  padding: 0 4px;
+  user-select: none;
+  overflow-x: auto;
+}
+
+.panel-tab {
+  padding: 0 12px;
+  display: flex;
+  align-items: center;
+  font-size: 12px;
+  color: var(--text-dim);
+  cursor: pointer;
+  border-right: 1px solid var(--border);
+}
+
+.panel-tab:hover { color: var(--text); }
+
+.panel-tab.active {
+  background: var(--bg);
+  color: var(--accent);
+  border-bottom: 2px solid var(--accent);
+}
+
+.panel-tab .panel-tab-spacer { flex: 1; }
+.panel-tab-add {
+  padding: 0 10px;
+  color: var(--text-faint);
+  font-size: 16px;
+  align-self: center;
+  cursor: pointer;
+}
+.panel-tab-add:hover { color: var(--accent); }
+
+.panel-content {
+  overflow: auto;
+  background: var(--bg);
+  position: relative;
+}
+
+/* ── data panel (top of left rail) ──────────────────────────────────── */
+
+#data-panel {
+  padding: 10px 12px 8px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+
+.data-panel-title {
+  font-weight: 600;
+  color: var(--accent);
+  margin-bottom: 6px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.data-panel-title .dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.data-panel-row {
+  display: grid;
+  grid-template-columns: 70px 1fr;
+  gap: 6px;
+  align-items: center;
+  margin: 4px 0;
+}
+
+.data-panel-row label {
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.data-panel-row input[type="number"],
+.data-panel-row input[type="text"] {
+  background: var(--bg-3);
+  color: var(--text);
+  border: 1px solid var(--border);
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  width: 100%;
+}
+
+.data-panel-row input[type="range"] {
+  width: 100%;
+}
+
+.data-panel-row .value-readout {
+  font-family: var(--font-mono);
+  color: var(--text);
+  font-size: 11px;
+  text-align: right;
+}
+
+.data-panel-actions {
+  margin-top: 8px;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.data-panel-actions button {
+  background: var(--accent-dim);
+  color: white;
+  border: none;
+  padding: 5px 12px;
+  border-radius: 3px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.data-panel-actions button:hover {
+  background: var(--accent);
+}
+
+.data-panel-actions a {
+  color: var(--text-dim);
+  font-size: 11px;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.data-panel-actions a:hover { color: var(--accent); }
+
+/* read-only stats variant (real mode) */
+.data-panel-stat {
+  display: grid;
+  grid-template-columns: 90px 1fr;
+  gap: 6px;
+  margin: 4px 0;
+  font-size: 11px;
+}
+
+.data-panel-stat label { color: var(--text-dim); }
+.data-panel-stat span { color: var(--text); font-family: var(--font-mono); }
+
+/* ── workflow chart (middle of left rail) ───────────────────────────── */
+
+#workflow-chart {
+  padding: 8px 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+#workflow-chart svg {
+  width: 100%;
+  display: block;
+  user-select: none;
+}
+
+#workflow-chart .wf-node-rect {
+  fill: var(--bg-3);
+  stroke: var(--border-light);
+  stroke-width: 1;
+  rx: 4;
+  ry: 4;
+  cursor: pointer;
+}
+
+#workflow-chart .wf-node-rect:hover {
+  stroke: var(--accent);
+}
+
+#workflow-chart .wf-node-rect.input {
+  fill: var(--bg-2);
+  stroke-dasharray: 4 3;
+}
+
+#workflow-chart .wf-node-label {
+  fill: var(--text);
+  font-size: 11px;
+  font-family: var(--font-ui);
+  pointer-events: none;
+  text-anchor: middle;
+  dominant-baseline: middle;
+}
+
+#workflow-chart .wf-node-algo {
+  fill: var(--text-dim);
+  font-size: 10px;
+  font-family: var(--font-mono);
+  pointer-events: none;
+  text-anchor: middle;
+  dominant-baseline: middle;
+}
+
+#workflow-chart .wf-arrow {
+  fill: none;
+  stroke: var(--border-light);
+  stroke-width: 1.5;
+  marker-end: url(#wf-arrowhead);
+}
+
+#workflow-chart .wf-state-dot {
+  pointer-events: none;
+}
+
+#workflow-chart .wf-state-dot.fresh    { fill: var(--ok); }
+#workflow-chart .wf-state-dot.stale    { fill: var(--warn); }
+#workflow-chart .wf-state-dot.error    { fill: var(--err); }
+#workflow-chart .wf-state-dot.not-run  { fill: var(--not-run); }
+
+/* ── blend control (bottom of left rail) ─────────────────────────────── */
+
+#blend-control {
+  padding: 8px 12px 10px;
+  border-top: 1px solid var(--border);
+  display: grid;
+  grid-template-columns: 1fr auto;
+  grid-template-rows: auto auto;
+  gap: 4px 8px;
+}
+
+#blend-control .blend-label {
+  grid-column: 1 / 3;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+#blend-control input[type="range"] {
+  grid-column: 1;
+  width: 100%;
+}
+
+#blend-control #blend-readout {
+  grid-column: 2;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text);
+  align-self: center;
+  min-width: 32px;
+  text-align: right;
+}
+
+/* ── placeholder panel ──────────────────────────────────────────────── */
+
+.placeholder-panel {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--text-faint);
+  font-size: 13px;
+  flex-direction: column;
+  gap: 6px;
+  padding: 20px;
+  text-align: center;
+}
+
+.placeholder-panel .placeholder-title {
+  color: var(--text-dim);
+  font-size: 14px;
+  margin-bottom: 4px;
+}
+
+.placeholder-panel .placeholder-hint {
+  font-size: 11px;
+  color: var(--text-faint);
+  font-family: var(--font-mono);
+  max-width: 320px;
+  line-height: 1.5;
+}
+
+/* ── modal root ─────────────────────────────────────────────────────── */
+
+#modal-root {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1000;
+}
+
+#modal-root > * {
+  pointer-events: auto;
+}
