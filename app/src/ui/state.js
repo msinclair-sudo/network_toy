@@ -83,7 +83,7 @@ const state = {
   // ── UI state ─────────────────────────────────────────────────
   panels: {
     primary:   { type: "viewer-3d",   config: { rotateSpeed: 0.3, zoomSpeed: 0.3, panSpeed: 0.3, smoothMotion: false } },
-    secondary: { type: "placeholder", config: { label: "Cluster table", hint: "cluster-table panel — slice 3 of the build" } },
+    secondary: { type: "cluster-table", config: {} },
     bottom:    { type: "placeholder", config: { label: "Tables / sweep results", hint: "configurable panel — wire any registered panel type here" } },
   },
   selection: { type: null, id: null },
@@ -159,4 +159,8 @@ export function setLayerParams(layer, params) {
   update({
     layerParams: { ...state.layerParams, [layer]: params },
   });
+}
+
+export function setSelection(selection) {
+  update({ selection: selection || { type: null, id: null } });
 }

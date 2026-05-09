@@ -147,7 +147,7 @@ function renderNode(node, state) {
 
   // active algorithm (only for method nodes)
   if (node.kind === "method") {
-    const algoId = state.activeAlgorithm[node.id];
+    const algoId = activeAlgorithmFor(state, node.id);
     if (algoId) {
       const algoText = svgEl("text", {
         x: NODE_W / 2 + 4,
@@ -160,6 +160,24 @@ function renderNode(node, state) {
   }
 
   return g;
+}
+
+// Read the active algorithm name for a workflow node from layerParams
+// (the engine's source of truth). Falls back to a placeholder when
+// layerParams hasn't been populated yet (i.e. before first regenerate).
+function activeAlgorithmFor(state, nodeId) {
+  const lp = state.layerParams || {};
+  switch (nodeId) {
+    case "clustering": return lp.clustering ? lp.clustering.method : "—";
+    case "layout":     return lp.layout     ? lp.layout.method     : "—";
+    case "citations":  return state.dataSource.mode === "real"
+                              ? "(observed)"
+                              : "taste-network";
+    case "dimred":     return "—";   // dim-reduction registry lands later
+    case "alignment":  return "match-RMS";
+    case "blend":      return "linear";
+    default:           return null;
+  }
 }
 
 function stateClass(layerState) {

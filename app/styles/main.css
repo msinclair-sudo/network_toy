@@ -443,6 +443,111 @@ html, body {
   line-height: 1.5;
 }
 
+/* ── cluster-table panel ───────────────────────────────────────────── */
+
+.cluster-table-root {
+  display: grid;
+  grid-template-rows: 1fr auto;
+  height: 100%;
+  font-size: 12px;
+  font-family: var(--font-ui);
+}
+
+.cluster-table-empty {
+  display: none;
+  padding: 24px 16px;
+  color: var(--text-faint);
+  text-align: center;
+  font-size: 12px;
+}
+
+.cluster-table-scroll {
+  overflow: auto;
+  height: 100%;
+}
+
+table.cluster-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: auto;
+}
+
+table.cluster-table th.cluster-table-th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg-3);
+  color: var(--text-dim);
+  font-weight: 600;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 6px 8px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  user-select: none;
+}
+
+table.cluster-table th.cluster-table-th.sortable {
+  cursor: pointer;
+}
+table.cluster-table th.cluster-table-th.sortable:hover {
+  color: var(--text);
+  background: var(--border);
+}
+table.cluster-table th .sort-indicator {
+  margin-left: 4px;
+  color: var(--accent);
+  font-size: 9px;
+}
+
+table.cluster-table td {
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+table.cluster-table tr.cluster-table-row {
+  cursor: pointer;
+}
+table.cluster-table tr.cluster-table-row:hover {
+  background: var(--bg-3);
+}
+table.cluster-table tr.cluster-table-row.selected {
+  background: rgba(97, 175, 239, 0.18);   /* accent at low alpha */
+}
+table.cluster-table tr.cluster-table-row.selected td {
+  color: var(--text);
+}
+
+td.cluster-table-colour {
+  width: 16px;
+  padding: 4px 6px 4px 10px;
+}
+.colour-swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 1px solid rgba(255,255,255,0.15);
+  vertical-align: middle;
+}
+
+td.cluster-table-id    { width: 32px; color: var(--text-dim); }
+td.cluster-table-count { width: 50px; }
+td.cluster-table-spread, td.cluster-table-stab { width: 50px; }
+
+.cluster-table-footer {
+  padding: 6px 10px;
+  font-size: 10px;
+  color: var(--text-faint);
+  border-top: 1px solid var(--border);
+  background: var(--bg-2);
+  text-align: right;
+}
+
 /* ── viewer-3d settings overlay (camera speeds etc.) ───────────────── */
 
 .viewer-3d-settings {

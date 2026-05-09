@@ -69,6 +69,7 @@ export function mount(container, _state, config = {}) {
   let Graph = null;
   let lastDataRevision = -1;
   let resizeObs = null;
+  let lastSelection = null;       // tracked for re-paint without rebuild
 
   function init() {
     if (!window.ForceGraph3D) {
@@ -152,7 +153,8 @@ export function mount(container, _state, config = {}) {
     }
 
     Graph
-      .nodeColor((n) => n.colour || "#888")
+      .nodeColor(nodeColour)
+      .nodeOpacity(1.0)
       .nodeVal(() => 1)
       .nodeLabel((n) => `#${n.id} · cluster ${n.clusterId} · t=${(n.t ?? 0).toFixed(2)}`)
       .linkColor(() => "#888888")
@@ -163,6 +165,28 @@ export function mount(container, _state, config = {}) {
       .graphData({ nodes, links });
 
     Graph.d3ReheatSimulation();
+  }
+
+  // Colour a node based on cluster + current selection state.
+  // - No selection: render its native cluster colour.
+  // - Selection of "cluster": dim non-selected to a faint grey,
+  //   keep selected cluster at full saturation.
+  // Reads getState() each call (called per node, lib-driven).
+  function nodeColour(n) {
+    const sel = getState().selection;
+    if (!sel || sel.type !== "cluster" || sel.id == null) {
+      return n.colour || "#888";
+    }
+    if (n.clusterId === sel.id) return n.colour || "#888";
+    return "#3a3f4a";   // dimmed slate
+  }
+
+  // Re-evaluate node colours without rebuilding graphData. Cheap;
+  // 3d-force-graph re-reads the colour accessor on refresh().
+  function repaintSelection() {
+    if (!Graph) return;
+    Graph.nodeColor(nodeColour);
+    if (Graph.refresh) Graph.refresh();
   }
 
   // Snapshot the previous tick's live positions so a rebuild
@@ -237,6 +261,17 @@ export function mount(container, _state, config = {}) {
       if (s.engineRevision !== lastDataRevision) {
         rebuildData();
         lastDataRevision = s.engineRevision;
+        lastSelection = s.selection;
+        return;
+      }
+      // Selection-only change: re-paint colours, no rebuild.
+      const selChanged =
+        !lastSelection ||
+        lastSelection.type !== s.selection.type ||
+        lastSelection.id   !== s.selection.id;
+      if (selChanged) {
+        lastSelection = s.selection;
+        repaintSelection();
       }
     },
     destroy() {
