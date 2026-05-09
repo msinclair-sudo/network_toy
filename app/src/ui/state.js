@@ -82,7 +82,7 @@ const state = {
 
   // ── UI state ─────────────────────────────────────────────────
   panels: {
-    primary:   { type: "viewer-3d",   config: {} },
+    primary:   { type: "viewer-3d",   config: { rotateSpeed: 1.0, zoomSpeed: 1.0, panSpeed: 1.0 } },
     secondary: { type: "placeholder", config: { label: "Cluster table", hint: "cluster-table panel — slice 3 of the build" } },
     bottom:    { type: "placeholder", config: { label: "Tables / sweep results", hint: "configurable panel — wire any registered panel type here" } },
   },

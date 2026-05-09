@@ -20,8 +20,8 @@
 // nodes coloured by cluster + citation links. Extra overlays land
 // in slice 6 once the panel system is exercised.
 
-import { makeBlendForce } from "../../blend/blend.js";
-import { getState }       from "../state.js";
+import { makeBlendForce }              from "../../blend/blend.js";
+import { getState, update }            from "../state.js";
 
 export const ID = "viewer-3d";
 export const LABEL = "3D viewer";
@@ -29,7 +29,16 @@ export const DESCRIPTION = "Live blend visualisation; per-frame interpolation be
 
 const R_GLOBAL = 60;        // matches generation.js's working half-extent
 
-export function mount(container, _state, _config = {}) {
+const DEFAULT_CAMERA = {
+  rotateSpeed: 1.0,    // OrbitControls native default; legacy was 2.2 (felt twitchy)
+  zoomSpeed:   1.0,    // legacy was 2.5
+  panSpeed:    1.0,    // legacy was 1.6
+};
+
+export function mount(container, _state, config = {}) {
+  // Apply config defaults — anything missing uses DEFAULT_CAMERA.
+  const cam = { ...DEFAULT_CAMERA, ...config };
+
   // The lib needs an absolutely-sized div to anchor itself in.
   container.innerHTML = "";
   container.style.height = "100%";
@@ -41,6 +50,13 @@ export function mount(container, _state, _config = {}) {
   graphDiv.style.position = "absolute";
   graphDiv.style.inset    = "0";
   container.appendChild(graphDiv);
+
+  // Settings overlay (gear button + popup with sliders).
+  const settingsRoot = buildSettingsOverlay(container, cam, (newCam) => {
+    Object.assign(cam, newCam);
+    applyCameraToControls();
+    persistCamConfig(newCam);
+  });
 
   let Graph = null;
   let lastDataRevision = -1;
@@ -74,13 +90,7 @@ export function mount(container, _state, _config = {}) {
     }));
     Graph.d3VelocityDecay(1.0);
 
-    const ctrls = Graph.controls();
-    if (ctrls) {
-      ctrls.rotateSpeed   = 2.2;
-      ctrls.zoomSpeed     = 2.5;
-      ctrls.panSpeed      = 1.6;
-      ctrls.enableDamping = false;
-    }
+    applyCameraToControls();
 
     Graph.cameraPosition(
       { x: 0, y: 0, z: R_GLOBAL * 4 },
@@ -163,6 +173,40 @@ export function mount(container, _state, _config = {}) {
     return m;
   }
 
+  // Apply the current camera-speed values to the live controls.
+  // Called on init and whenever the settings overlay changes them.
+  function applyCameraToControls() {
+    if (!Graph) return;
+    const ctrls = Graph.controls();
+    if (!ctrls) return;
+    ctrls.rotateSpeed   = cam.rotateSpeed;
+    ctrls.zoomSpeed     = cam.zoomSpeed;
+    ctrls.panSpeed      = cam.panSpeed;
+    ctrls.enableDamping = false;
+  }
+
+  // Persist the camera config back into state.panels.primary.config
+  // so the values survive a panel re-mount (algorithm switch / data
+  // reload). Reads-then-writes the slot for whichever slot we live in.
+  function persistCamConfig(_partial) {
+    const s = getState();
+    let mySlot = null;
+    for (const slot of Object.keys(s.panels)) {
+      if (s.panels[slot].type === ID) {
+        mySlot = slot;
+        break;
+      }
+    }
+    if (!mySlot) return;
+    const cur = s.panels[mySlot].config || {};
+    update({
+      panels: {
+        ...s.panels,
+        [mySlot]: { type: ID, config: { ...cur, ...cam } },
+      },
+    });
+  }
+
   // Initial mount.
   init();
   if (Graph) rebuildData();
@@ -184,6 +228,7 @@ export function mount(container, _state, _config = {}) {
         try { resizeObs.disconnect(); } catch (_) {}
         resizeObs = null;
       }
+      if (settingsRoot) settingsRoot.remove();
       // 3d-force-graph doesn't expose a clean teardown; tear down
       // the WebGL context indirectly by clearing the container.
       // (Sufficient for slot remount; if mounting/unmounting becomes
@@ -193,4 +238,80 @@ export function mount(container, _state, _config = {}) {
       container.innerHTML = "";
     },
   };
+}
+
+/* ── settings overlay ───────────────────────────────────────────────── */
+
+function buildSettingsOverlay(container, cam, onChange) {
+  const root = document.createElement("div");
+  root.className = "viewer-3d-settings";
+
+  const toggle = document.createElement("button");
+  toggle.className = "viewer-3d-settings-toggle";
+  toggle.title = "Camera speed";
+  toggle.textContent = "⚙";
+  root.appendChild(toggle);
+
+  const popup = document.createElement("div");
+  popup.className = "viewer-3d-settings-popup";
+
+  const heading = document.createElement("h4");
+  heading.textContent = "Camera";
+  popup.appendChild(heading);
+
+  popup.appendChild(speedRow("Rotate", "rotateSpeed", cam.rotateSpeed, cam, onChange));
+  popup.appendChild(speedRow("Zoom",   "zoomSpeed",   cam.zoomSpeed,   cam, onChange));
+  popup.appendChild(speedRow("Pan",    "panSpeed",    cam.panSpeed,    cam, onChange));
+
+  const hint = document.createElement("div");
+  hint.style.fontSize = "10px";
+  hint.style.color = "var(--text-faint)";
+  hint.style.marginTop = "6px";
+  hint.textContent = "1.0 = OrbitControls native; >1 faster";
+  popup.appendChild(hint);
+
+  root.appendChild(popup);
+  container.appendChild(root);
+
+  toggle.addEventListener("click", (e) => {
+    e.stopPropagation();
+    popup.classList.toggle("open");
+  });
+  // Click outside the popup closes it.
+  document.addEventListener("click", (e) => {
+    if (!root.contains(e.target)) popup.classList.remove("open");
+  });
+
+  return root;
+}
+
+function speedRow(labelText, key, value, cam, onChange) {
+  const row = document.createElement("div");
+  row.className = "viewer-3d-settings-row";
+
+  const label = document.createElement("label");
+  label.textContent = labelText;
+  row.appendChild(label);
+
+  const input = document.createElement("input");
+  input.type = "range";
+  input.min = "0.1";
+  input.max = "3.0";
+  input.step = "0.05";
+  input.value = String(value);
+  row.appendChild(input);
+
+  const readout = document.createElement("span");
+  readout.className = "readout";
+  readout.textContent = (+value).toFixed(2);
+  row.appendChild(readout);
+
+  input.addEventListener("input", (e) => {
+    const v = +e.target.value;
+    cam[key] = v;
+    readout.textContent = v.toFixed(2);
+    onChange({ [key]: v });
+  });
+
+  return row;
 }
