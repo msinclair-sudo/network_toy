@@ -12,7 +12,9 @@
 // overkill at this scale). One column for the main spine, plus a
 // citations branch.
 
-import { getState, subscribe } from "./state.js";
+import { getState, subscribe }            from "./state.js";
+import { openAlgorithmModal }              from "./modals/algorithm-modal.js";
+import { getLayerDescriptor }              from "./modals/layer-descriptors.js";
 
 // Single-column DAG laid out vertically. Citations is a *method*
 // node here (toy generates them via taste-network); for real-data
@@ -122,7 +124,7 @@ function renderNode(node, state) {
     class: `wf-node-rect ${node.kind === "input" ? "input" : ""}`,
   });
   rect.addEventListener("click", () => {
-    console.log(`[workflow-chart] node click: ${node.id} — modal pending (slice 4/5)`);
+    onNodeClick(node);
   });
   g.appendChild(rect);
 
@@ -160,6 +162,19 @@ function renderNode(node, state) {
   }
 
   return g;
+}
+
+// Dispatch a click on a workflow node:
+//   - method nodes with a registry → open the algorithm modal
+//   - other nodes → log for now (modals for data / citations etc.
+//     come in slice 5)
+function onNodeClick(node) {
+  const desc = getLayerDescriptor(node.id);
+  if (desc) {
+    openAlgorithmModal(desc);
+    return;
+  }
+  console.log(`[workflow-chart] click on "${node.id}" — no modal yet`);
 }
 
 // Read the active algorithm name for a workflow node from layerParams

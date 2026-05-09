@@ -12,6 +12,7 @@
 
 import { inferClusters as inferMutualKNN } from "./clustering.js";
 import { inferHdbscan, defaultHdbscanParams } from "./clustering-hdbscan.js";
+import { inferConnectedComponents, defaultCCParams } from "./clustering-cc.js";
 
 // Each entry's `infer` is called as infer(genResult, params) and must
 // return a ClusterResult.
@@ -93,6 +94,25 @@ export const ALGORITHMS = [
         // change the algorithm's structural decision. ARI would always be
         // worse than the matching absorb run, so sweeping it is wasted work.
         sweepValues: ["absorb"],
+      },
+    ],
+  },
+  {
+    id: "connected-components",
+    label: "Connected components",
+    description: "Each node connects to its top-k nearest neighbours (one direction is enough — no mutuality requirement). Connected components of the resulting graph become clusters. Trivial baseline: usually produces one giant cluster on dense data, useful as a reference and for stress-testing the contract validator.",
+    allowsNoise: false,
+    defaultParams: defaultCCParams,
+    infer: (genResult, params) => inferConnectedComponents(genResult, params),
+    modalSchema: [
+      {
+        key: "k",
+        label: "k",
+        kind: "int",
+        min: 1, max: 20, step: 1,
+        format: (v) => String(v),
+        hint: "Top-k nearest neighbours each node links to. Larger k → fewer, bigger components (eventually one giant cluster).",
+        sweepValues: [1, 2, 3, 5, 8, 12, 20],
       },
     ],
   },

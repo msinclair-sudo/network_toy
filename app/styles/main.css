@@ -797,3 +797,81 @@ td.cluster-table-spread, td.cluster-table-stab { width: 50px; }
   text-align: center;
   color: var(--text-faint);
 }
+
+/* ── algorithm modal (workflow chart) ──────────────────────────────── */
+
+.algorithm-modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.algorithm-modal-algo-row {
+  display: grid;
+  grid-template-columns: 90px 1fr;
+  align-items: center;
+  gap: 8px;
+}
+.algorithm-modal-algo-row label {
+  font-size: 11px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.algorithm-modal-algo-row select,
+.algorithm-modal-row select {
+  background: var(--bg-3);
+  color: var(--text);
+  border: 1px solid var(--border);
+  padding: 4px 8px;
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.algorithm-modal-desc {
+  background: var(--bg-3);
+  border-left: 2px solid var(--accent-dim);
+  padding: 8px 10px;
+  font-size: 11px;
+  color: var(--text-dim);
+  line-height: 1.45;
+}
+
+.algorithm-modal-params {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 4px;
+}
+.algorithm-modal-row {
+  display: grid;
+  grid-template-columns: 110px 1fr 50px;
+  gap: 6px 10px;
+  align-items: center;
+}
+.algorithm-modal-row label {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.algorithm-modal-row input[type="range"] {
+  width: 100%;
+}
+.algorithm-modal-readout {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text);
+  text-align: right;
+}
+.algorithm-modal-hint {
+  grid-column: 2 / 4;
+  font-size: 10px;
+  color: var(--text-faint);
+  line-height: 1.45;
+  margin-top: -2px;
+}
+.algorithm-modal-noparams {
+  font-size: 11px;
+  color: var(--text-faint);
+  font-style: italic;
+}
