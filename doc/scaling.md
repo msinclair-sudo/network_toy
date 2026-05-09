@@ -1,8 +1,24 @@
-# Scaling — toy at n ≈ 400 vs real data at n = 800k
+# Scaling — toy at n ≈ 400 vs real data at n = 810k
 
 The toy is a methods sandbox. It runs comfortably at `n = 100–400`
-nodes and ~2,500 citations. The real target is `n ≈ 800k` base nodes
-with `|E| ≈ 1.9M` observed citations — three orders of magnitude up.
+nodes and ~2,500 citations. The real target (in
+`literture-network/`) is:
+
+| Quantity                                | Count    |
+|-----------------------------------------|----------|
+| Citation-graph nodes (raw, incl. stubs) | 2.23 M   |
+| Citation-graph nodes with proper IDs    | 1.94 M   |
+| **Embedded papers** (SPECTER2 768-d, the basePos analogue) | **810 k** |
+| Raw citation edges (S2 + CrossRef)      | 7.95 M   |
+| Hybrid edges (citation + semantic, α=0.5) | 5.64 M |
+| **Hybrid edges, both endpoints embedded** | **1.82 M** |
+
+The relevant `n` for the toy → real port is **810 k embedded papers
+and 1.82 M filtered hybrid edges** — i.e., the subset where both
+endpoints have a SPECTER2 embedding (so basePos exists) and a
+hybrid edge survives the filter. That's the input the toy's layer
+modules would actually consume.
+
 Several toy implementations have `O(n²)` terms that are catastrophic
 at that scale. This document is the bridge: which layers scale,
 which don't, what the cliffs are, and what trade-offs each
@@ -29,15 +45,15 @@ materialisation of `n × n` matrices.
 
 Per-layer summary, with the binding cost called out:
 
-| Layer | Toy cost                          | At n=800k          | Verdict                             |
+| Layer | Toy cost                          | At n=810k          | Verdict                             |
 |-------|-----------------------------------|--------------------|-------------------------------------|
-| 1 — generation         | `O(n)`                  | trivial             | N/A — real data already exists      |
-| 2 — clustering         | `O(n²)` time + memory   | 640 GB matrix       | needs replacement                   |
-| 3 — citation gen       | `O(n²)` enumeration     | 320 G enumerations  | not needed — citations are observed |
-| 4a — FR layout         | `O(iters · n²)`         | 128 T ops/run       | needs Barnes–Hut or replacement     |
+| 1 — generation         | `O(n)`                  | trivial             | N/A — SPECTER2 embeddings already exist |
+| 2 — clustering         | `O(n²)` time + memory   | 656 GB matrix       | needs replacement (real pipeline already uses Leiden) |
+| 3 — citation gen       | `O(n²)` enumeration     | 328 G enumerations  | not needed — citgraphv2 already observes 7.95 M edges |
+| 4a — FR layout         | `O(iters · n²)`         | 131 T ops/run       | needs Barnes–Hut or replacement     |
 | 4b — MDS layout        | per-component `O(iters · m²)` + `O(m²)` matrix | infeasible if one giant component | needs landmark / pivot variants  |
 | 5a — alignment         | `O(N + |E|)` + per-component math | sub-second   | scales as-is                        |
-| 5b — per-frame blend   | `O(n)` per frame        | 48 M lerps/s @ 60fps | scales as-is                        |
+| 5b — per-frame blend   | `O(n)` per frame        | 49 M lerps/s @ 60fps | scales as-is                        |
 
 The two layers that scale unchanged (5a + 5b) are the most
 *unique* parts of the toy. The expensive layers (2 + 4) are
@@ -76,7 +92,7 @@ dependency).
 ### 2.2 Clustering (Layer 2)
 
 Both toy algorithms (`mutualKNN`, `hdbscan`) materialise an `n × n`
-distance matrix. At `n = 800k`:
+distance matrix. At `n = 810k`:
 
 ```
 n × n × 8 bytes  =  640 GB
@@ -176,7 +192,7 @@ What carries over conceptually (the *vocabulary*, not the code):
 - The `CitationResult` contract — `hasCit`, `inDeg`, `edges`,
   `citations`, `pools` — applies unchanged to *observed* citations,
   with one critical exception: `hasCit: Uint8Array(n²)` is `640 GB`
-  at `n = 800k` and must be replaced. See §3.1 below.
+  at `n = 810k` and must be replaced. See §3.1 below.
 
 **What does NOT carry**: the entire `app/src/citations/` +
 `neighbourhoods.js` + `citation-taste.js` + `citations.js` chain.
@@ -199,7 +215,7 @@ Infeasible without optimisation. Options:
 
 - **Barnes–Hut** (octree approximation of repulsion): `O(iters · n
   log n)`. Standard choice — `graph-tool`, `Gephi ForceAtlas2`,
-  `igraph layout_fr` (via `BH3D` mode). At `n = 800k`: `200 · 800k ·
+  `igraph layout_fr` (via `BH3D` mode). At `n = 810k`: `200 · 810k ·
   20 ≈ 3.2 × 10⁹` ops, plausible on GPU, slow on CPU. Carries the
   toy's force formulation (k², attraction, time-axis anchor) verbatim;
   only the repulsion sum changes.
@@ -265,7 +281,7 @@ sweep automatically crosses them once `sweepValues` is provided.
 component). Per-component math is `O(component_size)` for centroids
 + `O(1)` for the eigendecomp.
 
-At `n = 800k`, `|E| = 1.9M`: roughly `2.7M` int ops + Jacobi over
+At `n = 810k`, `|E| = 1.82M`: roughly `2.6M` int ops + Jacobi over
 each of (a few hundred?) connected components. **Sub-second wall
 time at full scale, no algorithmic changes needed.**
 
@@ -276,15 +292,15 @@ the alignment cost is dominated by the giant component's
 `O(component_size)` pass, which is still linear.
 
 **One caveat**: `Float32Array(n × 3)` for `aligned` and basePos at
-`n = 800k` is `9.6 MB` each — fine. At `n = 10M` it would be
+`n = 810k` is `9.6 MB` each — fine. At `n = 10M` it would be
 `120 MB` each — still fine but worth noting.
 
 ### 2.6 Per-frame blend (Layer 5b)
 
-`O(n)` lerps per frame. At `n = 800k` and 60 fps:
+`O(n)` lerps per frame. At `n = 810k` and 60 fps:
 
 ```
-800k lerps × 60 frames/s  =  48M lerps/s
+810k lerps × 60 frames/s  =  48M lerps/s
 ```
 
 Trivial in any modern runtime — JS, Python+numpy, native, GPU.
@@ -295,7 +311,7 @@ properties of linear interpolation, not of the toy's specific
 implementation.
 
 **Real-time interaction at full scale** is feasible: a slider drag
-moves 800k points per frame at 60 fps, well within budget for both
+moves 810k points per frame at 60 fps, well within budget for both
 CPU and GPU implementations. The d3-force-3d wrapper specifically
 will not scale (its rendering is per-link in WebGL, and the lib's
 internals were written for graphs in the 100s of nodes); a
@@ -311,7 +327,7 @@ the reusable piece.
 
 Three toy data structures are O(n²) and must be replaced:
 
-| Toy structure                       | Toy size @ n=800k | Replacement                               |
+| Toy structure                       | Toy size @ n=810k | Replacement                               |
 |-------------------------------------|-------------------|-------------------------------------------|
 | `hasCit: Uint8Array(n²)`            | `640 GB`          | CSR, hash set on `i*n+j`, or sorted lists |
 | HDBSCAN pairwise distance matrix    | `640 GB`          | sparse k-NN graph from ANN                |
@@ -345,7 +361,7 @@ toy** and one of the few that scales linearly.
 
 `alignmentCorrelation` (`doc/blend.md` §1.5) is a number in `[0, 1]`
 falling out of the per-component alignment math for free. **It has
-no ground-truth dependency** and works at any scale — at 800k it's
+no ground-truth dependency** and works at any scale — at 810k it's
 the same `Σ trace(R · S) / Σ √(sumA² · sumB²)` summed over
 components. This is the right metric for the layout-algorithm sweep
 in any deployment.
@@ -366,7 +382,7 @@ Both patterns scale unchanged:
   touching `main.py`.
 - **Sub-stage caches in `main.js`** (`reneighbour() → retaste() →
   resample()`) are *more* important at scale than at toy scale.
-  At 800k, recomputing clustering when only the sampling seed
+  At 810k, recomputing clustering when only the sampling seed
   changed is a 30-minute mistake; the granular re-run lanes prevent
   it.
 
@@ -420,7 +436,7 @@ In rough order of "biggest disruption":
 4. **The cluster eval ARI sweep.** Depends on `originId`, which is
    generator-only. Unsupervised metrics replace it.
 5. **Live full-pipeline re-runs.** The "drag a slider, regenerate
-   everything" interaction model only works at toy scale. At 800k,
+   everything" interaction model only works at toy scale. At 810k,
    each layer's recompute is minutes-to-hours; UX is offline-batched
    pre-compute followed by interactive blend (which IS still fast).
 6. **d3-force-3d as the rendering layer.** Designed for graphs in
@@ -429,66 +445,92 @@ In rough order of "biggest disruption":
 
 ---
 
-## 6. Sketched real-data pipeline
+## 6. The real pipeline (`literture-network/`) — what already exists
 
-A plausible end-to-end shape, given the lessons above. **Not a
-recommendation** — every step has trade-offs the user should pick
-explicitly:
+The real-data port is not a green-field exercise. Most of the
+heavy lifting (embedding, citation discovery, clustering, hybrid
+blending) already runs in `literture-network/`. The toy's job is
+to fit alongside it, not replace it. See `network.md` in that
+directory for the full inventory.
+
+Toy-layer to real-pipeline mapping:
+
+| Toy layer                | Real pipeline equivalent                                                                              | Status                  |
+|--------------------------|-------------------------------------------------------------------------------------------------------|-------------------------|
+| L1 generation (basePos)  | SPECTER2 768-d embeddings, `pipeline/step02_embeddings.py`                                            | ✓ exists, 768-d not 3-d |
+| L2 clustering            | Recursive Leiden (CPM, resolution ramp 1.0→2.0), `scoring_app/build_reduced_dataset.py`               | ✓ exists, Leiden ≠ HDBSCAN |
+| L3 citation generation   | `citgraphv2/` (S2 + CrossRef discovery, identity dedup, 7.95 M edges)                                 | ✓ exists, observed not generated |
+| L4 citation layout       | UMAP-on-embeddings only (no graph layout).                                                            | **gap**                 |
+| L5a alignment            | None.                                                                                                  | **gap**                 |
+| L5b α blend              | Hard-coded `FUSION_ALPHA = 0.5` in `pipeline/config.py`. Static.                                      | **gap (the big one)**   |
+
+The two genuine gaps where the toy adds value:
+
+1. **Interactive α exploration.** The current hybrid blend is one
+   number, set at pipeline-build time. Rebuilding to compare α=0.3
+   vs α=0.7 is hours of recompute. The toy's deterministic blend
+   is exactly the answer: precompute two endpoint arrangements,
+   then `α` is a per-frame `O(n)` lerp. At `n = 810k` that's
+   `49 M` lerps/s — trivial.
+2. **Quality metric for the blend.** `alignmentCorrelation` is a
+   `[0, 1]` per-component score that falls out of the per-component
+   Kabsch math for free, with no ground-truth dependency. At scale
+   it answers per-cluster: "does the embedding agree with citation
+   topology here?" Currently the real pipeline has no such metric.
+
+Minimum-viable port that delivers both gaps:
 
 ```
-1. basePos              embedding source (e.g. specter / SciNCL / LSA on title+abstract)
-                          — Float32Array(n × 3) at n=800k = 9.6 MB
+1. embedding_pos        UMAP-on-SPECTER2 (already built by build_reduced_dataset.py)
+                          — α = 0 endpoint
 
-2. Sparse k-NN graph    FAISS or hnswlib, k ≈ 50
-                          — stored as CSR, ~150 MB
+2. citation_pos         pivot MDS per Leiden component on the citation graph
+                          — α = 1 endpoint, computed once per (clustering × layout-params) tuple
 
-3. Clustering           Leiden on (k-NN graph) OR cuML HDBSCAN on basePos
-                          — emit ClusterResult contract verbatim
+3. Per-component align  blend/align.js ported to Python
+                          — match-RMS scale, Horn quaternion, per-Leiden-component
+                          — emits aligned_citation_pos + alignmentCorrelation per cluster
 
-4. Citations            read from corpus (TSV / parquet / DB)
-                          — emit CitationResult with sparse hasCit
+4. Per-frame blend      live = (1−α) · embedding_pos + α · aligned_citation_pos
+                          — slider in scoring app drives α
+                          — Plotly scattergl repaints at 60 fps for ~100k visible points
 
-5. Citation layout      pivot MDS (p≈100) per component
-                          — Float32Array(n × 3), giant component dominates
-
-6. Alignment            blend/align.js verbatim — already scales
-                          — Float32Array(n × 3) + alignmentCorrelation
-
-7. Blend                blend/blend.js verbatim — already scales
-                          — per-frame linear interpolation
-
-8. Render               WebGL/WebGPU instanced points + edge subsampling
-                          — NOT d3-force-3d at this scale
+5. alignmentCorrelation Surface as a column in cluster_diagnostics.csv and as a
+                          topology overlay toggle in mod_umap.R
 ```
 
-Steps 6 and 7 are the toy's contributions. Steps 1–5 are off-the-
-shelf pieces with well-documented trade-off literature; the toy's
-job there is to provide the **vocabulary, contracts, and algorithm
-choices** that bind them together.
+Steps 3, 4, 5 are the toy's actual contribution. Steps 1, 2 are
+off-the-shelf graph-layout work where pivot MDS is the cheapest
+viable path at giant-component scale.
+
+The toy's existing `app/` stays as the **methods sandbox** (low-dim,
+3-d, interactive, full-pipeline live). The real-data integration is
+a **separate surface** that shares modules with the toy via the
+registry pattern. Convergence plan in `doc/plan.md`.
 
 ---
 
-## 7. Open questions for the real-data port
+## 7. Things to reconcile when integrating
 
-These aren't toy-determinable and need decisions when the port
-starts:
+Open design questions that need decisions when integration starts:
 
-- **What is the "base" embedding?** The toy uses Gaussian-mixture
-  positions. Real basePos is whatever embedding represents
-  per-paper position — the choice (specter, SciNCL, doc2vec on
-  abstracts, LSA, citation-network spectral) determines what α=0
-  shows.
-- **Bipartite or unipartite?** "1.9M citation nodes, 800k base
-  nodes" suggests two distinct node types. The toy is unipartite
-  (papers cite papers). If the real graph is bipartite (e.g.,
-  papers ↔ citations-as-nodes), the layout layer needs a bipartite
-  variant — pivot MDS handles this natively, FR needs adjustments.
-- **What's the unit of analysis?** A paper, an author, a venue?
-  Cluster semantics depend on this.
-- **Sweep tooling.** With sweep cost = (param combinations) ×
-  (full-pipeline cost), at scale a 100-combo sweep is days.
-  Subsample-and-tune is the standard answer; how big a subsample
-  preserves cluster structure is empirical.
-
-These belong in a follow-up document once the port begins, not in
-this one.
+- **Hierarchical clustering contract.** Toy `ClusterResult` is flat.
+  Real pipeline emits L1/L2/L3/... paths. Need to extend the
+  contract additively (optional `nodePath` field) without breaking
+  toy consumers. Discussed in `doc/plan.md`.
+- **Two different "α blends".** The real pipeline's α is a graph-
+  *construction* parameter (`hybrid_weight = α · sim + (1−α) ·
+  default`). The toy's α is a layout-*display* parameter (lerp
+  between two precomputed positions). They're orthogonal and can
+  coexist; surfacing both as sliders is a UX choice.
+- **Unit of analysis.** Real pipeline is unipartite (papers cite
+  papers via `paper_key`). The 1.94 M figure is "citation-graph
+  nodes with proper IDs"; the layout-relevant set is the 810 k
+  embedded subset. Layouts that include un-embedded nodes have to
+  decide: drop them, or emit a placeholder position.
+- **Sweep tooling at scale.** The toy's ARI-vs-`originId` sweep is
+  generator-only. `alignmentCorrelation` carries forward as a
+  ground-truth-free metric. Cluster-modularity is intrinsic and
+  applies to all graph-based clusterings. A 100-combo sweep at
+  810 k is still hours — subsample-and-tune (representative ~10 k
+  papers) is the usual workaround; subsample size is empirical.
