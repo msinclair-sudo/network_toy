@@ -33,14 +33,19 @@ function ensureLayerParams() {
   if (!lp.taste)         { next.taste         = defaultTasteParams();         dirty = true; }
   if (!lp.citations)     { next.citations     = defaultCitationParams();      dirty = true; }
   if (!lp.clustering) {
-    // Build a per-algorithm params map so the toy can swap algorithms
-    // without losing each algorithm's tuned params (matches the
-    // legacy state.clusterParams.byAlgo shape).
-    const byAlgo = {};
-    for (const a of listClusteringAlgorithms()) byAlgo[a.id] = a.defaultParams();
+    // Multi-level clustering: each level holds its own params and a
+    // scope flag ("global" = re-cluster the whole dataset; "within-
+    // parent" = cluster within each previous-level cluster's members).
+    // Default is one global level with the algorithm's defaults — same
+    // observable behaviour as before. Sub-clustering is opt-in via the
+    // modal's + Add level.
+    const algoId = "mutualKNN";
+    const algo = getClusteringAlgorithm(algoId);
     next.clustering = {
-      method: "mutualKNN",                  // legacy default
-      byAlgo,
+      method: algoId,
+      levels: [
+        { uid: makeUid(), params: algo.defaultParams(), scope: "global" },
+      ],
     };
     dirty = true;
   }
@@ -57,9 +62,8 @@ function activeClusterAlgorithm() {
   return getClusteringAlgorithm(s.layerParams.clustering.method);
 }
 
-function activeClusterAlgorithmParams() {
-  const s = getState();
-  return s.layerParams.clustering.byAlgo[s.layerParams.clustering.method];
+function makeUid() {
+  return Math.random().toString(36).slice(2, 10);
 }
 
 /* ── public API: pipeline lanes ─────────────────────────────────────── */
@@ -108,19 +112,115 @@ export function regenerate() {
   recluster();
 }
 
-// Layer 2.
+// Layer 2 — multi-level.
+// For each level: scope === "global" runs the algorithm on the whole
+// dataset; scope === "within-parent" runs it once per parent cluster's
+// member set and stitches the results into a globally-numbered
+// ClusterResult. The first level is always treated as global (it has
+// no parent). Backward-compat: state.clusterResult is set to the
+// finest (last) level's ClusterResult so panels not yet level-aware
+// keep working.
 export function recluster() {
   const s = getState();
   if (!s.genResult) return;
   const algo = activeClusterAlgorithm();
-  const params = activeClusterAlgorithmParams();
-  const clusterResult = algo.infer(s.genResult, params);
-  validateClusterResult(clusterResult, s.genResult.nodes.length, {
-    allowNoise: !!algo.allowsNoise,
-  });
-  update({ clusterResult });
+  const cfg = s.layerParams.clustering;
+  const allowNoise = !!algo.allowsNoise;
+  const n = s.genResult.nodes.length;
+
+  if (!cfg || !cfg.levels || cfg.levels.length === 0) return;
+
+  const levels = [];
+  let parent = null;     // ClusterResult of the previous level
+
+  for (let i = 0; i < cfg.levels.length; i++) {
+    const lvl = cfg.levels[i];
+    const isGlobal = (i === 0) || lvl.scope === "global";
+    let cr;
+    if (isGlobal) {
+      cr = algo.infer(s.genResult, lvl.params);
+    } else {
+      cr = clusterWithinParents(algo, s.genResult, parent, lvl.params);
+    }
+    validateClusterResult(cr, n, { allowNoise });
+    levels.push({ uid: lvl.uid, scope: isGlobal ? "global" : "within-parent", clusterResult: cr });
+    parent = cr;
+  }
+
+  const finest = levels[levels.length - 1].clusterResult;
+  update({ clusterLevels: levels, clusterResult: finest });
   setLayerState("clustering", "fresh");
   reneighbour();
+}
+
+// Run the clustering algorithm separately on each parent cluster's
+// member set, then stitch into a single ClusterResult with global
+// IDs. Output cluster IDs are renumbered per parent so they're
+// contiguous and non-overlapping. Singletons or empty parents become
+// trivial single-cluster outputs.
+function clusterWithinParents(algo, genResult, parent, params) {
+  const n = genResult.nodes.length;
+  const numParents = parent.clusters.length;
+  const nodeCluster = new Int32Array(n);
+  const clusters = [];
+  const structureEdges = [];
+  let nextId = 0;
+
+  // Group nodes by parent cluster id.
+  const byParent = Array.from({ length: numParents }, () => []);
+  for (let i = 0; i < n; i++) byParent[parent.nodeCluster[i]].push(i);
+
+  for (let p = 0; p < numParents; p++) {
+    const ids = byParent[p];
+    if (ids.length === 0) continue;
+
+    if (ids.length === 1) {
+      const orig = ids[0];
+      const node = genResult.nodes[orig];
+      nodeCluster[orig] = nextId;
+      clusters.push({
+        id:        nextId,
+        centre:    [node.basePos[0], node.basePos[1], node.basePos[2]],
+        spread:    0,
+        count:     1,
+        colour:    parent.clusters[p].colour,
+        stability: NaN,
+      });
+      nextId++;
+      continue;
+    }
+
+    // Build a sub-genResult that the algorithm can consume directly.
+    // Local node ids are 0..ids.length-1; we map back to original ids
+    // when writing into the global outputs.
+    const subNodes = ids.map((origId, localIdx) => {
+      const orig = genResult.nodes[origId];
+      return { ...orig, id: localIdx };
+    });
+    const subResult = algo.infer({ ...genResult, nodes: subNodes }, params);
+
+    for (let localIdx = 0; localIdx < ids.length; localIdx++) {
+      const subCid = subResult.nodeCluster[localIdx];
+      // subCid may be -1 for noise on noise-aware algos; map preserved.
+      nodeCluster[ids[localIdx]] = subCid >= 0 ? nextId + subCid : -1;
+    }
+    for (const sc of subResult.clusters) {
+      if (sc.id < 0) continue;   // noise pseudo-cluster (rare — re-emerge below)
+      clusters.push({ ...sc, id: nextId + sc.id });
+    }
+    for (const e of subResult.structureEdges) {
+      structureEdges.push([ids[e[0]], ids[e[1]]]);
+    }
+    nextId += subResult.clusters.length;
+  }
+
+  return {
+    method: parent.method,
+    params,
+    clusters,
+    nodeCluster,
+    structureEdges,
+  };
 }
 
 // taste-network's internal stage 1.

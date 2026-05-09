@@ -37,7 +37,9 @@ const state = {
   // shape so engine modules can be ported without restructuring.
   genResult:             null,    // Layer 1 output: {origins, nodes:[{id, basePos, t, originId}]}
   _basePos:              null,    // Float32Array(n × 3) — flattened basePos, blend force input
-  clusterResult:         null,    // Layer 2 output: ClusterResult contract
+  clusterLevels:         null,    // Layer 2 output: [{uid, scope, clusterResult}] one per level
+  clusterResult:         null,    // Backward-compat alias for the FINEST level's clusterResult
+                                  //   (used by panels that aren't yet level-aware)
   neighbourhoodResult:   null,    // taste-network internal: {neighbourhoods, nodeNeighbourhood}
   tasteResult:           null,    // taste-network internal: {tasteByNeighbourhood, tasteByCluster}
   citationResult:        null,    // Layer 3 output: CitationResult contract

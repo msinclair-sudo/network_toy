@@ -13,7 +13,6 @@
 // citations branch.
 
 import { getState, subscribe }            from "./state.js";
-import { openAlgorithmModal }              from "./modals/algorithm-modal.js";
 import { getLayerDescriptor }              from "./modals/layer-descriptors.js";
 
 // Single-column DAG laid out vertically. Citations is a *method*
@@ -165,13 +164,13 @@ function renderNode(node, state) {
 }
 
 // Dispatch a click on a workflow node:
-//   - method nodes with a registry → open the algorithm modal
+//   - method nodes with a layer descriptor → call desc.openModal()
 //   - other nodes → log for now (modals for data / citations etc.
 //     come in slice 5)
 function onNodeClick(node) {
   const desc = getLayerDescriptor(node.id);
-  if (desc) {
-    openAlgorithmModal(desc);
+  if (desc && desc.openModal) {
+    desc.openModal();
     return;
   }
   console.log(`[workflow-chart] click on "${node.id}" — no modal yet`);
@@ -183,7 +182,12 @@ function onNodeClick(node) {
 function activeAlgorithmFor(state, nodeId) {
   const lp = state.layerParams || {};
   switch (nodeId) {
-    case "clustering": return lp.clustering ? lp.clustering.method : "—";
+    case "clustering": {
+      if (!lp.clustering) return "—";
+      const lvCount = (lp.clustering.levels || []).length;
+      const suffix = lvCount > 1 ? ` · ${lvCount} levels` : "";
+      return `${lp.clustering.method}${suffix}`;
+    }
     case "layout":     return lp.layout     ? lp.layout.method     : "—";
     case "citations":  return state.dataSource.mode === "real"
                               ? "(observed)"

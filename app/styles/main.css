@@ -875,3 +875,95 @@ td.cluster-table-spread, td.cluster-table-stab { width: 50px; }
   color: var(--text-faint);
   font-style: italic;
 }
+
+/* ── multi-level clustering modal ─────────────────────────────────── */
+
+.clustering-modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 460px;
+}
+
+.clustering-modal-levels {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.clustering-modal-level {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 10px 12px;
+  background: var(--bg-3);
+}
+
+.clustering-modal-level-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+.clustering-modal-level-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  flex: 1;
+}
+
+.clustering-modal-scope {
+  display: flex;
+  gap: 12px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.clustering-modal-scope-radio {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  user-select: none;
+}
+.clustering-modal-scope-radio input { margin: 0; }
+
+.clustering-modal-level-close {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-dim);
+  width: 22px;
+  height: 22px;
+  border-radius: 3px;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+}
+.clustering-modal-level-close:hover {
+  background: var(--err);
+  color: white;
+}
+
+.clustering-modal-level-params {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.clustering-modal-add {
+  background: var(--bg-3);
+  border: 1px dashed var(--border-light);
+  color: var(--text-dim);
+  border-radius: 4px;
+  padding: 8px 12px;
+  cursor: pointer;
+  font-family: var(--font-ui);
+  font-size: 12px;
+}
+.clustering-modal-add:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}

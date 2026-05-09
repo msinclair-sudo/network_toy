@@ -1,15 +1,19 @@
-// Per-layer descriptors that the algorithm modal consumes.
+// Per-layer descriptors that the workflow chart consumes.
 //
-// Each layer has its own state shape (clustering uses byAlgo map,
-// layout uses single params object) and its own engine lane to
-// trigger after a change. This file centralises the per-layer glue
-// so workflow-chart.js doesn't grow a switch on layer id.
+// Each layer exposes:
+//   { label, openModal: () => modalHandle }
+//
+// The descriptor itself decides which modal kind to open — clustering
+// uses the multi-level modal; layout uses the single-level one. New
+// layer kinds plug in here without touching workflow-chart.js.
 
 import { listAlgorithms as listClusteringAlgos,
          getAlgorithm   as getClusteringAlgo }     from "../../clustering-registry.js";
 import { listAlgorithms as listLayoutAlgos,
          getAlgorithm   as getLayoutAlgo }         from "../../citation-layout/registry.js";
 import { getState, update }                         from "../state.js";
+import { openAlgorithmModal }                       from "./algorithm-modal.js";
+import { openClusteringModal }                      from "./clustering-modal.js";
 import * as engine                                  from "../engine.js";
 
 export function getLayerDescriptor(nodeId) {
@@ -21,36 +25,36 @@ export function getLayerDescriptor(nodeId) {
 }
 
 function clusteringDescriptor() {
-  return {
-    layer: "clustering",
+  const desc = {
     label: "Configure: Clustering",
     listAlgos: () => listClusteringAlgos(),
     getActive: () => {
       const lp = getState().layerParams.clustering;
-      const method = lp ? lp.method : "mutualKNN";
-      const params = lp && lp.byAlgo[method] ? lp.byAlgo[method] : getClusteringAlgo(method).defaultParams();
-      return { method, params };
+      return {
+        method: lp ? lp.method : "mutualKNN",
+        levels: lp ? lp.levels : [
+          { uid: "L0", params: getClusteringAlgo("mutualKNN").defaultParams(), scope: "global" },
+        ],
+      };
     },
-    applyChange: (algoId, params) => {
+    applyChange: (algoId, levels) => {
       const s = getState();
-      const cur = s.layerParams.clustering;
-      const byAlgo = { ...(cur ? cur.byAlgo : {}), [algoId]: params };
       update({
         layerParams: {
           ...s.layerParams,
-          clustering: { method: algoId, byAlgo },
+          clustering: { method: algoId, levels },
         },
       });
-      // Cascade from Layer 2 down.
       try { engine.recluster(); }
-      catch (e) { console.error("[layer-descriptor] recluster failed:", e); }
+      catch (e) { console.error("[clustering-descriptor] recluster failed:", e); }
     },
+    openModal: () => openClusteringModal(desc),
   };
+  return desc;
 }
 
 function layoutDescriptor() {
-  return {
-    layer: "layout",
+  const desc = {
     label: "Configure: Citation layout",
     listAlgos: () => listLayoutAlgos(),
     getActive: () => {
@@ -68,7 +72,9 @@ function layoutDescriptor() {
         },
       });
       try { engine.relayoutCitations(); }
-      catch (e) { console.error("[layer-descriptor] relayoutCitations failed:", e); }
+      catch (e) { console.error("[layout-descriptor] relayoutCitations failed:", e); }
     },
+    openModal: () => openAlgorithmModal(desc),
   };
+  return desc;
 }
