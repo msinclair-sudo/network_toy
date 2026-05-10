@@ -20,6 +20,7 @@ import { buildCitationTaste, defaultTasteParams }                from "../citati
 import { generateCitations, defaultCitationParams }              from "../citations.js";
 import { getAlgorithm as getCitationLayoutAlgorithm }            from "../citation-layout/registry.js";
 import { alignByComponent }                                      from "../blend/align.js";
+import { computeBridgeAnalysis }                                 from "./bridge-analysis.js";
 import { update, getState, setLayerState }                       from "./state.js";
 
 // Initialise layerParams from registry defaults on first call.
@@ -148,7 +149,15 @@ export function recluster() {
   }
 
   const finest = levels[levels.length - 1].clusterResult;
-  update({ clusterLevels: levels, clusterResult: finest });
+  // Derived: bridge analysis pairs the finest level with the level
+  // above. Null when only one level exists.
+  const bridgeAnalysis = computeBridgeAnalysis(levels);
+
+  update({
+    clusterLevels: levels,
+    clusterResult: finest,
+    bridgeAnalysis,
+  });
   setLayerState("clustering", "fresh");
   reneighbour();
 }

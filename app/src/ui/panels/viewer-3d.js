@@ -54,6 +54,8 @@ const DEFAULT_COLOUR_MODE = "cluster:finest";
 // "origin"         → generator origin colour
 // "t"              → gradient on node.t (cool → warm)
 // "inDeg"          → gradient on citation in-degree (cool → warm)
+// "bridge"         → bridge nodes by parent colour, others greyed
+// "boundaryScore"  → gradient on per-node boundary score
 function getColourModeOptions(state) {
   const opts = [];
   const levels = state.clusterLevels || [];
@@ -65,6 +67,10 @@ function getColourModeOptions(state) {
         label: levels.length > 1 ? `Cluster (level ${i})` : "Cluster",
       });
     }
+  }
+  if (state.bridgeAnalysis) {
+    opts.push({ value: "bridge",        label: "Bridge clusters" });
+    opts.push({ value: "boundaryScore", label: "Boundary score (gradient)" });
   }
   if (state.genResult && state.genResult.origins) {
     opts.push({ value: "origin", label: "Origin (generator label)" });
@@ -103,6 +109,17 @@ function inDegGradient(v) {
   const stops = [
     [0.00, [80, 90, 110]],
     [1.00, [97, 175, 239]],
+  ];
+  return interpStops(stops, Math.max(0, Math.min(1, v)));
+}
+function boundaryScoreGradient(v) {
+  // Faint slate (0 = pure interior) → vivid orange-red (1 = max
+  // mixing). Distinct palette from t/inDeg so the modes don't
+  // visually conflate when stacked side-by-side in the legend.
+  const stops = [
+    [0.00, [58, 63, 74]],
+    [0.50, [180, 130, 80]],
+    [1.00, [230, 108, 117]],
   ];
   return interpStops(stops, Math.max(0, Math.min(1, v)));
 }
@@ -328,6 +345,25 @@ export function mount(container, _state, config = {}, tabContext = null) {
         return inDegGradient(cit.inDeg[n.id] / max);
       }
       return "#888";
+    }
+    if (mode === "bridge") {
+      const ba = state.bridgeAnalysis;
+      if (!ba) return "#888";
+      // Non-bridge nodes: dimmed slate (same shade as selection-dim
+      // so the eye reads "off the focus" consistently). Bridge nodes:
+      // their OWN coarse parent's colour at full saturation, so the
+      // user sees both that the node IS a bridge AND which side of
+      // the boundary it sits on.
+      if (!ba.perNodeIsBridge[n.id]) return "#3a3f4a";
+      const coarse = state.clusterLevels[ba.coarseLevel].clusterResult;
+      const cid = coarse.nodeCluster[n.id];
+      const cluster = cid >= 0 ? coarse.clusters[cid] : null;
+      return cluster ? cluster.colour : "#888";
+    }
+    if (mode === "boundaryScore") {
+      const ba = state.bridgeAnalysis;
+      if (!ba) return "#888";
+      return boundaryScoreGradient(ba.perNodeScore[n.id] || 0);
     }
     return "#888";
   }

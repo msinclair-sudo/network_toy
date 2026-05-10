@@ -278,6 +278,9 @@ function sourceOptionsFor(s) {
       });
     }
   }
+  if (s.bridgeAnalysis) {
+    opts.push({ value: "bridge", label: "Bridge clusters" });
+  }
   if (s.genResult && s.genResult.origins) {
     opts.push({ value: "origin", label: "Origin (generator label)" });
   }
@@ -292,6 +295,7 @@ function sourceOptionsFor(s) {
 
 function buildTableData(s, source) {
   if (source && source.startsWith("cluster")) return clusterRows(s, source);
+  if (source === "bridge") return bridgeRows(s);
   if (source === "origin") return originRows(s);
   if (source === "inDeg")  return inDegRows(s);
   if (source === "t")      return timeBinRows(s);
@@ -333,6 +337,65 @@ function clusterRows(s, source) {
     defaultSort: { key: "count", dir: "desc" },
     selectionKey: (row, sel) =>
       sel.type === "cluster" && sel.level === levelIdx && sel.id === row.id,
+  };
+}
+
+function bridgeRows(s) {
+  const ba = s.bridgeAnalysis;
+  const levels = s.clusterLevels || [];
+  if (!ba || levels.length < 2) {
+    return {
+      columns: [], rows: [], unitLabel: "bridges",
+      title: "needs at least two clustering levels",
+    };
+  }
+  const fine   = levels[ba.fineLevel].clusterResult;
+  const coarse = levels[ba.coarseLevel].clusterResult;
+
+  const rows = ba.perCluster
+    .filter(p => p.isBridge)
+    .map(p => {
+      const fineCluster = fine.clusters[p.fineId];
+      const dominantCluster = p.dominantCoarseId >= 0
+        ? coarse.clusters[p.dominantCoarseId]
+        : null;
+      const secondary = p.coarseShares[1];
+      return {
+        _key:    `bridge:${p.fineId}`,
+        // Selecting a bridge row selects the fine cluster — re-uses
+        // the existing cluster-level dimming logic in viewer-3d.
+        _select: () => ({ type: "cluster", level: ba.fineLevel, id: p.fineId }),
+        // Show the fine cluster's own colour as the swatch (matches
+        // what cluster:finest mode paints), so the row reads "this
+        // is the fine cluster N that bridges...".
+        colour:    fineCluster ? fineCluster.colour : "#888",
+        id:        p.fineId,
+        count:     p.memberCount,
+        span:      p.spanCount,
+        dom:       p.dominantCoarseId,
+        domPct:    p.dominantFraction * 100,
+        sec:       secondary ? secondary.id : null,
+        secPct:    secondary ? secondary.fraction * 100 : null,
+      };
+    });
+
+  return {
+    title:     `${ba.bridgeCount} bridge${ba.bridgeCount === 1 ? "" : "s"} · L${ba.coarseLevel}→L${ba.fineLevel}`,
+    unitLabel: rows.length === 1 ? "bridge" : "bridges",
+    columns: [
+      { key: "colour", label: "",        kind: "colour", sortable: false },
+      { key: "id",     label: "fine id", kind: "int",    sortable: true  },
+      { key: "count",  label: "count",   kind: "int",    sortable: true  },
+      { key: "span",   label: "span",    kind: "int",    sortable: true  },
+      { key: "dom",    label: "dom",     kind: "int",    sortable: true  },
+      { key: "domPct", label: "dom %",   kind: "float",  sortable: true  },
+      { key: "sec",    label: "2nd",     kind: "int",    sortable: true  },
+      { key: "secPct", label: "2nd %",   kind: "float",  sortable: true  },
+    ],
+    rows,
+    defaultSort: { key: "count", dir: "desc" },
+    selectionKey: (row, sel) =>
+      sel.type === "cluster" && sel.level === ba.fineLevel && sel.id === row.id,
   };
 }
 

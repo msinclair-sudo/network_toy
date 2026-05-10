@@ -47,6 +47,11 @@ const state = {
   alignedCitationLayout: null,    // Layer 5a output: Float32Array(n × 3) — blend force input
   alignmentCorrelation:  NaN,     // Layer 5a quality metric ∈ [0, 1]
 
+  // Derived analysis on top of clusterLevels (pairs the finest level
+  // with its parent). Null when fewer than 2 levels exist. See
+  // bridge-analysis.js for shape.
+  bridgeAnalysis:        null,
+
   // Bumps every time the pipeline runs (full or partial).
   // Panels watch this to know when to rebuild their cached views.
   engineRevision:        0,
