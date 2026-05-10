@@ -14,9 +14,18 @@ export const T_STOPS = [
   [1.00, [242, 142, 43]],     // warm orange
 ];
 
+// Viridis — perceptually-uniform sequential palette. With only two
+// stops a slate→blue gradient compresses all variation into a narrow
+// hue band; values clustered near the top of the range all looked
+// like the same blue. Viridis sweeps a wide hue path (purple → blue
+// → teal → green → yellow) so even similar values land on visibly
+// distinct colours. Standard choice for sequential scientific data.
 export const INDEG_STOPS = [
-  [0.00, [80, 90, 110]],      // faint slate (no citations)
-  [1.00, [97, 175, 239]],     // bright accent (max in-degree)
+  [0.00, [ 68,   1,  84]],
+  [0.25, [ 59,  82, 139]],
+  [0.50, [ 33, 144, 141]],
+  [0.75, [ 94, 201,  98]],
+  [1.00, [253, 231,  37]],
 ];
 
 export const BOUNDARY_STOPS = [
