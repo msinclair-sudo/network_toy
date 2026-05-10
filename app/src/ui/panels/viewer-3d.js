@@ -22,6 +22,8 @@
 
 import { makeBlendForce }                  from "../../blend/blend.js";
 import { getState, setTabConfig }          from "../state.js";
+import { tGradient, inDegGradient,
+         boundaryScoreGradient }           from "../gradients.js";
 
 export const ID = "viewer-3d";
 export const LABEL = "3D viewer";
@@ -95,49 +97,8 @@ function clusterResultForMode(state, mode) {
   return levels[levels.length - 1].clusterResult;
 }
 
-function tGradient(t) {
-  // Cool blue → warm orange linearly on a fixed palette.
-  const stops = [
-    [0.00, [97, 175, 239]],     // accent blue
-    [0.50, [191, 188, 168]],    // muted middle
-    [1.00, [242, 142, 43]],     // warm orange
-  ];
-  return interpStops(stops, Math.max(0, Math.min(1, t)));
-}
-function inDegGradient(v) {
-  // Faint grey (0) → bright accent (1).
-  const stops = [
-    [0.00, [80, 90, 110]],
-    [1.00, [97, 175, 239]],
-  ];
-  return interpStops(stops, Math.max(0, Math.min(1, v)));
-}
-function boundaryScoreGradient(v) {
-  // Faint slate (0 = pure interior) → vivid orange-red (1 = max
-  // mixing). Distinct palette from t/inDeg so the modes don't
-  // visually conflate when stacked side-by-side in the legend.
-  const stops = [
-    [0.00, [58, 63, 74]],
-    [0.50, [180, 130, 80]],
-    [1.00, [230, 108, 117]],
-  ];
-  return interpStops(stops, Math.max(0, Math.min(1, v)));
-}
-function interpStops(stops, t) {
-  for (let i = 1; i < stops.length; i++) {
-    if (t <= stops[i][0]) {
-      const [t0, c0] = stops[i - 1];
-      const [t1, c1] = stops[i];
-      const f = (t - t0) / Math.max(1e-9, t1 - t0);
-      const r = Math.round(c0[0] + (c1[0] - c0[0]) * f);
-      const g = Math.round(c0[1] + (c1[1] - c0[1]) * f);
-      const b = Math.round(c0[2] + (c1[2] - c0[2]) * f);
-      return `rgb(${r}, ${g}, ${b})`;
-    }
-  }
-  const last = stops[stops.length - 1][1];
-  return `rgb(${last[0]}, ${last[1]}, ${last[2]})`;
-}
+// Gradients live in app/src/ui/gradients.js — imported above so the
+// node-table legend can stay in lockstep with what's painted here.
 
 export function mount(container, _state, config = {}, tabContext = null) {
   // Apply config defaults — anything missing uses DEFAULT_CAMERA.

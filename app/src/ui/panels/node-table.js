@@ -20,6 +20,10 @@
 //   {type: "tBin",    binIdx: i}        (no viewer effect yet)
 
 import { getState, setSelection, setTabConfig } from "../state.js";
+import {
+  tGradient, inDegGradient, boundaryScoreGradient,
+  T_STOPS, INDEG_STOPS, BOUNDARY_STOPS, cssLinearGradient,
+} from "../gradients.js";
 
 export const ID = "node-table";
 export const LABEL = "Node table";
@@ -60,6 +64,12 @@ export function mount(container, _state, config = {}, tabContext = null) {
   headBar.appendChild(statusEl);
 
   root.appendChild(headBar);
+
+  // ── gradient legend (continuous-source legends only) ────────────
+  const gradientBar = document.createElement("div");
+  gradientBar.className = "node-table-gradient";
+  gradientBar.style.display = "none";   // shown only when buildTableData returns one
+  root.appendChild(gradientBar);
 
   // ── empty state hint ────────────────────────────────────────────
   const empty = document.createElement("div");
@@ -105,9 +115,47 @@ export function mount(container, _state, config = {}, tabContext = null) {
       sortKey = data.defaultSort ? data.defaultSort.key : null;
       sortDir = data.defaultSort ? data.defaultSort.dir : "desc";
     }
+    renderGradient(data.gradient);
     renderHeader(data.columns);
     renderRows(data.columns, data.rows, data.selectionKey);
     footer.textContent = `${data.rows.length} ${data.unitLabel || "rows"}`;
+  }
+
+  function renderGradient(gradient) {
+    if (!gradient) {
+      gradientBar.style.display = "none";
+      gradientBar.innerHTML = "";
+      return;
+    }
+    gradientBar.style.display = "grid";
+    gradientBar.innerHTML = "";
+    // DOM order = visual order (4-column grid):
+    //   [label] [min] [bar] [max]
+    const lab = document.createElement("span");
+    lab.className = "node-table-gradient-label";
+    lab.textContent = gradient.label || "";
+    gradientBar.appendChild(lab);
+
+    const minLab = document.createElement("span");
+    minLab.className = "node-table-gradient-min";
+    minLab.textContent = formatGradientNumber(gradient.min);
+    gradientBar.appendChild(minLab);
+
+    const bar = document.createElement("span");
+    bar.className = "node-table-gradient-bar";
+    bar.style.background = cssLinearGradient(gradient.stops);
+    gradientBar.appendChild(bar);
+
+    const maxLab = document.createElement("span");
+    maxLab.className = "node-table-gradient-max";
+    maxLab.textContent = formatGradientNumber(gradient.max);
+    gradientBar.appendChild(maxLab);
+  }
+
+  function formatGradientNumber(v) {
+    if (v == null || !Number.isFinite(v)) return "—";
+    if (Number.isInteger(v) || Math.abs(v) >= 10) return String(Math.round(v));
+    return v.toFixed(2);
   }
 
   function rebuildSourceOptions(s) {
@@ -279,7 +327,8 @@ function sourceOptionsFor(s) {
     }
   }
   if (s.bridgeAnalysis) {
-    opts.push({ value: "bridge", label: "Bridge clusters" });
+    opts.push({ value: "bridge",        label: "Bridge clusters" });
+    opts.push({ value: "boundaryScore", label: "Boundary score (per fine cluster)" });
   }
   if (s.genResult && s.genResult.origins) {
     opts.push({ value: "origin", label: "Origin (generator label)" });
@@ -295,10 +344,11 @@ function sourceOptionsFor(s) {
 
 function buildTableData(s, source) {
   if (source && source.startsWith("cluster")) return clusterRows(s, source);
-  if (source === "bridge") return bridgeRows(s);
-  if (source === "origin") return originRows(s);
-  if (source === "inDeg")  return inDegRows(s);
-  if (source === "t")      return timeBinRows(s);
+  if (source === "bridge")        return bridgeRows(s);
+  if (source === "boundaryScore") return boundaryScoreRows(s);
+  if (source === "origin")        return originRows(s);
+  if (source === "inDeg")         return inDegRows(s);
+  if (source === "t")             return timeBinRows(s);
   return { columns: [], rows: [], unitLabel: "rows", title: "" };
 }
 
@@ -337,6 +387,51 @@ function clusterRows(s, source) {
     defaultSort: { key: "count", dir: "desc" },
     selectionKey: (row, sel) =>
       sel.type === "cluster" && sel.level === levelIdx && sel.id === row.id,
+  };
+}
+
+function boundaryScoreRows(s) {
+  const ba = s.bridgeAnalysis;
+  const levels = s.clusterLevels || [];
+  if (!ba || levels.length < 2) {
+    return {
+      columns: [], rows: [], unitLabel: "clusters",
+      title: "needs at least two clustering levels",
+    };
+  }
+  const fine = levels[ba.fineLevel].clusterResult;
+
+  const rows = ba.perCluster.map(p => {
+    const fc = fine.clusters[p.fineId];
+    const score = 1 - p.dominantFraction;
+    return {
+      _key:    `bs:${p.fineId}`,
+      _select: () => ({ type: "cluster", level: ba.fineLevel, id: p.fineId }),
+      // Gradient swatch matches viewer-3d's boundaryScore colouring.
+      colour:  boundaryScoreGradient(score),
+      id:      p.fineId,
+      count:   p.memberCount,
+      score,
+      span:    p.spanCount,
+      dom:     p.dominantCoarseId,
+    };
+  });
+  return {
+    title:     `${rows.length} fine clusters · L${ba.coarseLevel}→L${ba.fineLevel}`,
+    unitLabel: "clusters",
+    columns: [
+      { key: "colour", label: "",        kind: "colour", sortable: false },
+      { key: "id",     label: "fine id", kind: "int",    sortable: true  },
+      { key: "count",  label: "count",   kind: "int",    sortable: true  },
+      { key: "score",  label: "score",   kind: "float",  sortable: true  },
+      { key: "span",   label: "span",    kind: "int",    sortable: true  },
+      { key: "dom",    label: "dom",     kind: "int",    sortable: true  },
+    ],
+    rows,
+    defaultSort: { key: "score", dir: "desc" },
+    selectionKey: (row, sel) =>
+      sel.type === "cluster" && sel.level === ba.fineLevel && sel.id === row.id,
+    gradient: { stops: BOUNDARY_STOPS, min: 0, max: 1, label: "boundary score" },
   };
 }
 
@@ -448,16 +543,25 @@ function inDegRows(s) {
     return { columns: [], rows: [], unitLabel: "nodes", title: "no citation graph" };
   }
   const cl = s.clusterResult;
+  // Find max in-degree once so the gradient normalises consistently
+  // (matches viewer-3d's per-render scaling).
+  let maxIn = 1;
+  for (let i = 0; i < cit.inDeg.length; i++) {
+    if (cit.inDeg[i] > maxIn) maxIn = cit.inDeg[i];
+  }
+
   const all = [];
   for (let i = 0; i < nodes.length; i++) {
     const cid = cl ? cl.nodeCluster[i] : -1;
-    const cluster = (cl && cid >= 0) ? cl.clusters[cid] : null;
+    const inDeg = cit.inDeg[i];
     all.push({
       _key:    `node:${i}`,
       _select: () => ({ type: "node", id: i }),
-      colour:  cluster ? cluster.colour : "#888",
+      // Gradient swatch matches viewer-3d's inDeg colouring exactly,
+      // so the table reads as the legend.
+      colour:  inDegGradient(inDeg / maxIn),
       id:      i,
-      inDeg:   cit.inDeg[i],
+      inDeg,
       t:       nodes[i].t,
       cluster: cid,
     });
@@ -477,6 +581,7 @@ function inDegRows(s) {
     rows,
     defaultSort: { key: "inDeg", dir: "desc" },
     selectionKey: (row, sel) => sel.type === "node" && sel.id === row.id,
+    gradient: { stops: INDEG_STOPS, min: 0, max: maxIn, label: "in-deg" },
   };
 }
 
@@ -499,7 +604,7 @@ function timeBinRows(s) {
     return {
       _key:    `tBin:${i}`,
       _select: () => ({ type: "tBin", binIdx: i }),
-      colour:  tColour(mid),
+      colour:  tGradient(mid),
       bin:     i,
       range:   `${lo.toFixed(1)}–${hi.toFixed(1)}`,
       mid,
@@ -519,32 +624,11 @@ function timeBinRows(s) {
     rows,
     defaultSort: { key: "bin", dir: "asc" },
     selectionKey: (row, sel) => sel.type === "tBin" && sel.binIdx === row.bin,
+    gradient: { stops: T_STOPS, min: 0, max: 1, label: "t" },
   };
 }
 
 /* ── helpers ────────────────────────────────────────────────────────── */
-
-function tColour(t) {
-  // Mirrors viewer-3d's gradient so the legend reads as the actual rendering.
-  const stops = [
-    [0.00, [97, 175, 239]],
-    [0.50, [191, 188, 168]],
-    [1.00, [242, 142, 43]],
-  ];
-  const v = Math.max(0, Math.min(1, t));
-  for (let i = 1; i < stops.length; i++) {
-    if (v <= stops[i][0]) {
-      const [t0, c0] = stops[i - 1];
-      const [t1, c1] = stops[i];
-      const f = (v - t0) / Math.max(1e-9, t1 - t0);
-      const r = Math.round(c0[0] + (c1[0] - c0[0]) * f);
-      const g = Math.round(c0[1] + (c1[1] - c0[1]) * f);
-      const b = Math.round(c0[2] + (c1[2] - c0[2]) * f);
-      return `rgb(${r}, ${g}, ${b})`;
-    }
-  }
-  return "#888";
-}
 
 function compareBy(a, b, key, dir) {
   let av = a[key], bv = b[key];

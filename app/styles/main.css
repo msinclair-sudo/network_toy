@@ -482,7 +482,8 @@ html, body {
 
 .node-table-root {
   display: grid;
-  grid-template-rows: auto 1fr auto;
+  /* headbar / optional gradient bar / scroll / footer */
+  grid-template-rows: auto auto 1fr auto;
   height: 100%;
   font-size: 12px;
   font-family: var(--font-ui);
@@ -514,6 +515,40 @@ html, body {
   color: var(--text-faint);
   font-family: var(--font-mono);
   margin-left: auto;
+}
+
+.node-table-gradient {
+  grid-template-columns: auto auto 1fr auto;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+.node-table-gradient-label {
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.node-table-gradient-bar {
+  display: block;
+  height: 8px;
+  border-radius: 2px;
+  border: 1px solid var(--border);
+  min-width: 40px;
+}
+
+.node-table-gradient-min,
+.node-table-gradient-max {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text);
+  min-width: 18px;
+  text-align: center;
 }
 
 .node-table-empty {
