@@ -11,11 +11,27 @@ The pipeline has four stages, each with its own math:
 
 Section 5 lists the controls and what each one actually drives.
 
-**For the real-data port (n = 800k base, 1.9M citations):** see
-`doc/scaling.md` for which layers scale unchanged, which need
-replacement, and the trade-offs at each cliff. The per-layer docs
-below also each have a "Scaling characteristics" subsection that
-points back to `scaling.md` for cross-cutting decisions.
+**For the real-data port (n = 810 k base, 1.82 M filtered hybrid
+edges):** see `doc/scaling.md` for which layers scale unchanged,
+which need replacement, and the trade-offs at each cliff. The
+per-layer docs below also each have a "Scaling characteristics"
+subsection that points back to `scaling.md` for cross-cutting
+decisions.
+
+**Multi-level extension (Layer 2 / 2.5):** since the original
+single-level layer-2 spec, the toy has gained multi-level
+clustering (state.clusterLevels) plus a derived bridge analysis.
+See `doc/multi-level.md` for the multi-level engine cascade,
+within-parent stitching, and the bridge / boundary-score
+derivation. The original `ClusterResult` contract in
+`doc/clustering.md` §1 is unchanged — multi-level is a sibling
+state slot, not a contract extension.
+
+**UI architecture:** the v3 shell at `app/src/ui/` (workflow chart
++ multi-tab panels + modals + state container) is specified in
+`doc/ui-architecture.md`. Engine modules in `app/src/` (outside
+`ui/`) remain pure functions and don't read or write state — they're
+called by the orchestrator at `app/src/ui/engine.js`.
 
 ---
 

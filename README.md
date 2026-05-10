@@ -27,39 +27,73 @@ unpkg via an import map.
 
 ## What you do with it
 
-- Hit **Generate** to draw a fresh node cloud (Gaussian-mixture
-  sampling — change `seed`, `nodes`, `origins`, `spread` in the
-  Settings… modal).
-- **Cluster ▾** picks how clusters are inferred from the cloud
-  (mutual k-NN or HDBSCAN). Each algorithm has its own settings
-  modal with a "Find best params" sweep that scores combinations
-  against the generator's ground-truth labels (Adjusted Rand
-  Index).
-- **Citations ▾ → Settings…** controls how the citation graph is
-  generated from clusters + a per-neighbourhood "taste" model.
-  Density / intra-cluster / cross-cluster sliders are also on the
-  left panel for quick adjustment.
-- **Citation Layout ▾** picks how the citation-driven arrangement is
-  computed:
-  - **Fruchterman–Reingold** (cladogram-flavoured): every pair
-    repels, citation edges attract, plus a time-axis radial anchor
-    that draws older nodes toward the centre.
-  - **MDS** (dendrogram-flavoured): per-pair distance in 3D matches
-    graph-shortest-path distance. A 1–2–3 chain ends up collinear
-    with `|x_1 − x_3| = 2 · |x_1 − x_2|`.
-  Both modals expose a "Find best params" sweep that crosses
-  algorithms × parameters and ranks results by alignment
-  correlation with the embedding (= "how well does this layout
-  reproduce the embedding's structure?").
-- **The blend slider** in the left panel sweeps `α: 0 → 1`. At α=0
-  you see the embedding; at α=1 you see the citation-driven
-  layout (per-component aligned to the embedding so the two views
-  are at the same scale and orientation); in between is a
-  per-frame linear interpolation. Round-trip is exact — sweeping
-  back to α=0 returns every node to its original position.
-- **Debug ▾** has overlay toggles grouped by layer (origin
-  markers, cluster centroids, structure edges, noise rings,
-  displacement lines).
+The current shell is at `http://localhost:8000/app/`. The original
+v3 demo shell is preserved at `http://localhost:8000/app/legacy.html`.
+
+### Workflow chart (left rail)
+
+A small SVG of the pipeline. Click any method node — **Clustering**,
+**Cit. layout** — to open its modal. Each modal swaps the active
+algorithm and tunes its parameters, then re-runs the right engine
+lane on Apply.
+
+### Multi-level clustering
+
+The Clustering modal supports a **stack of clustering levels**.
+Each level has its own params; non-root levels also have a scope
+toggle:
+
+- **global** — re-cluster the whole dataset at this level's params
+  (often a finer resolution).
+- **within parent** — run the algorithm within each previous-level
+  cluster's members only.
+
+Mix freely. Add levels with **+ Add level**, remove with **×**.
+Same algorithm shared across all levels (per the design call:
+better story).
+
+### Bridge analysis (Layer 2.5)
+
+When ≥ 2 clustering levels exist, the toy automatically computes
+which fine clusters span multiple coarse clusters — the **bridge
+clusters**. These are surfaced as new colour modes in the 3D
+viewer (`bridge`, `boundaryScore`) and as new sources in the node
+table (`bridge`, `boundaryScore`).
+
+### 3D viewer (primary panel)
+
+Live blend visualisation. Top-left: **Colour by:** dropdown
+selects what drives node colour (cluster level, origin, time,
+in-degree, bridge, boundary score). Top-right: **⚙** opens
+camera-speed settings.
+
+### Node table (secondary panel — the legend)
+
+A mode-aware table that doubles as the legend for whatever's
+colouring the viewer. Source dropdown at top: **Auto** follows
+the viewer's colour mode, or pin to a specific source. Continuous
+gradients (in-degree / time / boundary score) display a
+min↔max gradient bar at the top of the table.
+
+### Blend slider (left rail bottom)
+
+Sweeps `α: 0 → 1`. At α=0 you see the embedding; at α=1 you see
+the citation-driven layout (per-component aligned so the two
+views share scale/orientation); in between is a per-frame linear
+interpolation. Round-trip is exact.
+
+### Topbar menus
+
+**Data** (load/generate), **Workflow** (preset save/load),
+**Validate** (bootstrap stability, ARI sweeps — pending),
+**Help** (about).
+
+### Multi-tab panels
+
+Every slot — primary, secondary, bottom — has tabs. Click `+` to
+add a new panel via a picker modal listing all registered panel
+types. `×` on a tab closes it. The 3D viewer is a singleton (one
+WebGL context only); other types can have multiple instances.
 
 ## Architecture
 
@@ -91,11 +125,15 @@ Math reference for each layer is in `doc/`. Start with
 `doc/dynamics.md` for the index; each layer has its own dedicated
 doc:
 
-- `doc/clustering.md` — Layer 2 contract + algorithms (mutual k-NN, HDBSCAN)
+- `doc/clustering.md` — Layer 2 contract + algorithms (mutual k-NN, HDBSCAN, connected-components)
 - `doc/citations.md` — Layer 3 contract + the taste-network algorithm's four stages
 - `doc/citation-layout.md` — Layer 4 algorithms (FR force formulae, MDS / SMACOF)
 - `doc/blend.md` — Layer 5 (alignment math, blend formula, correlation metric, why deterministic blend rather than a constraint solver)
-- `doc/scaling.md` — toy-vs-real-data scaling analysis: which layers' big-O carries to `n = 800k` base / 1.9M citations, where the cliffs are, and the trade-offs at each (Barnes–Hut FR, pivot/landmark MDS, sparse k-NN clustering, sparse `hasCit`)
+- `doc/multi-level.md` — multi-level clustering (state.clusterLevels, scope flag, within-parent stitching) + bridge analysis derivation (Layer 2.5)
+- `doc/ui-architecture.md` — the new shell at `app/src/ui/` (state container, engine orchestrator, workflow chart, panel system, modals, gradients, selection types, patterns for adding panels / colour modes / layers)
+- `doc/scaling.md` — toy-vs-real-data scaling analysis: which layers' big-O carries to `n = 810 k` base / 1.82 M filtered hybrid edges, where the cliffs are, and the trade-offs at each (Barnes–Hut FR, pivot/landmark MDS, sparse k-NN clustering, sparse `hasCit`)
+- `doc/clustering-research.md` — research record: per-family pros/cons, locked picks, stability metrics catalogue
+- `doc/plan.md` — convergence plan with status flags per item
 
 ## UI layout
 

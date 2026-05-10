@@ -17,6 +17,13 @@ If you are about to add or modify a clustering algorithm, the rule is:
 If any of those three conditions can't be met, the contract changes
 and this document is updated *first*, then code follows.
 
+> **Multi-level note.** The toy's new shell wraps multiple
+> `ClusterResult`s in a `state.clusterLevels` array (one per level)
+> plus a `state.bridgeAnalysis` derivation. Per-level scope (`global`
+> vs `within-parent`) controls how each level is computed. The
+> contract below is unchanged — every level is a single ordinary
+> `ClusterResult`. Spec: `doc/multi-level.md`.
+
 ---
 
 ## 1. The `ClusterResult` contract
