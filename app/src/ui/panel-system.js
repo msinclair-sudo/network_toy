@@ -144,6 +144,14 @@ function renderActivePanel(slot, slotEl) {
 
   const meta = getPanelType(tab.type);
   const tabContext = { slot, tabId: tab.id };
+
+  // Pre-register the slot tracker BEFORE mount so any state writes
+  // made during mount (e.g. colour-mode migration → setTabConfig)
+  // re-entering the subscribe see `tracked.tabId === desired.activeTabId`
+  // and skip re-running renderActivePanel — otherwise we recurse,
+  // destroying the half-built panel and leaving orphan DOM overlays.
+  slotInstances.set(slot, { panelsRef: slotState, instance: null, tabId: tab.id });
+
   let instance = null;
   try {
     instance = meta.mount(contentEl, getState(), tab.config || {}, tabContext);

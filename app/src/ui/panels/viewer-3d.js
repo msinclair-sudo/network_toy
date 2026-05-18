@@ -21,9 +21,29 @@
 // in slice 6 once the panel system is exercised.
 
 import { makeBlendForce }                  from "../../blend/blend.js";
+import { buildBaseEdges }                   from "../../base-edges.js";
 import { getState, setTabConfig }          from "../state.js";
-import { tGradient, inDegGradient,
-         boundaryScoreGradient }           from "../gradients.js";
+import {
+  getColourModeOptions, nodeColourFor, DEFAULT_COLOUR_MODE,
+} from "../viewer-shared/colour-modes.js";
+
+// Per-edge-kind static styling. Widths + default colours + arrow
+// flags live here; runtime colour is read from state.view (the colour
+// pickers in the left rail write there), falling back to .colour as a
+// hard-coded backstop when the view-state colour is missing.
+const EDGE_STYLE = {
+  citation:        { colour: "#8a8a8a", width: 0.3, arrows: true  }, // arrows gated by state.view.citArrows
+  base:            { colour: "#5a6878", width: 0.3, arrows: false },
+  "structure-edge":{ colour: "#5dd39e", width: 0.6, arrows: false },
+};
+
+// Map link.kind → state.view colour-field name. Keeping this as a
+// small lookup avoids an if/else cascade in the colour accessor.
+const COLOUR_KEY = {
+  citation:        "citColour",
+  base:            "baseColour",
+  "structure-edge":"structureColour",
+};
 
 export const ID = "viewer-3d";
 export const LABEL = "3D viewer";
@@ -49,56 +69,9 @@ const DEFAULT_CAMERA = {
   smoothMotion: false,
 };
 
-const DEFAULT_COLOUR_MODE = "cluster:finest";
-
-// "cluster:finest" → always last level
-// "cluster:N"      → level index N
-// "origin"         → generator origin colour
-// "t"              → gradient on node.t (cool → warm)
-// "inDeg"          → gradient on citation in-degree (cool → warm)
-// "bridge"         → bridge nodes by parent colour, others greyed
-// "boundaryScore"  → gradient on per-node boundary score
-function getColourModeOptions(state) {
-  const opts = [];
-  const levels = state.clusterLevels || [];
-  if (levels.length > 0) {
-    opts.push({ value: "cluster:finest", label: `Cluster (finest, L${levels.length - 1})` });
-    for (let i = 0; i < levels.length; i++) {
-      opts.push({
-        value: `cluster:${i}`,
-        label: levels.length > 1 ? `Cluster (level ${i})` : "Cluster",
-      });
-    }
-  }
-  if (state.bridgeAnalysis) {
-    opts.push({ value: "bridge",        label: "Bridge clusters" });
-    opts.push({ value: "boundaryScore", label: "Boundary score (gradient)" });
-  }
-  if (state.genResult && state.genResult.origins) {
-    opts.push({ value: "origin", label: "Origin (generator label)" });
-  }
-  opts.push({ value: "t", label: "Time (t)" });
-  if (state.citationResult) {
-    opts.push({ value: "inDeg", label: "Citation in-degree" });
-  }
-  return opts;
-}
-
-// Resolve the cluster-result for a given mode. Returns null for non-cluster modes.
-function clusterResultForMode(state, mode) {
-  if (!mode || !mode.startsWith("cluster")) return null;
-  const levels = state.clusterLevels || [];
-  if (levels.length === 0) return null;
-  if (mode === "cluster:finest") return levels[levels.length - 1].clusterResult;
-  const idx = parseInt(mode.slice(8), 10);
-  if (Number.isFinite(idx) && idx >= 0 && idx < levels.length) {
-    return levels[idx].clusterResult;
-  }
-  return levels[levels.length - 1].clusterResult;
-}
-
-// Gradients live in app/src/ui/gradients.js — imported above so the
-// node-table legend can stay in lockstep with what's painted here.
+// Colour-mode helpers + dropdown options + per-node resolver all
+// live in viewer-shared/colour-modes.js so the 2D viewer paints the
+// same data with the same rules.
 
 export function mount(container, _state, config = {}, tabContext = null) {
   // Apply config defaults — anything missing uses DEFAULT_CAMERA.
@@ -116,6 +89,23 @@ export function mount(container, _state, config = {}, tabContext = null) {
   graphDiv.style.position = "absolute";
   graphDiv.style.inset    = "0";
   container.appendChild(graphDiv);
+
+  // Empty-state overlay — shown when there's no genResult or no 3-d
+  // basePos (real-data mode without a viz reduction picked). Rendered
+  // above the graphDiv but below the colour-mode + settings overlays.
+  const emptyOverlay = document.createElement("div");
+  emptyOverlay.className = "viewer-3d-empty";
+  emptyOverlay.style.display = "none";
+  container.appendChild(emptyOverlay);
+
+  function showEmptyState(text) {
+    emptyOverlay.textContent = text;
+    emptyOverlay.style.display = "flex";
+    if (Graph) Graph.graphData({ nodes: [], links: [] });
+  }
+  function hideEmptyState() {
+    emptyOverlay.style.display = "none";
+  }
 
   // Hoist these so the overlays' callbacks don't hit TDZ if they fire
   // synchronously during build.
@@ -196,7 +186,19 @@ export function mount(container, _state, config = {}, tabContext = null) {
   function rebuildData() {
     if (!Graph) return;
     const s = getState();
-    if (!s.genResult) return;
+    if (!s.genResult) {
+      showEmptyState("Load or generate a dataset to render.");
+      return;
+    }
+    // Without a 3-d basePos we can't place anything. Real-data ingest
+    // hits this path until the user picks a 3-d viz reduction (e.g.
+    // UMAP-3) in the dim-reduction layer — that's the lazy-render gate
+    // the user asked for: large datasets don't auto-display.
+    if (!s._basePos) {
+      showEmptyState("Pick a 3-d visualisation reduction in the dim-reduction layer to render this dataset.");
+      return;
+    }
+    hideEmptyState();
 
     const nodes = [];
     const liveById = readLivePositions(Graph);
@@ -218,10 +220,23 @@ export function mount(container, _state, config = {}, tabContext = null) {
       });
     }
 
+    const view = s.view || {};
     const links = [];
-    if (s.citationResult && s.citationResult.citations) {
+    if (view.showCitations && s.citationResult && s.citationResult.citations) {
       for (const c of s.citationResult.citations) {
         links.push({ source: c.source, target: c.target, kind: "citation" });
+      }
+    }
+    if (view.showStructure && s.clusterResult && s.clusterResult.structureEdges) {
+      for (const e of s.clusterResult.structureEdges) {
+        links.push({ source: e[0], target: e[1], kind: "structure-edge" });
+      }
+    }
+    if (view.showBase && s.genResult && s._basePos) {
+      // buildBaseEdges reads basePos per node; ensure each node carries
+      // it as the helper expects (engine syncs this on every dimred).
+      for (const e of buildBaseEdges(s.genResult, view.baseDensity)) {
+        links.push({ source: e.source, target: e.target, kind: "base" });
       }
     }
 
@@ -230,103 +245,80 @@ export function mount(container, _state, config = {}, tabContext = null) {
       .nodeOpacity(1.0)
       .nodeVal(() => 1)
       .nodeLabel((n) => `#${n.id} · cluster ${n.clusterId} · t=${(n.t ?? 0).toFixed(2)}`)
-      .linkColor(() => "#888888")
-      .linkOpacity(0.35)
-      .linkWidth(0.6)
-      .linkDirectionalArrowLength(2)
+      .linkColor(linkColour)
+      .linkWidth(linkWidth)
+      .linkOpacity(0.9)           // baseline; per-link opacity via linkMaterial below
+      .linkMaterial(linkMaterial)
+      .linkDirectionalArrowLength(linkArrowLength)
       .linkDirectionalArrowRelPos(1)
       .graphData({ nodes, links });
 
     Graph.d3ReheatSimulation();
   }
 
-  // Colour a node based on the active colour mode + current selection.
-  // - Mode resolves the base colour (cluster level / origin / t / in-deg).
-  // - Selection dims non-matching nodes to slate. Selection types:
-  //     {type:"cluster", level:N, id}  — node belongs to that cluster at level N
-  //     {type:"origin",  id}           — node has that originId
-  //     {type:"node",    id}           — only that node id matches
-  //     {type:"tBin", binIdx}          — (no viewer dimming yet)
+  // Per-link accessors dispatch on `link.kind`.
+  function linkColour(l) {
+    const view = getState().view || {};
+    const key = COLOUR_KEY[l.kind];
+    const fromView = key ? view[key] : null;
+    if (fromView) return fromView;
+    return (EDGE_STYLE[l.kind] && EDGE_STYLE[l.kind].colour) || "#888888";
+  }
+  function linkWidth(l) {
+    return (EDGE_STYLE[l.kind] && EDGE_STYLE[l.kind].width) || 0.5;
+  }
+  function linkArrowLength(l) {
+    // Arrows only on citations, and only when the toggle is on.
+    if (l.kind !== "citation") return 0;
+    return getState().view && getState().view.citArrows ? 2.2 : 0;
+  }
+
+  // 3d-force-graph caches LineBasicMaterials keyed by colour, so two
+  // links of the same colour share ONE material instance — which means
+  // setting per-link opacity by setting material.opacity mutates every
+  // link of that colour. We sidestep the cache by returning a *fresh*
+  // material per link (cheap at our edge counts). Opacity per kind
+  // comes from state.view; the per-link material is the only path that
+  // lets citation opacity vary independently from base / structure.
+  function linkMaterial(l) {
+    const T = window.THREE;
+    if (!T) return null;
+    const colour = linkColour(l);
+    let opacity = 0.5;
+    const v = getState().view || {};
+    if (l.kind === "citation")        opacity = clamp01(v.citOpacity ?? 0.6);
+    else if (l.kind === "base")       opacity = 0.35;
+    else if (l.kind === "structure-edge") opacity = 0.55;
+    return new T.LineBasicMaterial({
+      color: new T.Color(colour),
+      transparent: true,
+      opacity,
+    });
+  }
+
+  function clamp01(x) { return Math.max(0, Math.min(1, +x || 0)); }
+
+  // Cheap fingerprint of state.view — joined string of every field
+  // the renderer reads. update() compares against the prior tick's
+  // signature to decide whether to rebuild graphData.
+  function viewSignature(v) {
+    if (!v) return "";
+    return [
+      v.showCitations ? "1" : "0",
+      v.showBase      ? "1" : "0",
+      v.showStructure ? "1" : "0",
+      v.citArrows     ? "1" : "0",
+      (+v.citOpacity  || 0).toFixed(3),
+      (+v.baseDensity || 0).toFixed(4),
+      v.citColour       || "",
+      v.baseColour      || "",
+      v.structureColour || "",
+    ].join(":");
+  }
+
+  // Single delegation to the shared resolver (mode + selection dim).
   function nodeColour(n) {
-    const s = getState();
-    const base = baseColourFor(n, s, colourMode);
-    const sel = s.selection;
-    if (!sel || !sel.type) return base;
-
-    const matched = nodeMatchesSelection(n, s, sel);
-    if (matched === null) return base;          // selection type doesn't dim
-    return matched ? base : "#3a3f4a";
-  }
-
-  function nodeMatchesSelection(n, s, sel) {
-    if (sel.type === "cluster") {
-      const levels = s.clusterLevels || [];
-      if (levels.length === 0) return null;
-      const lvlIdx = (sel.level == null)
-        ? levels.length - 1
-        : Math.max(0, Math.min(levels.length - 1, sel.level));
-      const cl = levels[lvlIdx];
-      if (!cl) return null;
-      return cl.clusterResult.nodeCluster[n.id] === sel.id;
-    }
-    if (sel.type === "origin") {
-      return n.originId === sel.id;
-    }
-    if (sel.type === "node") {
-      return n.id === sel.id;
-    }
-    return null;   // tBin or unknown — no dimming
-  }
-
-  function baseColourFor(n, state, mode) {
-    if (mode && mode.startsWith("cluster")) {
-      const cr = clusterResultForMode(state, mode);
-      if (cr) {
-        const cid = cr.nodeCluster[n.id];
-        const cluster = cid >= 0 ? cr.clusters[cid] : null;
-        return cluster ? cluster.colour : "#888";
-      }
-      return "#888";
-    }
-    if (mode === "origin") {
-      const origins = state.genResult && state.genResult.origins;
-      if (origins && n.originId != null && origins[n.originId]) {
-        return origins[n.originId].colour;
-      }
-      return "#888";
-    }
-    if (mode === "t") {
-      return tGradient(+n.t || 0);
-    }
-    if (mode === "inDeg") {
-      const cit = state.citationResult;
-      if (cit && cit.inDeg) {
-        let max = 1;
-        for (let i = 0; i < cit.inDeg.length; i++) if (cit.inDeg[i] > max) max = cit.inDeg[i];
-        return inDegGradient(cit.inDeg[n.id] / max);
-      }
-      return "#888";
-    }
-    if (mode === "bridge") {
-      const ba = state.bridgeAnalysis;
-      if (!ba) return "#888";
-      // Non-bridge nodes: dimmed slate (same shade as selection-dim
-      // so the eye reads "off the focus" consistently). Bridge nodes:
-      // their OWN coarse parent's colour at full saturation, so the
-      // user sees both that the node IS a bridge AND which side of
-      // the boundary it sits on.
-      if (!ba.perNodeIsBridge[n.id]) return "#3a3f4a";
-      const coarse = state.clusterLevels[ba.coarseLevel].clusterResult;
-      const cid = coarse.nodeCluster[n.id];
-      const cluster = cid >= 0 ? coarse.clusters[cid] : null;
-      return cluster ? cluster.colour : "#888";
-    }
-    if (mode === "boundaryScore") {
-      const ba = state.bridgeAnalysis;
-      if (!ba) return "#888";
-      return boundaryScoreGradient(ba.perNodeScore[n.id] || 0);
-    }
-    return "#888";
+    return nodeColourFor(n, getState(), colourMode);
   }
 
   // Re-evaluate node colours without rebuilding graphData. Cheap;
@@ -392,20 +384,29 @@ export function mount(container, _state, config = {}, tabContext = null) {
   init();
   if (Graph) rebuildData();
   lastDataRevision = getState().engineRevision;
+  let lastViewSig = viewSignature(getState().view);
 
   return {
     update(s) {
       if (!Graph) return;
-      // Rebuild only when the engine has produced new data.
-      // Slider drags / panel switches come through update() too;
-      // those don't need a graphData rebuild.
-      if (s.engineRevision !== lastDataRevision) {
+      // Rebuild on either: new engine output, or view-flag change
+      // (citation/base/structure toggles, opacity, density, arrows).
+      // View-only rebuilds are cheap — same node positions (restored
+      // via readLivePositions) and at toy/dev-subset sizes the link
+      // arrays are small.
+      const dataChanged = s.engineRevision !== lastDataRevision;
+      const viewSig     = viewSignature(s.view);
+      const viewChanged = viewSig !== lastViewSig;
+      if (dataChanged || viewChanged) {
         rebuildData();
         lastDataRevision = s.engineRevision;
-        lastSelection = s.selection;
-        // New engine output may have added/removed cluster levels —
-        // refresh the dropdown options.
-        colourOverlay.refreshOptions();
+        lastViewSig      = viewSig;
+        lastSelection    = s.selection;
+        if (dataChanged) {
+          // New engine output may have added/removed cluster levels —
+          // refresh the dropdown options.
+          colourOverlay.refreshOptions();
+        }
         return;
       }
 
@@ -471,6 +472,21 @@ function buildColourModeOverlay({ initial, getOptions, onChange }) {
 
   function rebuildOptions() {
     const opts = getOptions();
+
+    // Migrate the legacy `cluster:finest` alias to a concrete level
+    // once levels are available, so the dropdown reflects the real
+    // selection. Old saved tab configs may still hold the alias.
+    if (current === "cluster:finest") {
+      const lastConcrete = opts
+        .map(o => o.value)
+        .filter(v => /^cluster:\d+$/.test(v))
+        .pop();
+      if (lastConcrete) {
+        current = lastConcrete;
+        if (typeof onChange === "function") onChange(current);
+      }
+    }
+
     select.innerHTML = "";
     for (const o of opts) {
       const opt = document.createElement("option");
@@ -479,11 +495,6 @@ function buildColourModeOverlay({ initial, getOptions, onChange }) {
       if (o.value === current) opt.selected = true;
       select.appendChild(opt);
     }
-    // Preserve `current` even if it's not yet in the option list —
-    // initial mount runs before the engine has populated clusters,
-    // so "cluster:finest" won't match until after first regenerate.
-    // The select will visually show its first option until the saved
-    // mode reappears, at which point it'll re-select naturally.
   }
 
   select.addEventListener("change", () => {

@@ -14,8 +14,10 @@ import { inferClusters as inferMutualKNN } from "./clustering.js";
 import { inferHdbscan, defaultHdbscanParams } from "./clustering-hdbscan.js";
 import { inferConnectedComponents, defaultCCParams } from "./clustering-cc.js";
 
-// Each entry's `infer` is called as infer(genResult, params) and must
-// return a ClusterResult.
+// Each entry's `infer` is called as infer(genResult, params, dimredResult)
+// and must return a ClusterResult. Distance computations run in
+// dimredResult's space; cluster.centre / cluster.spread stay in basePos
+// (3-d) space per the cluster contract.
 export const ALGORITHMS = [
   {
     id: "mutualKNN",
@@ -23,7 +25,7 @@ export const ALGORITHMS = [
     description: "Each node connects to its top-K nearest neighbours; an edge counts only if the membership is mutual. Connected components become clusters.",
     allowsNoise: false,
     defaultParams: () => ({ mutualK: 5 }),
-    infer: (genResult, params) => inferMutualKNN(genResult, params),
+    infer: (genResult, params, dimredResult) => inferMutualKNN(genResult, params, dimredResult),
     modalSchema: [
       {
         key: "mutualK",
@@ -33,6 +35,7 @@ export const ALGORITHMS = [
         format: (v) => String(v),
         hint: "Top-K nearest neighbours each node considers. Larger K → more pairs are mutual → fewer, bigger clusters.",
         sweepValues: [2, 3, 4, 5, 7, 10, 15, 20],
+        resolution: true,
       },
     ],
   },
@@ -42,7 +45,7 @@ export const ALGORITHMS = [
     description: "Builds the mutual-reachability MST, walks its dendrogram condensed by min_cluster_size, scores each surviving cluster's stability, and selects the most stable subset (excess of mass). Cluster count is emergent. Points outside any stable cluster are noise; at stage 2 they are pooled into a single trailing 'noise' bucket.",
     allowsNoise: false,
     defaultParams: defaultHdbscanParams,
-    infer: (genResult, params) => inferHdbscan(genResult, params),
+    infer: (genResult, params, dimredResult) => inferHdbscan(genResult, params, dimredResult),
     modalSchema: [
       {
         key: "minSamples",
@@ -61,6 +64,7 @@ export const ALGORITHMS = [
         format: (v) => String(v),
         hint: "Smallest acceptable cluster size. Splits where one side falls below the threshold dissolve the smaller side into noise. Larger values → fewer, more substantial clusters.",
         sweepValues: [2, 3, 5, 8, 12, 20],
+        resolution: true,
       },
       {
         key: "selectionMethod",
@@ -71,6 +75,10 @@ export const ALGORITHMS = [
           { value: "leaf", label: "Leaf (every condensed-tree leaf)" },
         ],
         hint: "EOM: classic — picks the most stable cluster frontier. Can collapse to ~2 clusters when blobs overlap because the dendrogram becomes a long imbalanced chain (one giant cluster nibbling small pieces). Leaf: picks every condensed-tree leaf instead — finer-grained and immune to that bifurcation, but produces lots of tiny clusters. Pair with selection epsilon to roll fine leaves up to a coarser scale.",
+        // Tagged as resolution because EOM vs Leaf changes cluster count
+        // dramatically — same role as a resolution knob. Included in
+        // resolution-only sweeps so Optimise tries both.
+        resolution: true,
       },
       {
         key: "selectionEpsilon",
@@ -103,7 +111,7 @@ export const ALGORITHMS = [
     description: "Each node connects to its top-k nearest neighbours (one direction is enough — no mutuality requirement). Connected components of the resulting graph become clusters. Trivial baseline: usually produces one giant cluster on dense data, useful as a reference and for stress-testing the contract validator.",
     allowsNoise: false,
     defaultParams: defaultCCParams,
-    infer: (genResult, params) => inferConnectedComponents(genResult, params),
+    infer: (genResult, params, dimredResult) => inferConnectedComponents(genResult, params, dimredResult),
     modalSchema: [
       {
         key: "k",
@@ -113,6 +121,7 @@ export const ALGORITHMS = [
         format: (v) => String(v),
         hint: "Top-k nearest neighbours each node links to. Larger k → fewer, bigger components (eventually one giant cluster).",
         sweepValues: [1, 2, 3, 5, 8, 12, 20],
+        resolution: true,
       },
     ],
   },

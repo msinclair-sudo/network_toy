@@ -137,17 +137,20 @@ function renderNode(node, state) {
   });
   g.appendChild(dot);
 
+  // The Data node always carries a configured source label too, so
+  // treat it like a method visually (two-line layout).
+  const showSubLabel = node.kind === "method" || node.id === "data";
+
   // label
   const label = svgEl("text", {
     x: NODE_W / 2 + 4,
-    y: node.kind === "input" ? NODE_H / 2 : NODE_H / 2 - 6,
+    y: showSubLabel ? NODE_H / 2 - 6 : NODE_H / 2,
     class: "wf-node-label",
   });
   label.textContent = node.label;
   g.appendChild(label);
 
-  // active algorithm (only for method nodes)
-  if (node.kind === "method") {
+  if (showSubLabel) {
     const algoId = activeAlgorithmFor(state, node.id);
     if (algoId) {
       const algoText = svgEl("text", {
@@ -182,6 +185,7 @@ function onNodeClick(node) {
 function activeAlgorithmFor(state, nodeId) {
   const lp = state.layerParams || {};
   switch (nodeId) {
+    case "data":       return state.dataSource ? state.dataSource.mode : "—";
     case "clustering": {
       if (!lp.clustering) return "—";
       const lvCount = (lp.clustering.levels || []).length;
@@ -192,7 +196,16 @@ function activeAlgorithmFor(state, nodeId) {
     case "citations":  return state.dataSource.mode === "real"
                               ? "(observed)"
                               : "taste-network";
-    case "dimred":     return "—";   // dim-reduction registry lands later
+    case "dimred": {
+      // Layer 1.5 has three stages; summarise compression + viz for the
+      // chart label. Collapsed to a single em-dash when nothing's
+      // doing real work.
+      if (!lp.dimred) return "—";
+      const cs = lp.dimred.compression && lp.dimred.compression.method || "identity";
+      const vs = lp.dimred.viz         && lp.dimred.viz.method         || "identity";
+      if (cs === "identity" && vs === "identity") return "—";
+      return `cluster: ${cs} · viz: ${vs}`;
+    }
     case "alignment":  return "match-RMS";
     case "blend":      return "linear";
     default:           return null;

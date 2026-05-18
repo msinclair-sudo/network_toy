@@ -7,9 +7,20 @@
 // Most menu items open modals; in this slice they're stubs
 // (console.log placeholder). Modals get built in slice 5.
 
-import { getState, subscribe, setToyParam } from "./state.js";
+import { getState, subscribe, setToyParam, setProjectName, update } from "./state.js";
+import { serialiseState }   from "../persistence/serialise.js";
+import { deserialiseFile }  from "../persistence/deserialise.js";
 
 const MENUS = [
+  {
+    id: "file",
+    label: "File",
+    items: [
+      { label: "Save",          action: () => saveProject({ promptForName: false }) },
+      { label: "Save as…",      action: () => saveProject({ promptForName: true }) },
+      { label: "Load…",         action: () => loadProject() },
+    ],
+  },
   {
     id: "data",
     label: "Data",
@@ -18,7 +29,6 @@ const MENUS = [
       { label: "Load real dataset…",   action: stub("data:load-real"), disabled: true },
       { label: "Citation source…",     action: stub("data:citation-source") },
       { divider: true },
-      { label: "Save state…",          action: stub("data:save"), disabled: true },
       { label: "Export labels…",       action: stub("data:export-labels"), disabled: true },
       { label: "Export edges…",        action: stub("data:export-edges"), disabled: true },
     ],
@@ -133,7 +143,11 @@ function renderSeed() {
 
   const input = document.createElement("input");
   input.type = "number";
-  input.value = String(getState().dataSource.config.seed);
+  // Seed is toy-only; real-data sources don't have one. setToyParam()
+  // always targets the toy config regardless of active mode, so this
+  // input keeps editing the toy generator's seed even while the user
+  // is in real mode.
+  input.value = String(getState().dataSource.configs.toy.seed);
   input.addEventListener("change", (e) => {
     const v = parseInt(e.target.value, 10);
     if (Number.isFinite(v)) setToyParam("seed", v);
@@ -142,7 +156,7 @@ function renderSeed() {
 
   // Keep seed input in sync if state changes elsewhere.
   subscribe((state) => {
-    const v = String(state.dataSource.config.seed);
+    const v = String(state.dataSource.configs.toy.seed);
     if (input.value !== v) input.value = v;
   });
 
@@ -154,4 +168,100 @@ function stub(id) {
     console.log(`[topbar action stub] ${id}`);
     // Once modals are built (slice 5), each action opens its modal here.
   };
+}
+
+/* ── File menu actions ─────────────────────────────────────────────── */
+
+// "Save" reuses state.projectName (from the most-recent save / load).
+// First save in a session goes through "Save as" since there's no
+// remembered name yet.
+function saveProject({ promptForName }) {
+  const state = getState();
+  let name = state.projectName;
+  if (promptForName || !name) {
+    const suggestion = name || defaultProjectName(state);
+    const entered = window.prompt("Save project as:", suggestion);
+    if (entered == null) return;          // user cancelled
+    name = sanitiseProjectName(entered);
+    if (!name) return;
+    setProjectName(name);
+  }
+
+  let blob;
+  try {
+    // Re-read state — projectName was just set above, so it lands in
+    // the saved bundle.
+    blob = serialiseState(getState());
+  } catch (e) {
+    console.error("[topbar] save failed:", e);
+    window.alert("Save failed — see browser console.");
+    return;
+  }
+
+  triggerDownload(blob, `${name}.zip`);
+}
+
+function loadProject() {
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = ".zip,application/zip";
+  input.style.display = "none";
+  input.addEventListener("change", async () => {
+    const file = input.files && input.files[0];
+    input.remove();
+    if (!file) return;
+    let res;
+    try {
+      res = await deserialiseFile(file);
+    } catch (e) {
+      console.error("[topbar] load failed:", e);
+      window.alert(`Load failed: ${e.message || e}`);
+      return;
+    }
+    // Apply the patch wholesale — engine cascade is intentionally
+    // skipped (we have all the results already; re-running would
+    // overwrite them and defeat the point of saving). engineRevision
+    // bumps so panels rebuild from the loaded data.
+    const cur = getState();
+    update({
+      ...res.patch,
+      // Default the reconstructed-but-missing slots so the UI doesn't
+      // see undefined. clusterResult is rebuilt from clusterLevels.
+      clusterResult:  res.patch.clusterLevels && res.patch.clusterLevels.length
+                       ? res.patch.clusterLevels[res.patch.clusterLevels.length - 1].clusterResult
+                       : null,
+      projectName:    res.patch.projectName || stripExtension(file.name),
+      engineRevision: cur.engineRevision + 1,
+    });
+    console.log(`[topbar] loaded project '${file.name}' (saved ${res.manifest.savedAt})`);
+  });
+  document.body.appendChild(input);
+  input.click();
+}
+
+function triggerDownload(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => {
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, 0);
+}
+
+function defaultProjectName(state) {
+  const mode = state.dataSource && state.dataSource.mode;
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+  return `network-toy-${mode || "project"}-${stamp}`;
+}
+
+function sanitiseProjectName(s) {
+  return String(s).trim().replace(/[\\/:*?"<>|]/g, "_");
+}
+
+function stripExtension(filename) {
+  return filename.replace(/\.zip$/i, "");
 }

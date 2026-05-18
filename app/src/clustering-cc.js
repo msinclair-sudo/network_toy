@@ -19,27 +19,43 @@ const TABLEAU10 = [
   "#edc948", "#b07aa1", "#ff9da7", "#9c755f", "#bab0ab",
 ];
 
+// Cluster centre/spread fallback when nodes carry no basePos (real-
+// data path before viz sub-stage runs). Centre/spread is viz-only;
+// zero is a sentinel that doesn't lie about real geometry.
+const ZERO3 = [0, 0, 0];
+
 export const defaultCCParams = () => ({
   k: 8,
 });
 
-export function inferConnectedComponents(genResult, params = {}) {
+export function inferConnectedComponents(genResult, params = {}, dimredResult) {
   const nodes = genResult.nodes;
   const n = nodes.length;
   const k = Math.max(1, Math.min(n - 1, +params.k || 8));
 
-  // 1. For each node, find its top-k nearest neighbours (by Euclidean
-  //    distance on basePos).
+  // dimredResult is the canonical input from the new shell; legacy
+  // (main.js) calls this without it, in which case we transparently
+  // pack basePos into a flat 3-d buffer.
+  if (!dimredResult) dimredResult = packBasePos(nodes);
+  const pos = dimredResult.data;
+  const d   = dimredResult.d;
+
+  // 1. For each node, find its top-k nearest neighbours by Euclidean
+  //    distance in dim-reduced space.
   const topK = new Array(n);
   for (let i = 0; i < n; i++) {
-    const pi = nodes[i].basePos;
+    const ai = i * d;
     const dists = new Array(n - 1);
     let idx = 0;
     for (let j = 0; j < n; j++) {
       if (j === i) continue;
-      const pj = nodes[j].basePos;
-      const dx = pi[0] - pj[0], dy = pi[1] - pj[1], dz = pi[2] - pj[2];
-      dists[idx++] = [dx * dx + dy * dy + dz * dz, j];
+      const bj = j * d;
+      let sq = 0;
+      for (let h = 0; h < d; h++) {
+        const v = pos[ai + h] - pos[bj + h];
+        sq += v * v;
+      }
+      dists[idx++] = [sq, j];
     }
     dists.sort((a, b) => a[0] - b[0]);
     const set = new Set();
@@ -80,7 +96,7 @@ export function inferConnectedComponents(genResult, params = {}) {
   for (let c = 0; c < numClusters; c++) sums[c] = [0, 0, 0];
   for (let i = 0; i < n; i++) {
     const c = nodeCluster[i];
-    const p = nodes[i].basePos;
+    const p = nodes[i].basePos || ZERO3;
     sums[c][0] += p[0]; sums[c][1] += p[1]; sums[c][2] += p[2];
     counts[c]++;
   }
@@ -90,7 +106,7 @@ export function inferConnectedComponents(genResult, params = {}) {
     let sumSq = 0;
     for (let i = 0; i < n; i++) {
       if (nodeCluster[i] !== c) continue;
-      const p = nodes[i].basePos;
+      const p = nodes[i].basePos || ZERO3;
       const dx = p[0] - centre[0], dy = p[1] - centre[1], dz = p[2] - centre[2];
       sumSq += dx*dx + dy*dy + dz*dz;
     }
@@ -112,4 +128,16 @@ export function inferConnectedComponents(genResult, params = {}) {
     nodeCluster,
     structureEdges,
   };
+}
+
+// Legacy fallback: pack basePos into a DimredResult shape so callers
+// that don't yet supply one (legacy main.js) keep working.
+function packBasePos(nodes) {
+  const n = nodes.length;
+  const data = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) {
+    const p = nodes[i].basePos || ZERO3;
+    data[i*3] = p[0]; data[i*3+1] = p[1]; data[i*3+2] = p[2];
+  }
+  return { method: "identity", params: {}, n, d: 3, data };
 }

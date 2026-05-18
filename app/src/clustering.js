@@ -1,14 +1,18 @@
 // Clustering layer — mutual k-NN algorithm.
 //
-// Pure function: given a generation result, recover cluster IDs by building a
-// mutual k-NN graph over basePos and taking its connected components.
+// Pure function: given a generation result + a Layer-1.5 dimredResult,
+// recover cluster IDs by building a mutual k-NN graph over the
+// dim-reduced positions and taking its connected components.
 //
 // Math reference: doc/dynamics.md §2.
 // Output contract: doc/clustering.md §1, validated by contracts/cluster.js.
 //
-// Reads basePos only. Does NOT touch originId. Does NOT mutate the input.
-// Returns its own payload — the caller decides whether/how to attach the
-// cluster IDs to its node objects.
+// Distance is computed in dim-reduced space (dimredResult.data, d-dim).
+// Cluster centre/spread are still reported in basePos viz space (3-d) —
+// that's a stable promise the cluster contract makes for downstream
+// rendering, regardless of how clustering decides what's-near-what.
+//
+// Does NOT touch originId. Does NOT mutate inputs.
 //
 // This algorithm does not produce noise points (every node always lands in
 // exactly one connected component, even if that component is a singleton).
@@ -20,11 +24,17 @@ const TABLEAU10 = [
   "#edc948", "#b07aa1", "#ff9da7", "#9c755f", "#bab0ab",
 ];
 
+// Cluster centre/spread is reported in basePos viz space. When the
+// active data source supplies no basePos (real-data ingest before
+// the viz sub-stage runs), fall back to a zero so clustering doesn't
+// crash — centre/spread will be meaningless but correct in shape.
+const ZERO3 = [0, 0, 0];
+
 export const defaultClusteringParams = () => ({
   mutualK: 5,
 });
 
-export function inferClusters(genResult, params = {}) {
+export function inferClusters(genResult, params = {}, dimredResult) {
   const nodes = genResult.nodes;
   const n = nodes.length;
   const K = Math.max(1, Math.min(Math.max(1, n - 1), (params.mutualK ?? 5) | 0));
@@ -39,18 +49,29 @@ export function inferClusters(genResult, params = {}) {
     };
   }
 
-  // 1. For each node, find its top-K nearest neighbours by basePos distance.
+  // dimredResult is the canonical input from the new shell; legacy
+  // (main.js) calls this without it, in which case we transparently
+  // pack basePos into a flat 3-d buffer.
+  if (!dimredResult) dimredResult = packBasePos(nodes);
+  const pos = dimredResult.data;
+  const d   = dimredResult.d;
+
+  // 1. For each node, find its top-K nearest neighbours by dim-reduced distance.
   //    Sort the (n-1) candidates by squared distance, take the first K.
   const topK = new Array(n);
   for (let i = 0; i < n; i++) {
-    const a = nodes[i].basePos;
+    const ai = i * d;
     const dists = new Array(n - 1);
     let idx = 0;
     for (let j = 0; j < n; j++) {
       if (j === i) continue;
-      const b = nodes[j].basePos;
-      const dx = a[0] - b[0], dy = a[1] - b[1], dz = a[2] - b[2];
-      dists[idx++] = [dx*dx + dy*dy + dz*dz, j];
+      const bj = j * d;
+      let sq = 0;
+      for (let k = 0; k < d; k++) {
+        const v = pos[ai + k] - pos[bj + k];
+        sq += v * v;
+      }
+      dists[idx++] = [sq, j];
     }
     dists.sort((p, q) => p[0] - q[0]);
     const set = new Set();
@@ -95,7 +116,7 @@ export function inferClusters(genResult, params = {}) {
   const counts = new Array(numClusters).fill(0);
   for (let i = 0; i < n; i++) {
     const c = nodeCluster[i];
-    const p = nodes[i].basePos;
+    const p = nodes[i].basePos || ZERO3;
     centroids[c][0] += p[0]; centroids[c][1] += p[1]; centroids[c][2] += p[2];
     counts[c]++;
   }
@@ -109,7 +130,7 @@ export function inferClusters(genResult, params = {}) {
   const sqDevSum = new Float64Array(numClusters);
   for (let i = 0; i < n; i++) {
     const c = nodeCluster[i];
-    const p = nodes[i].basePos;
+    const p = nodes[i].basePos || ZERO3;
     const cc = centroids[c];
     const dx = p[0] - cc[0], dy = p[1] - cc[1], dz = p[2] - cc[2];
     sqDevSum[c] += dx*dx + dy*dy + dz*dz;
@@ -134,4 +155,16 @@ export function inferClusters(genResult, params = {}) {
     nodeCluster,
     structureEdges,
   };
+}
+
+// Legacy fallback: pack basePos into a DimredResult shape so callers
+// that don't yet supply one (legacy main.js) keep working.
+function packBasePos(nodes) {
+  const n = nodes.length;
+  const data = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) {
+    const p = nodes[i].basePos || ZERO3;
+    data[i*3] = p[0]; data[i*3+1] = p[1]; data[i*3+2] = p[2];
+  }
+  return { method: "identity", params: {}, n, d: 3, data };
 }

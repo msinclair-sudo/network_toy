@@ -55,7 +55,7 @@ export const defaultHdbscanParams = () => ({
   noiseMode: "absorb",
 });
 
-export function inferHdbscan(genResult, params = {}) {
+export function inferHdbscan(genResult, params = {}, dimredResult) {
   const nodes = genResult.nodes;
   const n = nodes.length;
   const minSamples     = Math.max(1, Math.min(Math.max(1, n - 1), (params.minSamples ?? 5) | 0));
@@ -79,15 +79,20 @@ export function inferHdbscan(genResult, params = {}) {
     return {
       method: "hdbscan",
       params: echoParams,
-      clusters: [trivialCluster(0, nodes[0].basePos, 0, 1, NaN)],
+      clusters: [trivialCluster(0, nodes[0].basePos || ZERO3, 0, 1, NaN)],
       nodeCluster: new Int32Array([0]),
       structureEdges: [],
       noiseFlags: new Uint8Array([0]),
     };
   }
 
-  // 1. Pairwise Euclidean distance matrix on basePos.
-  const dist = pairwiseDistances(nodes, n);
+  // dimredResult is the canonical input from the new shell; legacy
+  // (main.js) calls this without it, in which case we transparently
+  // pack basePos into a flat 3-d buffer.
+  if (!dimredResult) dimredResult = packBasePos(nodes);
+
+  // 1. Pairwise Euclidean distance matrix in dim-reduced space.
+  const dist = pairwiseDistances(dimredResult, n);
 
   // 2. Core distance per node = distance to the k_min-th nearest other node.
   const coreDist = computeCoreDistances(dist, n, minSamples);
@@ -177,17 +182,42 @@ function countDistinct(labels) {
 
 /* ── helpers ────────────────────────────────────────────────────────────── */
 
-function pairwiseDistances(nodes, n) {
-  // Float32Array(n*n), symmetric, zero on the diagonal.
-  const D = new Float32Array(n * n);
+// Cluster centre/spread fallback when nodes carry no basePos (real-
+// data path before viz sub-stage runs). Centre/spread is viz-only;
+// zero is a sentinel that doesn't lie about real geometry.
+const ZERO3 = [0, 0, 0];
+
+// Legacy fallback: pack basePos into a DimredResult shape so callers
+// that don't yet supply one (legacy main.js) keep working.
+function packBasePos(nodes) {
+  const n = nodes.length;
+  const data = new Float32Array(n * 3);
   for (let i = 0; i < n; i++) {
-    const pi = nodes[i].basePos;
+    const p = nodes[i].basePos || ZERO3;
+    data[i*3] = p[0]; data[i*3+1] = p[1]; data[i*3+2] = p[2];
+  }
+  return { method: "identity", params: {}, n, d: 3, data };
+}
+
+function pairwiseDistances(dimredResult, n) {
+  // Float32Array(n*n), symmetric, zero on the diagonal. Reads positions
+  // from the dim-reduced flat buffer so HDBSCAN runs in whatever space
+  // Layer 1.5 produced (3-d basePos under identity, 50-d UMAP at scale).
+  const pos = dimredResult.data;
+  const d   = dimredResult.d;
+  const D   = new Float32Array(n * n);
+  for (let i = 0; i < n; i++) {
+    const ai = i * d;
     for (let j = i + 1; j < n; j++) {
-      const pj = nodes[j].basePos;
-      const dx = pi[0] - pj[0], dy = pi[1] - pj[1], dz = pi[2] - pj[2];
-      const d = Math.sqrt(dx*dx + dy*dy + dz*dz);
-      D[i * n + j] = d;
-      D[j * n + i] = d;
+      const bj = j * d;
+      let sq = 0;
+      for (let k = 0; k < d; k++) {
+        const v = pos[ai + k] - pos[bj + k];
+        sq += v * v;
+      }
+      const dist = Math.sqrt(sq);
+      D[i * n + j] = dist;
+      D[j * n + i] = dist;
     }
   }
   return D;
@@ -266,7 +296,7 @@ function buildClusterEntry(nodes, nodeCluster, clusterValue, id, stability) {
   let cx = 0, cy = 0, cz = 0, count = 0;
   for (let i = 0; i < nodes.length; i++) {
     if (nodeCluster[i] !== clusterValue) continue;
-    const p = nodes[i].basePos;
+    const p = nodes[i].basePos || ZERO3;
     cx += p[0]; cy += p[1]; cz += p[2];
     count++;
   }
@@ -274,7 +304,7 @@ function buildClusterEntry(nodes, nodeCluster, clusterValue, id, stability) {
   let sqDev = 0;
   for (let i = 0; i < nodes.length; i++) {
     if (nodeCluster[i] !== clusterValue) continue;
-    const p = nodes[i].basePos;
+    const p = nodes[i].basePos || ZERO3;
     const dx = p[0] - cx, dy = p[1] - cy, dz = p[2] - cz;
     sqDev += dx*dx + dy*dy + dz*dz;
   }
@@ -816,7 +846,7 @@ function resolveBySingletons(stableLabels, noiseFlags, numStableClusters,
   for (let i = 0; i < n; i++) {
     if (labels[i] !== -1) continue;
     labels[i] = nextId;
-    const p = nodes[i].basePos;
+    const p = nodes[i].basePos || ZERO3;
     clusters.push({
       id: nextId,
       centre: [p[0], p[1], p[2]],

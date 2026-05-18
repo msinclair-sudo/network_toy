@@ -8,6 +8,7 @@
 
 import * as Placeholder from "./placeholder.js";
 import * as Viewer3D    from "./viewer-3d.js";
+import * as Viewer2D    from "./viewer-2d.js";
 import * as NodeTable   from "./node-table.js";
 
 const entries = new Map();
@@ -24,14 +25,14 @@ function register(mod) {
 
 register(Placeholder);
 register(Viewer3D);
+register(Viewer2D);
 register(NodeTable);
 
 // Future entries (mounted as their modules come online):
-// register(await import("./viewer-2d.js"));        // slice 6
-// register(await import("./cluster-tree.js"));     // slice 6
-// register(await import("./paper-table.js"));      // slice 6
-// register(await import("./histogram.js"));        // slice 6
-// register(await import("./heatmap.js"));          // slice 6
+// register(await import("./cluster-tree.js"));
+// register(await import("./paper-table.js"));
+// register(await import("./histogram.js"));
+// register(await import("./heatmap.js"));
 
 export function getPanelType(id) {
   return entries.get(id) || entries.get("placeholder");

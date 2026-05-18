@@ -15,7 +15,7 @@ import { mountTopbar }         from "./topbar.js";
 import { mountDataPanel }      from "./data-panel.js";
 import { mountWorkflowChart }  from "./workflow-chart.js";
 import { mountPanelSystem }    from "./panel-system.js";
-import { setBlend, getState, subscribe } from "./state.js";
+import { setBlend, setView, getState, subscribe } from "./state.js";
 import * as engine             from "./engine.js";
 
 export function boot() {
@@ -24,6 +24,7 @@ export function boot() {
   mountWorkflowChart();
   mountPanelSystem();
   mountBlendSlider();
+  mountEdgeControls();
 
   // Run the toy pipeline once so the 3D viewer has data on first
   // paint. Wrapped in rAF so the panel system has finished mounting
@@ -57,5 +58,77 @@ function mountBlendSlider() {
       input.value = String(state.blend);
       readout.textContent = state.blend.toFixed(2);
     }
+  });
+}
+
+// Edge-display controls (citations / base / structure / arrows + sliders
+// + colour pickers) at the bottom of the left rail. Writes state.view
+// via setView; viewer-3d reacts on its next update() callback. Each
+// slider/colour input gets a live numeric/hex readout so users can read
+// values without hovering.
+function mountEdgeControls() {
+  const cite         = document.getElementById("ec-citations");
+  const arrows       = document.getElementById("ec-cit-arrows");
+  const citOpa       = document.getElementById("ec-cit-opacity");
+  const citOpaRead   = document.getElementById("ec-cit-opacity-readout");
+  const citCol       = document.getElementById("ec-cit-colour");
+  const base         = document.getElementById("ec-base");
+  const baseDens     = document.getElementById("ec-base-density");
+  const baseDensRead = document.getElementById("ec-base-density-readout");
+  const baseCol      = document.getElementById("ec-base-colour");
+  const skel         = document.getElementById("ec-structure");
+  const skelCol      = document.getElementById("ec-structure-colour");
+  if (!cite || !citOpa || !arrows || !base || !baseDens || !skel) return;
+
+  // Seed widgets from state.
+  const v0 = getState().view;
+  cite.checked       = !!v0.showCitations;
+  arrows.checked     = !!v0.citArrows;
+  citOpa.value       = String(v0.citOpacity);
+  if (citCol)        citCol.value     = v0.citColour       || "#8a8a8a";
+  base.checked       = !!v0.showBase;
+  baseDens.value     = String(v0.baseDensity);
+  if (baseCol)       baseCol.value    = v0.baseColour      || "#5a6878";
+  skel.checked       = !!v0.showStructure;
+  if (skelCol)       skelCol.value    = v0.structureColour || "#5dd39e";
+  if (citOpaRead)    citOpaRead.textContent   = (+v0.citOpacity).toFixed(2);
+  if (baseDensRead)  baseDensRead.textContent = (+v0.baseDensity).toFixed(3);
+
+  cite.addEventListener("change",     () => setView({ showCitations: cite.checked }));
+  arrows.addEventListener("change",   () => setView({ citArrows:     arrows.checked }));
+  base.addEventListener("change",     () => setView({ showBase:      base.checked }));
+  skel.addEventListener("change",     () => setView({ showStructure: skel.checked }));
+  citOpa.addEventListener("input",    () => {
+    const v = +citOpa.value;
+    setView({ citOpacity: v });
+    if (citOpaRead) citOpaRead.textContent = v.toFixed(2);
+  });
+  baseDens.addEventListener("input",  () => {
+    const v = +baseDens.value;
+    setView({ baseDensity: v });
+    if (baseDensRead) baseDensRead.textContent = v.toFixed(3);
+  });
+  if (citCol)  citCol.addEventListener("input",  () => setView({ citColour:       citCol.value }));
+  if (baseCol) baseCol.addEventListener("input", () => setView({ baseColour:      baseCol.value }));
+  if (skelCol) skelCol.addEventListener("input", () => setView({ structureColour: skelCol.value }));
+
+  // Re-sync widgets if state.view changes elsewhere (e.g. project load).
+  subscribe((state) => {
+    const v = state.view;
+    if (cite.checked     !== !!v.showCitations) cite.checked     = !!v.showCitations;
+    if (arrows.checked   !== !!v.citArrows)     arrows.checked   = !!v.citArrows;
+    if (base.checked     !== !!v.showBase)      base.checked     = !!v.showBase;
+    if (skel.checked     !== !!v.showStructure) skel.checked     = !!v.showStructure;
+    if (Math.abs(+citOpa.value   - v.citOpacity)  > 1e-6) {
+      citOpa.value = String(v.citOpacity);
+      if (citOpaRead) citOpaRead.textContent = (+v.citOpacity).toFixed(2);
+    }
+    if (Math.abs(+baseDens.value - v.baseDensity) > 1e-6) {
+      baseDens.value = String(v.baseDensity);
+      if (baseDensRead) baseDensRead.textContent = (+v.baseDensity).toFixed(3);
+    }
+    if (citCol  && v.citColour       && citCol.value.toLowerCase()  !== v.citColour.toLowerCase())       citCol.value  = v.citColour;
+    if (baseCol && v.baseColour      && baseCol.value.toLowerCase() !== v.baseColour.toLowerCase())      baseCol.value = v.baseColour;
+    if (skelCol && v.structureColour && skelCol.value.toLowerCase() !== v.structureColour.toLowerCase()) skelCol.value = v.structureColour;
   });
 }

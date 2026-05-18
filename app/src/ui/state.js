@@ -12,22 +12,28 @@
 
 const state = {
   // ── data source ──────────────────────────────────────────────
+  // mode mirrors activeAlgorithm.dataSource (kept for backward-compat
+  // with code that still reads dataSource.mode). Per-mode configs are
+  // stashed under .configs so switching modes preserves each side's
+  // user state. Citation-pacing knobs (density / intra / cross) live
+  // alongside the toy generator's seed/nodeCount/origins/spread because
+  // the data panel owns them UX-wise; the engine plumbs them into
+  // Layer 3 params on reingest.
   dataSource: {
-    mode: "toy",           // "toy" | "real"
-    config: {
-      // toy params
-      seed: 42,
-      nodeCount: 400,
-      origins: 6,
-      spread: 1.0,
-      density: 0.3,
-      intraRate: 0.5,
-      crossRate: 0.2,
-      // real params (populated when mode === "real")
-      datasetName: null,
-      paperCount: null,
-      edgeCount: null,
-      embeddingDim: null,
+    mode: "toy",           // "toy" | "real"; mirrors activeAlgorithm.dataSource
+    configs: {
+      toy: {
+        seed:      42,
+        nodeCount: 400,
+        origins:   6,
+        spread:    1.0,
+        density:   0.3,
+        intraRate: 0.5,
+        crossRate: 0.2,
+      },
+      real: {
+        subset: "dev_subset_1000",
+      },
     },
   },
 
@@ -35,8 +41,22 @@ const state = {
   // Stored flat at state root for direct getter access from the
   // blend hook and per-panel rendering — mirrors the legacy main.js
   // shape so engine modules can be ported without restructuring.
-  genResult:             null,    // Layer 1 output: {origins, nodes:[{id, basePos, t, originId}]}
-  _basePos:              null,    // Float32Array(n × 3) — flattened basePos, blend force input
+  genResult:             null,    // Layer 1 output (data-source result):
+                                  //   {nodes:[{id, t, basePos?, originId?, paperId?}], origins?, embedding?, basePos?}
+                                  //   "genResult" is kept as the field name for legacy reasons; semantically
+                                  //   it's the active data source's output (toy or real).
+  _basePos:              null,    // Float32Array(n × 3) — flattened basePos, blend force input.
+                                  //   Sourced from genResult.basePos / nodes[i].basePos directly (toy)
+                                  //   or from Layer 1.5's viz sub-stage (real).
+  _basePos2d:            null,    // Float32Array(n × 2) — viewer-2d input.
+                                  //   Populated only when Layer 1.5's viz2d sub-stage produces a 2-d
+                                  //   output (e.g. UMAP n_components=2). Null otherwise → viewer-2d
+                                  //   shows its empty-state hint.
+  embedding:             null,    // Real-data Layer 1 output: {d, data:Float32Array(n*d)} — high-dim
+                                  //   feature vectors, set when the active data source supplied them.
+                                  //   Layer 1.5 reads this as its noise-stage input. Null in toy mode.
+  dimredResult:          null,    // Layer 1.5 output: {method, params, n, d, data:Float32Array(n*d)}
+                                  //   Layer 2 reads from this for distance computations.
   clusterLevels:         null,    // Layer 2 output: [{uid, scope, clusterResult}] one per level
   clusterResult:         null,    // Backward-compat alias for the FINEST level's clusterResult
                                   //   (used by panels that aren't yet level-aware)
@@ -47,10 +67,15 @@ const state = {
   alignedCitationLayout: null,    // Layer 5a output: Float32Array(n × 3) — blend force input
   alignmentCorrelation:  NaN,     // Layer 5a quality metric ∈ [0, 1]
 
-  // Derived analysis on top of clusterLevels (pairs the finest level
-  // with its parent). Null when fewer than 2 levels exist. See
-  // bridge-analysis.js for shape.
+  // Derived analysis on top of clusterLevels. Null when fewer than 2
+  // levels exist. See bridge-analysis.js for shape.
   bridgeAnalysis:        null,
+
+  // Which (fineLevel, coarseLevel) pair the bridge analysis runs on.
+  // When a field is null/invalid, the engine clamps it to the deepest
+  // valid pair (fineLevel = last, coarseLevel = last - 1). The bridge
+  // table panels surface dropdowns that write to this slice.
+  bridgeConfig:          { fineLevel: null, coarseLevel: null },
 
   // Bumps every time the pipeline runs (full or partial).
   // Panels watch this to know when to rebuild their cached views.
@@ -59,6 +84,9 @@ const state = {
   // Layer-specific algorithm params. Populated lazily on first
   // pipeline run from each registry's defaultParams().
   layerParams: {
+    dimred:        null,    // { noise: {method, params}, compression: {method, params} }
+                            //   Layer 1.5 has two sequential stages; the engine runs them
+                            //   in order. Default is identity for both = pass-through.
     neighbourhood: null,
     taste:         null,
     citations:     null,
@@ -81,7 +109,11 @@ const state = {
   // ── active algorithm per pluggable layer ─────────────────────
   // populated as registries come online; placeholders for now
   activeAlgorithm: {
-    "dimred":     "umap",       // (registry not yet built)
+    "dataSource": "toy",         // "toy" | "real"; selects which datasource registry entry runs
+    // dimred has three stages now (noise + compression + viz); the workflow
+    // chart reads layerParams.dimred directly to summarise. activeAlgorithm
+    // here holds only the compression-side method as a single legacy label.
+    "dimred":     "identity",
     "clustering": "hdbscan",    // existing
     "citations":  "taste-network",   // toy default
     "layout":     "mds",         // existing
@@ -118,6 +150,49 @@ const state = {
   selection: { type: null, id: null },
   filter: null,
   blend: 0.0,
+
+  // ── viewer-3d display toggles ────────────────────────────────
+  // Which edge layers to draw, and their per-layer styling. Mirrors
+  // the legacy main.js `state.view.*` shape so the colour / opacity
+  // logic ports verbatim. All default OFF — the 3D viewer is dense
+  // enough already; the user opts in to each overlay.
+  //
+  //   showCitations — Layer 3 edges (citationResult.citations)
+  //   showBase      — semantic-distance edges (top-K closest pairs in basePos)
+  //   showStructure — clusterResult.structureEdges (mutual-kNN / MST / top-k)
+  //   citArrows     — directional arrowheads on citation edges only
+  //   citOpacity    — 0..1 linear opacity for citation links
+  //   baseDensity   — 0..1 fraction of all n*(n-1)/2 pairs to draw as base edges
+  view: {
+    showCitations: false,
+    showBase:      false,
+    showStructure: false,
+    citArrows:     false,
+    citOpacity:    0.15,
+    baseDensity:   0.02,
+    // Per-edge-kind colours. Defaults match the EDGE_STYLE table in
+    // viewer-3d.js; the picker writes hex strings back here and the
+    // renderer reads them on every linkMaterial/linkColour call.
+    citColour:        "#8a8a8a",
+    baseColour:       "#5a6878",
+    structureColour:  "#5dd39e",
+  },
+
+  // ── persistence ──────────────────────────────────────────────
+  // Project name from the most-recent save / load. Used by the
+  // File ▾ menu's "Save" action (when null, falls through to
+  // "Save as" which prompts for a name).
+  projectName: null,
+
+  // Latest results from the Cluster modal's Validate + Optimise
+  // tabs. Persisted into save files so that reloading a project
+  // restores the eval results without re-running.
+  // Cleared by recluster() — stale results don't survive a
+  // clustering config change.
+  evalResults: {
+    validate: null,   // {perCluster, aggregate, bootstrapsRun, settings, timestamp}
+    optimise: null,   // {ranked, top, totalConfigs, completed, settings, scorerLabel, timestamp, runtime}
+  },
 };
 
 const subscribers = new Set();
@@ -216,19 +291,36 @@ export function setBlend(alpha) {
   update({ blend: Math.max(0, Math.min(1, +alpha || 0)) });
 }
 
+// Switch the active data source. Mirrors mode into both the legacy
+// dataSource.mode field and the activeAlgorithm.dataSource registry-
+// active key so consumers reading either keep working. Per-mode
+// configs are stashed under dataSource.configs[mode] and preserved
+// across switches.
 export function setDataSourceMode(mode) {
   update({
-    dataSource: { ...state.dataSource, mode },
+    dataSource:      { ...state.dataSource, mode },
+    activeAlgorithm: { ...state.activeAlgorithm, dataSource: mode },
   });
 }
 
-export function setToyParam(key, value) {
+// Update a key in a specific source's config bag. When `mode` is
+// omitted, writes to whatever's currently active.
+export function setDataSourceConfig(key, value, mode) {
+  const m   = mode || state.dataSource.mode;
+  const cur = state.dataSource.configs[m] || {};
   update({
     dataSource: {
       ...state.dataSource,
-      config: { ...state.dataSource.config, [key]: value },
+      configs: { ...state.dataSource.configs, [m]: { ...cur, [key]: value } },
     },
   });
+}
+
+// Always targets the toy config — the topbar's seed input is toy-only,
+// so it shouldn't accidentally write into the real config when the
+// user is in real mode.
+export function setToyParam(key, value) {
+  setDataSourceConfig(key, value, "toy");
 }
 
 export function bumpEngineRevision() {
@@ -243,4 +335,39 @@ export function setLayerParams(layer, params) {
 
 export function setSelection(selection) {
   update({ selection: selection || { type: null, id: null } });
+}
+
+export function setProjectName(name) {
+  update({ projectName: name || null });
+}
+
+export function setValidateResult(result) {
+  update({ evalResults: { ...state.evalResults, validate: result || null } });
+}
+
+export function setOptimiseResult(result) {
+  update({ evalResults: { ...state.evalResults, optimise: result || null } });
+}
+
+export function clearEvalResults() {
+  update({ evalResults: { validate: null, optimise: null } });
+}
+
+// Update the bridge analysis pair (fineLevel and/or coarseLevel).
+// Pass only the fields you want to change — others are preserved.
+// The engine reads this slice on every recluster and re-derives
+// bridgeAnalysis; callers also need to invoke recomputeBridgeAnalysis()
+// when they want an immediate refresh without a full recluster.
+export function setBridgeConfig(partial) {
+  update({
+    bridgeConfig: { ...state.bridgeConfig, ...(partial || {}) },
+  });
+}
+
+// Patch the viewer-3d display flags (which edge layers + their styling).
+// Partial update — pass only the fields you want to change. Triggers
+// a state notification so viewer-3d picks up the new flags on its
+// next update() callback.
+export function setView(partial) {
+  update({ view: { ...state.view, ...(partial || {}) } });
 }

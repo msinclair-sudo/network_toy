@@ -4,7 +4,9 @@
 // Source modes:
 //   "auto"            — follows the active 3D viewer's colourMode
 //   "cluster:N"       — clusters at level N (one row per cluster)
-//   "cluster:finest"  — last level
+//   "cluster:finest"  — legacy alias for the last level; resolved in
+//                       clusterRows but no longer offered as a source
+//                       option
 //   "origin"          — generator origins (one row per Gaussian centre)
 //   "inDeg"           — top-N nodes by citation in-degree
 //   "t"               — 10 time bins
@@ -19,7 +21,8 @@
 //   {type: "node",    id: nodeId}
 //   {type: "tBin",    binIdx: i}        (no viewer effect yet)
 
-import { getState, setSelection, setTabConfig } from "../state.js";
+import { getState, setSelection, setTabConfig, setBridgeConfig } from "../state.js";
+import { recomputeBridgeAnalysis } from "../engine.js";
 import {
   tGradient, inDegGradient, boundaryScoreGradient,
   T_STOPS, INDEG_STOPS, BOUNDARY_STOPS, cssLinearGradient,
@@ -65,6 +68,46 @@ export function mount(container, _state, config = {}, tabContext = null) {
 
   root.appendChild(headBar);
 
+  // ── bridge pair selector (visible only for bridge / boundaryScore) ──
+  const pairBar = document.createElement("div");
+  pairBar.className = "node-table-pairbar";
+  pairBar.style.display = "none";
+
+  const fineLabel = document.createElement("label");
+  fineLabel.className = "node-table-pairbar-label";
+  fineLabel.textContent = "Fine:";
+  pairBar.appendChild(fineLabel);
+
+  const fineSelect = document.createElement("select");
+  fineSelect.className = "node-table-pair-select";
+  pairBar.appendChild(fineSelect);
+
+  const coarseLabel = document.createElement("label");
+  coarseLabel.className = "node-table-pairbar-label";
+  coarseLabel.textContent = "Coarse:";
+  pairBar.appendChild(coarseLabel);
+
+  const coarseSelect = document.createElement("select");
+  coarseSelect.className = "node-table-pair-select";
+  pairBar.appendChild(coarseSelect);
+
+  root.appendChild(pairBar);
+
+  fineSelect.addEventListener("change", () => {
+    const fine = parseInt(fineSelect.value, 10);
+    const cur  = getState().bridgeConfig || {};
+    const coarse = (Number.isInteger(cur.coarseLevel) && cur.coarseLevel < fine)
+      ? cur.coarseLevel
+      : fine - 1;
+    setBridgeConfig({ fineLevel: fine, coarseLevel: coarse });
+    recomputeBridgeAnalysis();
+  });
+
+  coarseSelect.addEventListener("change", () => {
+    setBridgeConfig({ coarseLevel: parseInt(coarseSelect.value, 10) });
+    recomputeBridgeAnalysis();
+  });
+
   // ── gradient legend (continuous-source legends only) ────────────
   const gradientBar = document.createElement("div");
   gradientBar.className = "node-table-gradient";
@@ -108,6 +151,7 @@ export function mount(container, _state, config = {}, tabContext = null) {
     const s = getState();
     rebuildSourceOptions(s);
     const effective = effectiveSource(s, source);
+    rebuildPairBar(s, effective);
     const data = buildTableData(s, effective);
     statusEl.textContent = data.title || "";
     if (lastSourceKey !== effective) {
@@ -119,6 +163,40 @@ export function mount(container, _state, config = {}, tabContext = null) {
     renderHeader(data.columns);
     renderRows(data.columns, data.rows, data.selectionKey);
     footer.textContent = `${data.rows.length} ${data.unitLabel || "rows"}`;
+  }
+
+  function rebuildPairBar(s, effective) {
+    const isBridgeSource = effective === "bridge" || effective === "boundaryScore";
+    const levels = s.clusterLevels || [];
+    if (!isBridgeSource || levels.length < 2) {
+      pairBar.style.display = "none";
+      return;
+    }
+    pairBar.style.display = "flex";
+
+    const cfg = s.bridgeConfig || {};
+    const fine   = Number.isInteger(cfg.fineLevel)   ? cfg.fineLevel   : levels.length - 1;
+    const coarse = Number.isInteger(cfg.coarseLevel) ? cfg.coarseLevel : fine - 1;
+
+    // Fine-level options: any level except the very first (need ≥1 coarser).
+    fineSelect.innerHTML = "";
+    for (let i = 1; i < levels.length; i++) {
+      const opt = document.createElement("option");
+      opt.value = String(i);
+      opt.textContent = `L${i}`;
+      if (i === fine) opt.selected = true;
+      fineSelect.appendChild(opt);
+    }
+
+    // Coarse-level options: any level strictly above (idx < fine).
+    coarseSelect.innerHTML = "";
+    for (let i = 0; i < fine; i++) {
+      const opt = document.createElement("option");
+      opt.value = String(i);
+      opt.textContent = `L${i}`;
+      if (i === coarse) opt.selected = true;
+      coarseSelect.appendChild(opt);
+    }
   }
 
   function renderGradient(gradient) {
@@ -318,7 +396,6 @@ function sourceOptionsFor(s) {
   opts.push({ value: "auto", label: "Auto (follow 3D viewer)" });
   const levels = s.clusterLevels || [];
   if (levels.length > 0) {
-    opts.push({ value: "cluster:finest", label: `Cluster (finest, L${levels.length - 1})` });
     for (let i = 0; i < levels.length; i++) {
       opts.push({
         value: `cluster:${i}`,
@@ -390,6 +467,37 @@ function clusterRows(s, source) {
   };
 }
 
+// Format a per-level shares array as a compact cell string:
+//   "1: 60%  2: 25%  3: 15%"
+// Empty (no members or noise-only) → "—".
+function formatShares(shares) {
+  if (!shares || shares.length === 0) return "—";
+  return shares
+    .map(s => `${s.id}:${Math.round(s.fraction * 100)}%`)
+    .join("  ");
+}
+
+// Build one column per coarser level [0, fineLevel - 1]. Each column
+// exposes that fine cluster's coarse-membership distribution as a
+// share string. The chosen comparison level is highlighted in the
+// header label so the user sees which pair drives the colour modes.
+function levelShareColumns(ba) {
+  return ba.levels.map(li => ({
+    key:      `lvl${li}`,
+    label:    li === ba.coarseLevel ? `L${li} ★` : `L${li}`,
+    kind:     "text",
+    sortable: false,
+  }));
+}
+
+// Spread a perCluster entry's byLevel into the row object as
+// `lvl{i}` keys so the dynamic columns can read them.
+function fanoutLevelShares(row, p) {
+  for (const at of p.byLevel) {
+    row[`lvl${at.coarseLevel}`] = formatShares(at.shares);
+  }
+}
+
 function boundaryScoreRows(s) {
   const ba = s.bridgeAnalysis;
   const levels = s.clusterLevels || [];
@@ -399,12 +507,11 @@ function boundaryScoreRows(s) {
       title: "needs at least two clustering levels",
     };
   }
-  const fine = levels[ba.fineLevel].clusterResult;
 
   const rows = ba.perCluster.map(p => {
-    const fc = fine.clusters[p.fineId];
-    const score = 1 - p.dominantFraction;
-    return {
+    const at = p.byLevel[ba.coarseLevel];
+    const score = at ? 1 - at.dominantFraction : 0;
+    const row = {
       _key:    `bs:${p.fineId}`,
       _select: () => ({ type: "cluster", level: ba.fineLevel, id: p.fineId }),
       // Gradient swatch matches viewer-3d's boundaryScore colouring.
@@ -412,20 +519,23 @@ function boundaryScoreRows(s) {
       id:      p.fineId,
       count:   p.memberCount,
       score,
-      span:    p.spanCount,
-      dom:     p.dominantCoarseId,
+      span:    at ? at.spanCount : 0,
     };
+    fanoutLevelShares(row, p);
+    return row;
   });
+
+  const dynamicColumns = levelShareColumns(ba);
   return {
-    title:     `${rows.length} fine clusters · L${ba.coarseLevel}→L${ba.fineLevel}`,
+    title:     `L${ba.fineLevel} clusters · score vs L${ba.coarseLevel}`,
     unitLabel: "clusters",
     columns: [
-      { key: "colour", label: "",        kind: "colour", sortable: false },
-      { key: "id",     label: "fine id", kind: "int",    sortable: true  },
-      { key: "count",  label: "count",   kind: "int",    sortable: true  },
-      { key: "score",  label: "score",   kind: "float",  sortable: true  },
-      { key: "span",   label: "span",    kind: "int",    sortable: true  },
-      { key: "dom",    label: "dom",     kind: "int",    sortable: true  },
+      { key: "colour", label: "",                       kind: "colour", sortable: false },
+      { key: "id",     label: `L${ba.fineLevel} id`,    kind: "int",    sortable: true  },
+      { key: "count",  label: "count",                  kind: "int",    sortable: true  },
+      { key: "score",  label: "score",                  kind: "float",  sortable: true  },
+      { key: "span",   label: `span @L${ba.coarseLevel}`, kind: "int",  sortable: true  },
+      ...dynamicColumns,
     ],
     rows,
     defaultSort: { key: "score", dir: "desc" },
@@ -444,48 +554,38 @@ function bridgeRows(s) {
       title: "needs at least two clustering levels",
     };
   }
-  const fine   = levels[ba.fineLevel].clusterResult;
-  const coarse = levels[ba.coarseLevel].clusterResult;
+  const fine = levels[ba.fineLevel].clusterResult;
 
+  // Filter to fine clusters that bridge AT THE CHOSEN coarse level.
+  // The per-level columns reveal the full picture across all coarser
+  // levels — a cluster may bridge L0 but not L2, etc.
   const rows = ba.perCluster
-    .filter(p => p.isBridge)
+    .filter(p => p.isBridgeAtCoarse)
     .map(p => {
       const fineCluster = fine.clusters[p.fineId];
-      const dominantCluster = p.dominantCoarseId >= 0
-        ? coarse.clusters[p.dominantCoarseId]
-        : null;
-      const secondary = p.coarseShares[1];
-      return {
+      const at = p.byLevel[ba.coarseLevel];
+      const row = {
         _key:    `bridge:${p.fineId}`,
-        // Selecting a bridge row selects the fine cluster — re-uses
-        // the existing cluster-level dimming logic in viewer-3d.
         _select: () => ({ type: "cluster", level: ba.fineLevel, id: p.fineId }),
-        // Show the fine cluster's own colour as the swatch (matches
-        // what cluster:finest mode paints), so the row reads "this
-        // is the fine cluster N that bridges...".
-        colour:    fineCluster ? fineCluster.colour : "#888",
-        id:        p.fineId,
-        count:     p.memberCount,
-        span:      p.spanCount,
-        dom:       p.dominantCoarseId,
-        domPct:    p.dominantFraction * 100,
-        sec:       secondary ? secondary.id : null,
-        secPct:    secondary ? secondary.fraction * 100 : null,
+        colour:  fineCluster ? fineCluster.colour : "#888",
+        id:      p.fineId,
+        count:   p.memberCount,
+        span:    at ? at.spanCount : 0,
       };
+      fanoutLevelShares(row, p);
+      return row;
     });
 
+  const dynamicColumns = levelShareColumns(ba);
   return {
-    title:     `${ba.bridgeCount} bridge${ba.bridgeCount === 1 ? "" : "s"} · L${ba.coarseLevel}→L${ba.fineLevel}`,
+    title:     `${ba.bridgeCount} bridge${ba.bridgeCount === 1 ? "" : "s"} · L${ba.fineLevel} clusters spanning ≥2 L${ba.coarseLevel} parents`,
     unitLabel: rows.length === 1 ? "bridge" : "bridges",
     columns: [
-      { key: "colour", label: "",        kind: "colour", sortable: false },
-      { key: "id",     label: "fine id", kind: "int",    sortable: true  },
-      { key: "count",  label: "count",   kind: "int",    sortable: true  },
-      { key: "span",   label: "span",    kind: "int",    sortable: true  },
-      { key: "dom",    label: "dom",     kind: "int",    sortable: true  },
-      { key: "domPct", label: "dom %",   kind: "float",  sortable: true  },
-      { key: "sec",    label: "2nd",     kind: "int",    sortable: true  },
-      { key: "secPct", label: "2nd %",   kind: "float",  sortable: true  },
+      { key: "colour", label: "",                              kind: "colour", sortable: false },
+      { key: "id",     label: `L${ba.fineLevel} id`,           kind: "int",    sortable: true  },
+      { key: "count",  label: "count",                         kind: "int",    sortable: true  },
+      { key: "span",   label: `span @L${ba.coarseLevel}`,      kind: "int",    sortable: true  },
+      ...dynamicColumns,
     ],
     rows,
     defaultSort: { key: "count", dir: "desc" },

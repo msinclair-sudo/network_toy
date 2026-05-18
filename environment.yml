@@ -3,6 +3,7 @@ channels: [conda-forge]
 dependencies:
   - python=3.12
   - nodejs
+  - numpy             # reading / writing .npy embedding artifacts (literture-network/)
   - pip
   - pip:
       - playwright

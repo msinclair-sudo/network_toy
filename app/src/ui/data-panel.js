@@ -1,12 +1,14 @@
 // Data info panel — top of the left rail.
 //
-// Two modes (per doc/ui.md §4.1):
-//   "toy"  — inline editors for fast iteration + Generate button.
-//   "real" — read-only stats about the loaded dataset.
-//
-// Mode is driven by state.dataSource.mode.
+// Inline quick-edit + status surface for the active data source.
+// Source SELECTION lives in the workflow-chart's Data card → modal
+// (see modals/data-source-modal.js); this panel is just the
+// fast-iteration UI for whatever's currently active. For the toy
+// generator that means inline sliders + Generate ▶; for real data
+// it's read-only stats + Reload ▶ (hitting Reload re-runs reingest
+// against the same subset).
 
-import { getState, subscribe, setToyParam, setLayerState } from "./state.js";
+import { getState, subscribe, setDataSourceConfig, setLayerState } from "./state.js";
 import * as engine from "./engine.js";
 
 export function mountDataPanel() {
@@ -15,8 +17,6 @@ export function mountDataPanel() {
   render(root);
 
   subscribe((state) => {
-    // Re-render on mode change. Inline-input changes don't need
-    // a full re-render (we trust the DOM).
     if (root.dataset.mode !== state.dataSource.mode) {
       render(root);
     }
@@ -36,7 +36,7 @@ function render(root) {
 }
 
 function renderToyMode(state) {
-  const cfg = state.dataSource.config;
+  const cfg = state.dataSource.configs.toy;
   const wrap = document.createElement("div");
   wrap.appendChild(title("Toy data"));
 
@@ -53,64 +53,54 @@ function renderToyMode(state) {
 
   const genBtn = document.createElement("button");
   genBtn.textContent = "Generate ▶";
-  genBtn.title = "Re-run Layer 1 (generation) and cascade.";
-  genBtn.addEventListener("click", () => {
-    try {
-      engine.regenerate();
-    } catch (e) {
-      console.error("[data-panel] regenerate failed:", e);
-      setLayerState("data", "error");
-    }
-  });
+  genBtn.title = "Re-run Layer 1 (toy generator) and cascade.";
+  genBtn.addEventListener("click", fireReingest);
   actions.appendChild(genBtn);
-
-  const more = document.createElement("a");
-  more.href = "#";
-  more.textContent = "More…";
-  more.title = "Open full generation modal (slice 5)";
-  more.addEventListener("click", (e) => {
-    e.preventDefault();
-    console.log("[data-panel] More… — modal pending (slice 5)");
-  });
-  actions.appendChild(more);
 
   wrap.appendChild(actions);
   return wrap;
 }
 
 function renderRealMode(state) {
-  const cfg = state.dataSource.config;
-  const wrap = document.createElement("div");
-  wrap.appendChild(title(cfg.datasetName || "(no dataset loaded)"));
+  const cfg   = state.dataSource.configs.real;
+  const wrap  = document.createElement("div");
+  wrap.appendChild(title("Real data"));
 
-  if (cfg.paperCount != null) {
-    wrap.appendChild(stat("Papers",       formatInt(cfg.paperCount)));
-    wrap.appendChild(stat("Hybrid edges", formatInt(cfg.edgeCount)));
-    wrap.appendChild(stat("Embedding",    cfg.embeddingDim ? `${cfg.embeddingDim}-d` : "—"));
+  // Read-only summary. Subset is chosen + applied via the Data card
+  // modal in the workflow chart, not here.
+  wrap.appendChild(stat("Subset", cfg.subset || "—"));
+
+  const emb   = state.embedding;
+  const nodes = state.genResult && state.genResult.nodes;
+  if (emb && nodes) {
+    wrap.appendChild(stat("Papers",    formatInt(nodes.length)));
+    wrap.appendChild(stat("Embedding", emb.d ? `${emb.d}-d` : "—"));
   } else {
     const hint = document.createElement("div");
-    hint.style.color = "var(--text-faint)";
-    hint.style.fontSize = "11px";
-    hint.style.marginTop = "8px";
-    hint.textContent = "No dataset loaded. Use Data ▾ → Load real dataset…";
+    hint.className = "data-panel-hint";
+    hint.textContent = "Open the Data card in the workflow chart to load a subset. Viewer stays empty until a 3-d viz reduction runs.";
     wrap.appendChild(hint);
   }
 
   const actions = document.createElement("div");
   actions.className = "data-panel-actions";
-  actions.style.marginTop = "10px";
-
-  const loadLink = document.createElement("a");
-  loadLink.href = "#";
-  loadLink.textContent = "Load different…";
-  loadLink.addEventListener("click", (e) => {
-    e.preventDefault();
-    console.log("[data-panel] Load different… — modal pending (slice 5)");
-  });
-  actions.appendChild(loadLink);
+  const reloadBtn = document.createElement("button");
+  reloadBtn.textContent = "Reload ▶";
+  reloadBtn.title = "Re-run the pipeline against the currently-selected subset.";
+  reloadBtn.addEventListener("click", fireReingest);
+  actions.appendChild(reloadBtn);
   wrap.appendChild(actions);
 
   return wrap;
+}
+
+function fireReingest() {
+  // engine.reingest is async; we don't await — fire-and-forget so the
+  // UI stays responsive while the real source fetches.
+  Promise.resolve(engine.reingest()).catch(e => {
+    console.error("[data-panel] reingest failed:", e);
+    setLayerState("data", "error");
+  });
 }
 
 /* ── small builders ─────────────────────────────────────────────────── */
@@ -140,7 +130,7 @@ function numberRow(labelText, key, value) {
   input.value = String(value);
   input.addEventListener("change", (e) => {
     const v = parseFloat(e.target.value);
-    if (Number.isFinite(v)) setToyParam(key, v);
+    if (Number.isFinite(v)) setDataSourceConfig(key, v);
   });
   row.appendChild(input);
 
@@ -172,7 +162,7 @@ function rangeRow(labelText, key, value, min, max, step) {
   input.addEventListener("input", (e) => {
     const v = parseFloat(e.target.value);
     readout.textContent = formatNum(v);
-    setToyParam(key, v);
+    setDataSourceConfig(key, v);
   });
 
   return row;

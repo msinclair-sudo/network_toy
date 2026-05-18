@@ -11,13 +11,19 @@
 // are called automatically so a parameter change at any layer
 // cascades to the layout + alignment without redoing upstream work.
 
-import { generate }                                              from "../generation.js";
+import { getDataSource, listDataSources }                       from "../datasource/registry.js";
+import { validateDataSourceResult }                              from "../datasource/contract.js";
+import { getAlgorithm as getDimredAlgorithm,
+         listAlgorithms as listDimredAlgorithms }                from "../dimred/registry.js";
+import { validateDimredResult }                                  from "../dimred/contract.js";
 import { getAlgorithm as getClusteringAlgorithm,
          listAlgorithms as listClusteringAlgorithms }            from "../clustering-registry.js";
 import { validateClusterResult }                                 from "../contracts/cluster.js";
 import { inferNeighbourhoods, defaultNeighbourhoodParams }       from "../neighbourhoods.js";
 import { buildCitationTaste, defaultTasteParams }                from "../citation-taste.js";
 import { generateCitations, defaultCitationParams }              from "../citations.js";
+import { getAlgorithm as getCitationAlgorithm }                  from "../citations/registry.js";
+import { assertCitationResult }                                  from "../citations/contract.js";
 import { getAlgorithm as getCitationLayoutAlgorithm }            from "../citation-layout/registry.js";
 import { alignByComponent }                                      from "../blend/align.js";
 import { computeBridgeAnalysis }                                 from "./bridge-analysis.js";
@@ -30,9 +36,38 @@ function ensureLayerParams() {
   let dirty = false;
   const next = { ...lp };
 
+  if (!lp.dimred) {
+    // Four-stage shape:
+    //   noise         (PCA denoiser; consumed by all three downstream stages)
+    //   compression   (UMAP-50; produces the clustering input)
+    //   viz           (UMAP-3; produces the 3D viewer / blend input — basePos)
+    //   viz2d         (UMAP-2; produces the 2D viewer input — _basePos2d)
+    // Defaults are identity everywhere, so dimredResult is just the
+    // input embedding (or basePos in toy mode) and behaviour is
+    // unchanged until the user picks a real algorithm in any slot.
+    const idAlgo = getDimredAlgorithm("identity");
+    next.dimred = {
+      noise:       { method: "identity", params: idAlgo.defaultParams() },
+      compression: { method: "identity", params: idAlgo.defaultParams() },
+      viz:         { method: "identity", params: idAlgo.defaultParams() },
+      viz2d:       { method: "identity", params: idAlgo.defaultParams() },
+    };
+    dirty = true;
+  }
   if (!lp.neighbourhood) { next.neighbourhood = defaultNeighbourhoodParams(); dirty = true; }
   if (!lp.taste)         { next.taste         = defaultTasteParams();         dirty = true; }
-  if (!lp.citations)     { next.citations     = defaultCitationParams();      dirty = true; }
+  if (!lp.citations) {
+    // Citation params are a flat bag (density / intraRate / …) for
+    // historical reasons + a `method` slot naming which algorithm in
+    // the citations registry to run. Method defaults to taste-network
+    // (the only generator we had until imported-edges landed); the
+    // data-source switch in reingest() overrides per source.
+    next.citations = { method: "taste-network", ...defaultCitationParams() };
+    dirty = true;
+  } else if (!lp.citations.method) {
+    next.citations = { ...lp.citations, method: "taste-network" };
+    dirty = true;
+  }
   if (!lp.clustering) {
     // Multi-level clustering: each level holds its own params and a
     // scope flag ("global" = re-cluster the whole dataset; "within-
@@ -63,54 +98,327 @@ function activeClusterAlgorithm() {
   return getClusteringAlgorithm(s.layerParams.clustering.method);
 }
 
+function activeCitationAlgorithm() {
+  const s = getState();
+  const id = (s.layerParams.citations && s.layerParams.citations.method) || "taste-network";
+  return getCitationAlgorithm(id);
+}
+
+// Legacy summary (single label) — kept for the workflow-chart consumer
+// that still asks for the active dim-reduction "method". Returns the
+// compression-stage method when it's a real reduction, else falls back
+// to noise-stage method, else identity.
+function activeDimredSummaryMethod() {
+  const s = getState();
+  const lp = s.layerParams.dimred || {};
+  const compMethod  = lp.compression && lp.compression.method;
+  const noiseMethod = lp.noise       && lp.noise.method;
+  if (compMethod  && compMethod  !== "identity") return compMethod;
+  if (noiseMethod && noiseMethod !== "identity") return noiseMethod;
+  return "identity";
+}
+
 function makeUid() {
   return Math.random().toString(36).slice(2, 10);
 }
 
 /* ── public API: pipeline lanes ─────────────────────────────────────── */
 
-// Full re-run from Layer 1 down. Used by Generate ▶ and on boot.
-export function regenerate() {
+// Full re-run from Layer 1 down. Dispatches through the data-source
+// registry, then cascades into the dim-reduction → clustering → ...
+// chain. Async because the real source fetches over the network;
+// callers fire-and-forget (no caller currently awaits).
+//
+// On a mode switch, every downstream output (clusterLevels, citations,
+// layout, alignment, embedding, dimredResult) is wiped — the toy and
+// real datasets are mutually exclusive, never co-resident.
+export async function reingest() {
   ensureLayerParams();
   const s = getState();
-  const params = {
-    seed:           s.dataSource.config.seed,
-    nodeCount:      s.dataSource.config.nodeCount,
-    pointsOfOrigin: s.dataSource.config.origins,
-    spreadScale:    s.dataSource.config.spread,
-  };
 
-  // Plumb the data-panel's fast-iteration toy controls
-  // (density / intra / cross) into the citation layer's params.
-  // The data panel "owns" these knobs from a UX perspective even
-  // though they're algorithmically Layer 3 params.
-  const cur = getState();
-  update({
-    layerParams: {
-      ...cur.layerParams,
-      citations: {
-        ...cur.layerParams.citations,
-        density:   s.dataSource.config.density,
-        intraRate: s.dataSource.config.intraRate,
-        crossRate: s.dataSource.config.crossRate,
+  const sourceId = s.activeAlgorithm.dataSource || "toy";
+  const source   = getDataSource(sourceId);
+  const config   = (s.dataSource.configs && s.dataSource.configs[sourceId]) || source.defaultParams();
+
+  // Pick the citation algorithm appropriate for this source. Toy
+  // generates synthetic citations via taste-network; real loads them
+  // from disk via imported-edges. User can still flip the method
+  // afterward; this is just the sensible default at switch-time.
+  // Same lane also plumbs the toy's citation knobs (density / intra /
+  // cross) into Layer 3 params — they live under dataSource.configs.toy
+  // by historical convention (the data panel owns them UX-wise even
+  // though they're algorithmically Layer 3).
+  {
+    const cur = getState();
+    const desiredMethod = sourceId === "toy" ? "taste-network" : "imported-edges";
+    const nextCitations = { ...cur.layerParams.citations, method: desiredMethod };
+    if (sourceId === "toy") {
+      nextCitations.density   = config.density;
+      nextCitations.intraRate = config.intraRate;
+      nextCitations.crossRate = config.crossRate;
+    }
+    update({
+      layerParams: {
+        ...cur.layerParams,
+        citations: nextCitations,
       },
-    },
-  });
-
-  const genResult = generate(params);
-
-  // Flatten basePos into a Float32Array(n × 3) for the blend hook
-  // and the alignment pass.
-  const n = genResult.nodes.length;
-  const bp = new Float32Array(n * 3);
-  for (let i = 0; i < n; i++) {
-    const p = genResult.nodes[i].basePos;
-    bp[i*3] = p[0]; bp[i*3+1] = p[1]; bp[i*3+2] = p[2];
+    });
   }
 
-  update({ genResult, _basePos: bp });
+  const result = await source.produce(config);
+  validateDataSourceResult(result);
+
+  const n = result.nodes.length;
+
+  // Pack basePos into the flat Float32Array(n × 3) the blend hook +
+  // alignment pass consume. Three input shapes:
+  //   1. nodes carry per-node basePos    → toy's natural shape
+  //   2. result.basePos is a flat buffer → uncommon, supported for symmetry
+  //   3. neither                          → real-data path; viz sub-stage
+  //                                         will populate _basePos later
+  let bp = null;
+  if (result.basePos instanceof Float32Array && result.basePos.length === n * 3) {
+    bp = result.basePos;
+  } else if (result.nodes.every(node => Array.isArray(node.basePos) && node.basePos.length === 3)) {
+    bp = new Float32Array(n * 3);
+    for (let i = 0; i < n; i++) {
+      const p = result.nodes[i].basePos;
+      bp[i*3] = p[0]; bp[i*3+1] = p[1]; bp[i*3+2] = p[2];
+    }
+  }
+
+  // Wipe every downstream artifact — they're indexed by node.id from
+  // the previous source and would crash anything that re-reads them.
+  // Bump engineRevision so panels rebuild even if downstream lanes
+  // bail (e.g. real-data has no basePos → citation chain skips →
+  // relayoutCitations never runs to trigger the conventional bump).
+  update({
+    genResult:             result,
+    _basePos:              bp,
+    _basePos2d:            null,
+    embedding:             result.embedding || null,
+    dimredResult:          null,
+    clusterLevels:         null,
+    clusterResult:         null,
+    bridgeAnalysis:        null,
+    neighbourhoodResult:   null,
+    tasteResult:           null,
+    citationResult:        null,
+    citationLayout:        null,
+    alignedCitationLayout: null,
+    alignmentCorrelation:  NaN,
+    engineRevision:        s.engineRevision + 1,
+  });
   setLayerState("data", "fresh");
+  redimred();
+}
+
+// Backward-compat alias — old call sites + the legacy shell still
+// say `regenerate`. New code should use reingest().
+export const regenerate = reingest;
+
+// Layer 1.5 — dim-reduction. Four stages:
+//
+//   noise         (e.g. PCA denoiser; consumed by every downstream stage)
+//   compression   (e.g. UMAP-50; produces state.dimredResult — clustering input)
+//   viz           (e.g. UMAP-3;  produces state._basePos      — 3D viewer input)
+//   viz2d         (e.g. UMAP-2;  produces state._basePos2d    — 2D viewer input)
+//
+// compression, viz, and viz2d are siblings — all three read the noise
+// stage's output. Each stage's output is validated against the dimred
+// contract.
+//
+// Stage input shape:
+//   * If state.embedding is present (real data), noise reads it.
+//   * Else, basePos is packed into a DimredInput (toy data — basePos
+//     doubles as the embedding).
+//
+// _basePos handling:
+//   * Toy: data source supplied basePos directly; viz stage runs but
+//     is identity by default → _basePos stays as packed by reingest.
+//   * Real: data source had no basePos; viz stage's output becomes
+//     _basePos *only* when it produces a 3-d result. Identity (toy
+//     default) on 768-d input would yield 768-d, which can't render —
+//     so we leave _basePos null. User has to pick a 3-d viz reduction
+//     (e.g. UMAP-3) to populate the viewer.
+export function redimred() {
+  const s = getState();
+  if (!s.genResult) return;
+  const cfg = s.layerParams.dimred;
+  if (!cfg) return;
+  const n = s.genResult.nodes.length;
+
+  // Stage 0 input: prefer real embedding, fall back to packing basePos.
+  const input0 = pickStage0Input(s);
+  if (!input0) {
+    // No embedding and no basePos — nothing to reduce. Leave dimredResult
+    // null and stop the cascade.
+    update({ dimredResult: null });
+    setLayerState("dimred", "fresh");
+    return;
+  }
+
+  // Stage 1: noise reduction.
+  const noiseAlgo = getDimredAlgorithm(cfg.noise.method);
+  const r1 = noiseAlgo.compute(input0, cfg.noise.params || {});
+  validateDimredResult(r1, n);
+  const noiseOut = { n: r1.n, d: r1.d, data: r1.data };
+
+  // Stage 2a: dimension compression (clustering input).
+  const compAlgo = getDimredAlgorithm(cfg.compression.method);
+  const r2 = compAlgo.compute(noiseOut, cfg.compression.params || {});
+  validateDimredResult(r2, n);
+
+  // Stage 2b: visualisation reduction (viewer / blend input).
+  // Skipped if the data source already supplied a 3-d basePos and the
+  // user hasn't opted into a real viz algorithm — in that case the
+  // viz default is identity, and identity-on-basePos returns the
+  // same buffer the data source gave us. Either way: viz runs, and if
+  // its output is 3-d we adopt it as _basePos; otherwise we leave
+  // _basePos as whatever reingest already packed (or null).
+  const vizAlgo = getDimredAlgorithm(cfg.viz.method);
+  const r3 = vizAlgo.compute(noiseOut, cfg.viz.params || {});
+  validateDimredResult(r3, n);
+
+  let nextBasePos = s._basePos;     // fall through unchanged unless viz produces 3-d
+  if (r3.d === 3 && r3.method !== "identity") {
+    // Normalise UMAP-3 (or any other viz reduction) output to the
+    // viewer's canonical scale. UMAP outputs in ~[-3, 3]; the toy
+    // generator's basePos lives in ~[-60, 60]. Without scaling, real
+    // data shows as a tiny blob at the centre.
+    nextBasePos = normaliseToViewerScale(r3.data);
+  } else if (s._basePos == null && r3.d === 3) {
+    // Edge case: data source had no basePos AND viz happened to be
+    // identity-on-3-d-input — adopt it (no normalisation, since
+    // identity preserves the data source's intended scale).
+    nextBasePos = r3.data;
+  }
+
+  // Stage 2c: 2-d visualisation reduction (2D viewer input).
+  // Mirrors the viz handling above but only adopts when output is 2-d.
+  // _basePos2d stays null until the user picks a 2-d-producing algo
+  // (UMAP-2, PCA-2) — the 2D viewer panel surfaces an empty-state
+  // hint in that case.
+  const viz2dAlgo = getDimredAlgorithm(cfg.viz2d.method);
+  const r4 = viz2dAlgo.compute(noiseOut, cfg.viz2d.params || {});
+  validateDimredResult(r4, n);
+
+  let nextBasePos2d = s._basePos2d;
+  if (r4.d === 2 && r4.method !== "identity") {
+    nextBasePos2d = normaliseToViewerScale2d(r4.data);
+  } else if (r4.d !== 2) {
+    // Output isn't 2-d (identity-on-3-d, identity-on-768-d, etc.).
+    // Leave _basePos2d as-is — keeps a previously-good value alive
+    // if the user is just re-running clustering, or null if there
+    // wasn't one. Either way: 2D viewer's render gate is honest.
+    if (cfg.viz2d.method === "identity" && r4.d !== 2) {
+      nextBasePos2d = null;
+    }
+  }
+
+  // Keep nodes[i].basePos in sync with the canonical _basePos buffer.
+  // Several existing consumers (clustering centre/spread output,
+  // neighbourhoods, base-edges) read the per-node form. Real data
+  // arrives without per-node basePos; once viz produces it we
+  // backfill so those consumers keep working without refactoring.
+  if (nextBasePos) {
+    syncNodeBasePos(s.genResult.nodes, nextBasePos);
+  }
+
+  update({
+    dimredResult:   r2,
+    _basePos:       nextBasePos,
+    _basePos2d:     nextBasePos2d,
+    engineRevision: s.engineRevision + 1,
+  });
+  setLayerState("dimred", "fresh");
   recluster();
+}
+
+// 2-d analogue of normaliseToViewerScale. Same centre + isotropic
+// scale logic but in 2 dimensions; target RMS half that of the 3D
+// viewer since a 2-d plane shows the same data more compactly.
+function normaliseToViewerScale2d(data) {
+  const n = data.length / 2;
+  if (n === 0) return data;
+  let mx = 0, my = 0;
+  for (let i = 0; i < n; i++) { mx += data[i*2]; my += data[i*2+1]; }
+  mx /= n; my /= n;
+  let sumSq = 0;
+  for (let i = 0; i < n; i++) {
+    const dx = data[i*2]   - mx;
+    const dy = data[i*2+1] - my;
+    sumSq += dx*dx + dy*dy;
+  }
+  const rms = Math.sqrt(sumSq / n);
+  if (rms < 1e-9) return data;
+  const TARGET_RMS_2D = 90;       // same scale as VIEWER_TARGET_RMS — force-graph
+                                  // auto-fits the camera so absolute scale matters
+                                  // less than internal consistency.
+  const scale = TARGET_RMS_2D / rms;
+  const out = new Float32Array(data.length);
+  for (let i = 0; i < n; i++) {
+    out[i*2]   = (data[i*2]   - mx) * scale;
+    out[i*2+1] = (data[i*2+1] - my) * scale;
+  }
+  return out;
+}
+
+function syncNodeBasePos(nodes, basePos) {
+  for (let i = 0; i < nodes.length; i++) {
+    nodes[i].basePos = [basePos[i*3], basePos[i*3+1], basePos[i*3+2]];
+  }
+}
+
+// Centre + isotropic scale so the viewer reads the same regardless of
+// who produced basePos. UMAP outputs in ~[-3, 3]; toy generator's
+// basePos lives in ~[-60, 60]. Target RMS distance from centre is
+// 90 — gives real-data clusters enough room that near-stacked nodes
+// separate visually without distorting the topology (this is a pure
+// scalar multiply, so cluster IDs / edges / relative geometry are
+// untouched).
+const VIEWER_TARGET_RMS = 90;
+function normaliseToViewerScale(data) {
+  const n = data.length / 3;
+  if (n === 0) return data;
+  let mx = 0, my = 0, mz = 0;
+  for (let i = 0; i < n; i++) {
+    mx += data[i*3]; my += data[i*3+1]; mz += data[i*3+2];
+  }
+  mx /= n; my /= n; mz /= n;
+  let sumSq = 0;
+  for (let i = 0; i < n; i++) {
+    const dx = data[i*3]   - mx;
+    const dy = data[i*3+1] - my;
+    const dz = data[i*3+2] - mz;
+    sumSq += dx*dx + dy*dy + dz*dz;
+  }
+  const rms = Math.sqrt(sumSq / n);
+  // Degenerate case: every point at the same place — return as-is so
+  // we don't divide by zero.
+  if (rms < 1e-9) return data;
+  const scale = VIEWER_TARGET_RMS / rms;
+  const out = new Float32Array(data.length);
+  for (let i = 0; i < n; i++) {
+    out[i*3]   = (data[i*3]   - mx) * scale;
+    out[i*3+1] = (data[i*3+1] - my) * scale;
+    out[i*3+2] = (data[i*3+2] - mz) * scale;
+  }
+  return out;
+}
+
+// Pick what feeds Layer 1.5's first stage:
+//   1. state.embedding   (real-data path; high-dim feature vectors)
+//   2. _basePos          (toy path; basePos doubles as embedding)
+// Returns null when neither is present (degenerate state).
+function pickStage0Input(s) {
+  if (s.embedding && s.embedding.data instanceof Float32Array) {
+    return { n: s.genResult.nodes.length, d: s.embedding.d, data: s.embedding.data };
+  }
+  if (s._basePos instanceof Float32Array) {
+    return { n: s.genResult.nodes.length, d: 3, data: s._basePos };
+  }
+  return null;
 }
 
 // Layer 2 — multi-level.
@@ -139,9 +447,9 @@ export function recluster() {
     const isGlobal = (i === 0) || lvl.scope === "global";
     let cr;
     if (isGlobal) {
-      cr = algo.infer(s.genResult, lvl.params);
+      cr = algo.infer(s.genResult, lvl.params, s.dimredResult);
     } else {
-      cr = clusterWithinParents(algo, s.genResult, parent, lvl.params);
+      cr = clusterWithinParents(algo, s.genResult, parent, lvl.params, s.dimredResult);
     }
     validateClusterResult(cr, n, { allowNoise });
     levels.push({ uid: lvl.uid, scope: isGlobal ? "global" : "within-parent", clusterResult: cr });
@@ -149,17 +457,51 @@ export function recluster() {
   }
 
   const finest = levels[levels.length - 1].clusterResult;
-  // Derived: bridge analysis pairs the finest level with the level
-  // above. Null when only one level exists.
-  const bridgeAnalysis = computeBridgeAnalysis(levels);
+  // Derived: bridge analysis pair is taken from state.bridgeConfig
+  // (or the deepest valid pair if config is empty/stale). Null when
+  // only one level exists.
+  const cfgBridge = clampedBridgeConfig(s.bridgeConfig, levels);
+  const bridgeAnalysis = computeBridgeAnalysis(levels, cfgBridge);
 
   update({
     clusterLevels: levels,
     clusterResult: finest,
     bridgeAnalysis,
+    bridgeConfig: cfgBridge,
+    // Stale eval results → previous clustering. Drop them so the
+    // Validate / Optimise tabs don't show outdated scores. The user
+    // can re-run; we'd rather an empty tab body than misleading data.
+    evalResults: { validate: null, optimise: null },
   });
   setLayerState("clustering", "fresh");
   reneighbour();
+}
+
+// Re-run only the bridge analysis lane — used when the user changes
+// the (fineLevel, coarseLevel) pair via the bridge-table panel without
+// touching upstream clustering. Cheap (single pass over n).
+export function recomputeBridgeAnalysis() {
+  const s = getState();
+  if (!s.clusterLevels || s.clusterLevels.length < 2) return;
+  const cfg = clampedBridgeConfig(s.bridgeConfig, s.clusterLevels);
+  const ba  = computeBridgeAnalysis(s.clusterLevels, cfg);
+  update({
+    bridgeAnalysis: ba,
+    bridgeConfig:   cfg,
+    engineRevision: s.engineRevision + 1,
+  });
+}
+
+// Clamp bridgeConfig fields against the actual level count. Empty /
+// out-of-range values fall back to the deepest valid pair.
+function clampedBridgeConfig(cfg, levels) {
+  if (!levels || levels.length < 2) return { fineLevel: null, coarseLevel: null };
+  const lastIdx = levels.length - 1;
+  let fine = Number.isInteger(cfg && cfg.fineLevel) ? cfg.fineLevel : lastIdx;
+  if (fine < 1 || fine > lastIdx) fine = lastIdx;
+  let coarse = Number.isInteger(cfg && cfg.coarseLevel) ? cfg.coarseLevel : fine - 1;
+  if (coarse < 0 || coarse >= fine) coarse = fine - 1;
+  return { fineLevel: fine, coarseLevel: coarse };
 }
 
 // Run the clustering algorithm separately on each parent cluster's
@@ -167,7 +509,7 @@ export function recluster() {
 // IDs. Output cluster IDs are renumbered per parent so they're
 // contiguous and non-overlapping. Singletons or empty parents become
 // trivial single-cluster outputs.
-function clusterWithinParents(algo, genResult, parent, params) {
+function clusterWithinParents(algo, genResult, parent, params, dimredResult) {
   const n = genResult.nodes.length;
   const numParents = parent.clusters.length;
   const nodeCluster = new Int32Array(n);
@@ -206,7 +548,10 @@ function clusterWithinParents(algo, genResult, parent, params) {
       const orig = genResult.nodes[origId];
       return { ...orig, id: localIdx };
     });
-    const subResult = algo.infer({ ...genResult, nodes: subNodes }, params);
+    // Sub-dimredResult: copy out the rows for this parent's members so
+    // distance computations stay in the same dim-reduced space.
+    const subDimred = sliceDimred(dimredResult, ids);
+    const subResult = algo.infer({ ...genResult, nodes: subNodes }, params, subDimred);
 
     for (let localIdx = 0; localIdx < ids.length; localIdx++) {
       const subCid = subResult.nodeCluster[localIdx];
@@ -232,15 +577,98 @@ function clusterWithinParents(algo, genResult, parent, params) {
   };
 }
 
-// taste-network's internal stage 1.
+// Build a sub-DimredResult that holds only the rows in `ids`, in the
+// same order. Used by clusterWithinParents so a within-parent run sees
+// a flat positions buffer matching its sub-genResult's local node ids.
+function sliceDimred(dimredResult, ids) {
+  const d   = dimredResult.d;
+  const src = dimredResult.data;
+  const out = new Float32Array(ids.length * d);
+  for (let li = 0; li < ids.length; li++) {
+    const oi = ids[li];
+    for (let k = 0; k < d; k++) out[li * d + k] = src[oi * d + k];
+  }
+  return {
+    method: dimredResult.method,
+    params: dimredResult.params,
+    n:      ids.length,
+    d,
+    data:   out,
+  };
+}
+
+// Entry to the Layer 3 lane after clustering. Dispatches on the
+// active citation algorithm's declared requirements:
+//   needsNeighbourhoods === false  → algorithm imports its own
+//                                     edges; skip directly to the
+//                                     resampleViaImport() lane.
+//   needsBasePos        === true   → algorithm needs a 3-d basePos
+//                                     (taste-network's Euclidean
+//                                     neighbourhood reasoning). Bail
+//                                     when basePos isn't materialised
+//                                     yet (real-data path before the
+//                                     viz sub-stage runs).
+// This replaces the previous `if (!_basePos) bail` hack with
+// declarative per-algorithm flags read off the registry entry.
 export function reneighbour() {
   const s = getState();
   if (!s.genResult || !s.clusterResult) return;
+
+  const citAlgo = activeCitationAlgorithm();
+
+  // Import-style algorithms: short-circuit straight to a dedicated
+  // lane that calls the algorithm's async `infer` directly. The
+  // neighbourhood / taste lanes never run.
+  if (!citAlgo.needsNeighbourhoods) {
+    update({ neighbourhoodResult: null, tasteResult: null });
+    resampleViaImport();
+    return;
+  }
+
+  // Generation-style algorithms (taste-network): require basePos.
+  if (citAlgo.needsBasePos && !s._basePos) {
+    update({ neighbourhoodResult: null });
+    return;
+  }
   const neighbourhoodResult = inferNeighbourhoods(
     s.genResult, s.clusterResult, s.layerParams.neighbourhood,
   );
   update({ neighbourhoodResult });
   retaste();
+}
+
+// Layer 3 — import path. The algorithm's `infer` is async (importers
+// do I/O); we await it and then drop into the standard layout lane.
+// Fire-and-forget from the caller's perspective; failures show up as
+// a null citationResult and a console error so the user can see why
+// the cascade stalled (typically: edges file not carved yet).
+export async function resampleViaImport() {
+  const s = getState();
+  const citAlgo = activeCitationAlgorithm();
+  const dsId = s.activeAlgorithm.dataSource || "toy";
+  const dataSourceParams = (s.dataSource.configs && s.dataSource.configs[dsId]) || {};
+
+  let citationResult;
+  try {
+    citationResult = await citAlgo.infer(
+      s.genResult,
+      s.clusterResult,
+      s.layerParams.citations,
+      dataSourceParams,
+    );
+  } catch (err) {
+    console.error(`[engine] citation import failed:`, err);
+    update({ citationResult: null });
+    setLayerState("citations", "stale");
+    return;
+  }
+  // Contract check — surfaces shape drift immediately rather than
+  // three layers downstream.
+  assertCitationResult(citationResult, s.genResult.nodes.length);
+
+  update({ citationResult });
+  setLayerState("citations", "fresh");
+  relayoutCitations();
 }
 
 // taste-network's internal stages 2 + 3.
@@ -281,6 +709,24 @@ export function relayoutCitations() {
     seed:   s.layerParams.citations.samplingSeed,
     params: s.layerParams.layout.params,
   });
+
+  // Alignment requires a basePos to align *to*. Real-data mode has
+  // no basePos until the user picks a 3-d viz reduction; in that case
+  // we still publish the raw citationLayout (the 2D viewer can use it
+  // as-is for force-graph rendering) but skip alignment + blend, so
+  // the slider stays inert until the viewer is populated.
+  if (!s._basePos) {
+    update({
+      citationLayout,
+      alignedCitationLayout: null,
+      alignmentCorrelation:  NaN,
+      engineRevision:        getState().engineRevision + 1,
+    });
+    setLayerState("layout", "fresh");
+    setLayerState("alignment", "stale");
+    setLayerState("blend", "stale");
+    return;
+  }
 
   const alignResult = alignByComponent({
     basePos:     s._basePos,

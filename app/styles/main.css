@@ -418,34 +418,130 @@ html, body {
 #workflow-chart .wf-state-dot.not-run  { fill: var(--not-run); }
 
 /* ── blend control (bottom of left rail) ─────────────────────────────── */
+/* Compact stack. Each section is a small uppercase title plus one or
+   two single-line rows. Rows mirror the toy-data row grid
+   (label | slider | readout = 70px 1fr 36px). Thin hairlines between
+   sections instead of card borders. */
 
 #blend-control {
-  padding: 8px 12px 10px;
+  padding: 6px 10px 8px;
   border-top: 1px solid var(--border);
-  display: grid;
-  grid-template-columns: 1fr auto;
-  grid-template-rows: auto auto;
-  gap: 4px 8px;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
 }
 
-#blend-control .blend-label {
-  grid-column: 1 / 3;
+#blend-control .lr-section {
+  display: flex;
+  flex-direction: column;
+  padding: 4px 0 5px;
+  border-top: 1px solid var(--border);
+}
+
+#blend-control .lr-section:first-child {
+  border-top: none;
+  padding-top: 0;
+}
+
+#blend-control .lr-section-title {
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin-bottom: 3px;
+}
+
+#blend-control .lr-row {
+  display: grid;
+  align-items: center;
+  margin: 1px 0;
+}
+
+#blend-control .lr-row label {
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+/* label | slider | readout — same column template as .data-panel-row */
+#blend-control .lr-row-slider {
+  grid-template-columns: 70px 1fr 36px;
+  gap: 6px;
+}
+
+#blend-control .lr-row-slider input[type="range"] {
+  width: 100%;
+  min-width: 0;
+}
+
+/* label | checkbox — checkbox sits at the right edge under the readout
+   column so toggles align with slider knobs visually */
+#blend-control .lr-row-check {
+  grid-template-columns: 70px 1fr;
+  gap: 6px;
+}
+
+#blend-control .lr-row-check input[type="checkbox"] {
+  margin: 0;
+  justify-self: start;
+}
+
+/* Toggle row: a small colour swatch and one or two compact "☐ Label"
+   checkboxes, all left-aligned in a single flex line. */
+#blend-control .lr-row-toggles {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: nowrap;
+}
+
+#blend-control .lr-inline-check {
+  display: flex;
+  align-items: center;
+  gap: 4px;
   font-size: 11px;
   color: var(--text-dim);
+  cursor: pointer;
+  white-space: nowrap;
 }
 
-#blend-control input[type="range"] {
-  grid-column: 1;
-  width: 100%;
+#blend-control .lr-inline-check input[type="checkbox"] {
+  margin: 0;
 }
 
-#blend-control #blend-readout {
-  grid-column: 2;
+/* Small colour swatch: a flush rectangle that matches the visual
+   weight of the surrounding checkboxes. Native colour inputs come
+   with a chunky border + padding; we strip those. */
+#blend-control .lr-swatch {
+  width: 22px;
+  height: 14px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: transparent;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+
+#blend-control .lr-swatch::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+#blend-control .lr-swatch::-webkit-color-swatch {
+  border: none;
+  border-radius: 2px;
+}
+
+#blend-control .lr-swatch::-moz-color-swatch {
+  border: none;
+  border-radius: 2px;
+}
+
+#blend-control .lr-readout {
   font-family: var(--font-mono);
-  font-size: 11px;
   color: var(--text);
-  align-self: center;
-  min-width: 32px;
+  font-size: 11px;
   text-align: right;
 }
 
@@ -482,8 +578,8 @@ html, body {
 
 .node-table-root {
   display: grid;
-  /* headbar / optional gradient bar / scroll / footer */
-  grid-template-rows: auto auto 1fr auto;
+  /* headbar / optional pairbar / optional gradient bar / scroll / footer */
+  grid-template-rows: auto auto auto 1fr auto;
   height: 100%;
   font-size: 12px;
   font-family: var(--font-ui);
@@ -515,6 +611,30 @@ html, body {
   color: var(--text-faint);
   font-family: var(--font-mono);
   margin-left: auto;
+}
+
+.node-table-pairbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--border);
+}
+.node-table-pairbar-label {
+  font-size: 10px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.node-table-pair-select {
+  background: var(--bg-3);
+  color: var(--text);
+  border: 1px solid var(--border);
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: 11px;
 }
 
 .node-table-gradient {
@@ -644,6 +764,26 @@ td.node-table-spread, td.node-table-stab { width: 50px; }
   border-top: 1px solid var(--border);
   background: var(--bg-2);
   text-align: right;
+}
+
+/* ── viewer-3d empty state ────────────────────────────────────────── */
+
+.viewer-3d-empty {
+  position: absolute;
+  inset: 0;
+  display: none;             /* toggled by viewer-3d.js */
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 24px;
+  color: var(--text-faint);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  line-height: 1.5;
+  background: rgba(6, 8, 12, 0.85);  /* matches viewer's bg, slightly transparent */
+  z-index: 5;
+  pointer-events: none;      /* let user still interact with overlays above */
+  white-space: pre-wrap;
 }
 
 /* ── viewer-3d colour-mode overlay (top-left dropdown) ─────────────── */
@@ -859,6 +999,31 @@ td.node-table-spread, td.node-table-stab { width: 50px; }
 }
 .modal-action.primary:hover { background: var(--accent); border-color: var(--accent); color: white; }
 .modal-action:disabled { opacity: 0.5; cursor: not-allowed; }
+.modal-action.running {
+  /* Progress state: indicate work without freezing the UI. CSS-only
+     pulse so we don't need a spinner asset. */
+  position: relative;
+  opacity: 1;       /* override the disabled fade */
+}
+.modal-action.running::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 3px;
+  background: linear-gradient(
+    90deg,
+    transparent     0%,
+    rgba(255, 255, 255, 0.18) 50%,
+    transparent     100%
+  );
+  background-size: 200% 100%;
+  animation: modal-action-running 1.2s linear infinite;
+  pointer-events: none;
+}
+@keyframes modal-action-running {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
 
 /* ── panel-picker modal ─────────────────────────────────────────────── */
 
@@ -980,14 +1145,477 @@ td.node-table-spread, td.node-table-stab { width: 50px; }
   font-style: italic;
 }
 
+/* ── dim-reduction modal (two-section) ────────────────────────────── */
+
+.dimred-modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 460px;
+}
+
+.dimred-modal-section {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 10px 12px;
+  background: var(--bg-2);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.dimred-modal-section-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--text);
+  margin: 0 0 2px;
+}
+
+.dimred-modal-section-sub {
+  font-size: 10.5px;
+  color: var(--text-faint);
+  line-height: 1.4;
+  margin: -2px 0 6px;
+}
+
+.dimred-modal-row {
+  display: grid;
+  grid-template-columns: 110px 1fr 50px;
+  gap: 6px 10px;
+  align-items: center;
+}
+.dimred-modal-row label {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.dimred-modal-row input[type="range"] {
+  width: 100%;
+}
+.dimred-modal-row select,
+.dimred-modal-select {
+  background: var(--bg-3);
+  color: var(--text);
+  border: 1px solid var(--border);
+  padding: 4px 8px;
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  grid-column: 2 / 4;
+}
+
+.dimred-modal-desc {
+  background: var(--bg-3);
+  border-left: 2px solid var(--accent-dim);
+  padding: 6px 10px;
+  font-size: 10.5px;
+  color: var(--text-dim);
+  line-height: 1.45;
+}
+
+.dimred-modal-params {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.dimred-modal-readout {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text);
+  text-align: right;
+}
+.dimred-modal-hint {
+  grid-column: 2 / 4;
+  font-size: 10px;
+  color: var(--text-faint);
+  line-height: 1.45;
+  margin-top: -2px;
+}
+.dimred-modal-noparams {
+  font-size: 11px;
+  color: var(--text-faint);
+  font-style: italic;
+}
+
+/* ── data-source modal ───────────────────────────────────────────── */
+
+.datasource-modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 460px;
+}
+
+.datasource-modal-source-row {
+  display: grid;
+  grid-template-columns: 90px 1fr;
+  align-items: center;
+  gap: 8px;
+}
+.datasource-modal-source-row label {
+  font-size: 11px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.datasource-modal-source-row select,
+.datasource-modal-row select {
+  background: var(--bg-3);
+  color: var(--text);
+  border: 1px solid var(--border);
+  padding: 4px 8px;
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.datasource-modal-desc {
+  background: var(--bg-3);
+  border-left: 2px solid var(--accent-dim);
+  padding: 8px 10px;
+  font-size: 11px;
+  color: var(--text-dim);
+  line-height: 1.45;
+}
+
+.datasource-modal-params {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.datasource-modal-row {
+  display: grid;
+  grid-template-columns: 110px 1fr 50px;
+  gap: 6px 10px;
+  align-items: center;
+}
+.datasource-modal-row label {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.datasource-modal-row input[type="range"] {
+  width: 100%;
+}
+.datasource-modal-readout {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text);
+  text-align: right;
+}
+.datasource-modal-hint {
+  grid-column: 2 / 4;
+  font-size: 10px;
+  color: var(--text-faint);
+  line-height: 1.45;
+  margin-top: -2px;
+}
+.datasource-modal-noparams {
+  font-size: 11px;
+  color: var(--text-faint);
+  font-style: italic;
+}
+
+/* ── data panel ──────────────────────────────────────────────────── */
+
+.data-panel-hint {
+  font-size: 11px;
+  color: var(--text-faint);
+  line-height: 1.45;
+  margin-top: 8px;
+}
+
 /* ── multi-level clustering modal ─────────────────────────────────── */
 
 .clustering-modal-body {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  min-width: 460px;
+  min-width: 540px;       /* Optimise table needs a bit more width */
 }
+
+/* tab strip — same shape as panel-tabs but at modal scale */
+.modal-tab-strip {
+  display: flex;
+  align-items: stretch;
+  height: 32px;
+  margin: -4px -4px 0;     /* tuck against the modal's content padding */
+  padding: 0 4px;
+  background: var(--bg-3);
+  border-bottom: 1px solid var(--border);
+  user-select: none;
+}
+.modal-tab {
+  padding: 0 14px;
+  display: flex;
+  align-items: center;
+  font-size: 12px;
+  color: var(--text-dim);
+  cursor: pointer;
+  border-right: 1px solid var(--border);
+}
+.modal-tab:hover { color: var(--text); }
+.modal-tab.active {
+  background: var(--bg);
+  color: var(--accent);
+  border-bottom: 2px solid var(--accent);
+}
+.modal-tab-panes {
+  display: flex;
+  flex-direction: column;
+}
+.modal-tab-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* shared section + run-row + results layout for Validate / Optimise */
+.cm-tab-notice {
+  background: var(--bg-3);
+  border-left: 2px solid var(--accent-dim);
+  padding: 8px 10px;
+  font-size: 11px;
+  color: var(--text-dim);
+  line-height: 1.45;
+}
+.cm-tab-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.cm-tab-section-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--text);
+  margin: 4px 0 2px;
+}
+.cm-tab-slider-row {
+  display: grid;
+  grid-template-columns: 110px 1fr 50px;
+  gap: 6px 10px;
+  align-items: center;
+}
+.cm-tab-slider-row label {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.cm-tab-slider-row input[type="range"] {
+  width: 100%;
+}
+.cm-tab-slider-readout {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text);
+  text-align: right;
+}
+.cm-tab-slider-hint {
+  grid-column: 2 / 4;
+  font-size: 10px;
+  color: var(--text-faint);
+  line-height: 1.4;
+  margin-top: -2px;
+}
+.cm-tab-checkbox-row,
+.cm-tab-select-row {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  gap: 6px 10px;
+  align-items: center;
+}
+.cm-tab-checkbox-hint,
+.cm-tab-select-hint {
+  grid-column: 2 / 3;        /* hint sits below the controls, not under the label */
+  margin-top: 2px;
+}
+.cm-tab-checkbox-row > label,
+.cm-tab-select-row   > label {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.cm-tab-checkbox-body {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.cm-tab-checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text);
+  cursor: pointer;
+}
+.cm-tab-select-row select {
+  background: var(--bg-3);
+  color: var(--text);
+  border: 1px solid var(--border);
+  padding: 3px 8px;
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.cm-tab-runrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+.cm-tab-run, .cm-tab-cancel {
+  background: var(--accent-dim);
+  border: 1px solid var(--accent-dim);
+  color: white;
+  padding: 5px 14px;
+  border-radius: 3px;
+  font-size: 12px;
+  cursor: pointer;
+  position: relative;
+}
+.cm-tab-cancel {
+  background: var(--bg-3);
+  border-color: var(--border-light);
+  color: var(--text);
+}
+.cm-tab-run:disabled { opacity: 0.6; cursor: not-allowed; }
+.cm-tab-run.running::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 3px;
+  background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.18) 50%, transparent 100%);
+  background-size: 200% 100%;
+  animation: modal-action-running 1.2s linear infinite;
+  pointer-events: none;
+}
+.cm-tab-status {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.cm-tab-results {
+  border-top: 1px solid var(--border);
+  padding-top: 6px;
+}
+.cm-tab-aggregate {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 11px;
+  color: var(--text);
+  margin-bottom: 6px;
+}
+.cm-tab-stat b              { color: var(--text); font-weight: 600; }
+.cm-tab-stat.stable         { color: var(--ok); }
+.cm-tab-stat.doubtful       { color: #c8a76a; }       /* amber */
+.cm-tab-stat.unstable       { color: var(--err); }
+.cm-tab-stat-meanj          { margin-left: auto; color: var(--text-dim); }
+
+.cm-tab-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+  font-family: var(--font-mono);
+}
+.cm-tab-table th, .cm-tab-table td {
+  padding: 4px 6px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+.cm-tab-table th {
+  font-weight: 500;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  font-size: 10px;
+}
+.cm-tab-table-sortable th.sortable {
+  cursor: pointer;
+  user-select: none;
+}
+.cm-tab-table-sortable th.sortable:hover {
+  color: var(--text);
+}
+.cm-tab-table-sortable th.sorted-asc::after  { content: " ▲"; font-size: 9px; }
+.cm-tab-table-sortable th.sorted-desc::after { content: " ▼"; font-size: 9px; }
+.cm-tab-table tbody {
+  display: block;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.cm-tab-table thead, .cm-tab-table tbody tr {
+  display: table;
+  width: 100%;
+  table-layout: fixed;
+}
+.cm-tab-row { cursor: pointer; }
+.cm-tab-row:hover { background: var(--bg-3); }
+
+.cm-tab-bar {
+  width: 100px;
+  height: 8px;
+  background: var(--bg-3);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.cm-tab-bar-fill {
+  height: 100%;
+  background: var(--accent);
+}
+.cm-tab-row.verdict-stable   .cm-tab-bar-fill { background: var(--ok); }
+.cm-tab-row.verdict-doubtful .cm-tab-bar-fill { background: #c8a76a; }
+.cm-tab-row.verdict-unstable .cm-tab-bar-fill { background: var(--err); }
+
+.cm-tab-verdict {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 1px 6px;
+  border-radius: 2px;
+  background: var(--bg-3);
+  color: var(--text-dim);
+}
+.cm-tab-verdict.verdict-stable   { background: rgba( 89, 161, 79, 0.18); color: var(--ok); }
+.cm-tab-verdict.verdict-doubtful { background: rgba(200,167,106, 0.18); color: #c8a76a; }
+.cm-tab-verdict.verdict-unstable { background: rgba(225, 87, 89, 0.18); color: var(--err); }
+
+.cm-tab-legend {
+  display: flex;
+  gap: 14px;
+  margin-top: 6px;
+  font-size: 10px;
+  color: var(--text-faint);
+}
+.cm-tab-swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  margin-right: 4px;
+  vertical-align: -1px;
+}
+.cm-tab-swatch.verdict-stable   { background: var(--ok); }
+.cm-tab-swatch.verdict-doubtful { background: #c8a76a; }
+.cm-tab-swatch.verdict-unstable { background: var(--err); }
+
+.cm-tab-table-wide td.cm-tab-params,
+.cm-tab-table-wide td code.cm-tab-params {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-dim);
+}
+.cm-tab-apply {
+  background: var(--bg-3);
+  border: 1px solid var(--border-light);
+  color: var(--text);
+  padding: 2px 8px;
+  border-radius: 3px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.cm-tab-apply:hover { border-color: var(--accent); color: var(--accent); }
 
 .clustering-modal-levels {
   display: flex;
