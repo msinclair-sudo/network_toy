@@ -687,7 +687,7 @@ materialises a fixed-seed N-paper sample (default 1000, seed 42)
 under `literture-network/artifacts/dev_subset/` — never mutates
 the originals, byte-identical re-runs, provenance recorded.
 
-### 6.4c Real citation-edge carving ◐ (script landed; JS importer pending)
+### 6.4c Real citation-edge carving ✓
 
 `literture-network/scripts/make_subset_citation_edges.py` carves
 the induced citation-edge subgraph for whichever embedding subset
@@ -717,20 +717,89 @@ on-disk edge artifact.
 First carve on the default 1000-paper random subset retained
 3 edges across 6 nodes (0.6% coverage). Expected at this sample
 size — random 1000 from 810 k shatters citation neighbourhoods.
-Enough to validate the pipeline end-to-end; a connectivity-aware
-subset is the follow-up.
+Enough to validate the pipeline end-to-end; the connectivity-aware
+follow-up is §6.4d.
 
-Sibling slices pending (next):
+Sibling slices shipped:
 - `app/src/citations/importers/{registry,json-file}.js` —
   pluggable edge-import transports (file today, SQL/REST later).
   Each importer is just `fetch({dataSourceParams}) → Promise<[[src,dst], …]>`.
 - `app/src/citations/imported-edges.js` — Layer 3 algorithm
   that consumes an importer and emits a `CitationResult`. Swaps
   direction (DB inbound → toy outbound) at materialisation.
-- `citations/registry.js` entries grow declarative
-  `needsNeighbourhoods` / `needsBasePos` flags; `engine.reneighbour()`
-  consults them instead of the current `_basePos == null` hack
-  (which was always a stand-in for "this algorithm needs basePos").
+- `citations/registry.js` entries grew declarative
+  `needsNeighbourhoods` / `needsBasePos` / `isAsync` flags;
+  `engine.reneighbour()` dispatches on those instead of the
+  previous `_basePos == null` hack. New `engine.resampleViaImport()`
+  lane awaits the async `infer` + contract-validates the result.
+- `engine.reingest()` picks `taste-network` for toy / `imported-edges`
+  for real on every source switch. `relayoutCitations()` gracefully
+  degrades when basePos is null (publishes raw `citationLayout`,
+  marks alignment + blend stale) instead of crashing.
+
+### 6.4d Connectivity-aware subset carve ✓
+
+`literture-network/scripts/make_dev_subset_bfs.py` carves a 5000-paper
+subset via multi-source BFS over `citgraphv2/output/edges.csv`.
+Selection method:
+
+1. Stream edges once, build undirected adjacency + total-degree
+   counts over papers that exist in the embedding index.
+2. Rank by total degree. Skip the top 10 (global hubs — generic
+   papers cited by everything: textbook chapters, methods classics).
+3. Take the next 5 (ranks 11-15) as BFS seeds — high-degree enough
+   to be well-connected, narrow enough to give the subset a topical
+   spread rather than a single mono-topic cluster.
+4. Multi-source BFS expansion from all 5 seeds simultaneously until
+   the subset reaches `--size` papers. Deterministic visit order
+   (sorted neighbour iteration) → byte-identical output.
+
+Result at n=5000: 12,280 within-subset citation edges, 4,999/5000
+papers connected (100%), mean degree 4.9. Vs the random 1000-paper
+subset's 3 edges (0.6% coverage) — about 2000× more useful for
+citation-graph visualisation.
+
+UI integration: `dev_subset_bfs_5000` registered as a second subset
+in `app/src/datasource/real.js`; data-source modal dropdown shows
+both options with friendly labels.
+
+Headless-smoke-tested end-to-end: BFS subset → reingest (~3 s data
+fetch) → imported-edges loads 12,268 citations → UMAP-3 viz at
+n=5000 → HDBSCAN clustering (2297 clusters at default min_cluster_size
+— overly granular at this scale; needs param tuning) → FR layout →
+alignment (correlation 0.52). Zero page errors.
+
+Known scale issues (deferred to §6.11 below):
+- UMAP-3 at n=5000 freezes the page for 30-90 s (synchronous JS,
+  no event-loop yields). Browser shows "page unresponsive" warning.
+- HDBSCAN default `min_cluster_size` is tuned for toy n=400; at
+  n=5000 it produces ~2300 clusters (mostly singletons). Either
+  needs source-aware defaults or sweep via the Optimise tab.
+
+### 6.11 Web Worker port for heavy compute lanes ☐
+
+UMAP, HDBSCAN, and FR all run synchronously on the main thread.
+At n=400 (toy) that's invisible; at n=5000 (BFS subset) the page
+becomes unresponsive for 30-90 s during each lane. The browser's
+unresponsive-script warning fires, even though the work is
+progressing.
+
+Plan when picked up:
+- Port `dimred/umap.js` to a Web Worker first (longest lane,
+  cleanest interface). `Worker` postMessage in / postMessage out;
+  the engine's `redimred()` lane awaits a Promise that resolves
+  on the worker's response.
+- Same shape for `clustering-hdbscan.js` and
+  `citation-layout/fr.js`. All three are CPU-bound pure functions
+  with no DOM access — natural Worker fit.
+- The busy-overlay UI (a centred modal-like spinner shown
+  whenever any layerState is "running") is a useful parallel slice
+  but doesn't fix the unresponsive warning by itself — Web Workers
+  do. Skip the cosmetic-only fix.
+
+Defer until working on a machine with enough headroom to test at
+n=5000+. Smaller subsets (n=1000) don't trigger the warning and
+the toy stays fast.
 
 ### 6.5 Stability + Optimisation (Validate + Optimise) ✓ ↻ — **beta**
 **Shipped as a tabbed cluster modal** — not a standalone `Validate ▾`
