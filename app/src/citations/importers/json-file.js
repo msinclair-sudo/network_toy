@@ -25,7 +25,8 @@ export const ID = "json-file";
 // id is user-facing UI vocabulary and the directory name is a
 // disk artifact.
 const SUBSET_DIRS = {
-  "dev_subset_1000": "dev_subset",
+  "dev_subset_1000":     "dev_subset",
+  "dev_subset_bfs_5000": "dev_subset_bfs",
 };
 
 export async function fetch({ dataSourceParams = {} } = {}) {

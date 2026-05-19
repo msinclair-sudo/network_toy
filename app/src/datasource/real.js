@@ -16,13 +16,21 @@ const SUBSETS = {
   // id → {label, embeddingsPath, indexPath}; paths are absolute fetch URLs
   // (the static server is rooted at the repo root).
   "dev_subset_1000": {
-    label:          "dev_subset (1000 papers, seed 42)",
+    label:          "dev_subset (1000 papers, random seed=42)",
     embeddingsPath: "/literture-network/artifacts/dev_subset/expanded_embeddings.npy",
     indexPath:      "/literture-network/artifacts/dev_subset/expanded_embeddings_paper_index.json",
   },
+  "dev_subset_bfs_5000": {
+    label:          "dev_subset_bfs (5000 papers, BFS from 5 high-degree seeds)",
+    embeddingsPath: "/literture-network/artifacts/dev_subset_bfs/expanded_embeddings.npy",
+    indexPath:      "/literture-network/artifacts/dev_subset_bfs/expanded_embeddings_paper_index.json",
+  },
 };
 
-export const SUBSET_IDS = Object.keys(SUBSETS);
+export const SUBSET_IDS    = Object.keys(SUBSETS);
+export const SUBSET_LABELS = Object.fromEntries(
+  Object.entries(SUBSETS).map(([id, s]) => [id, s.label])
+);
 
 export const defaultRealParams = () => ({
   subset: "dev_subset_1000",

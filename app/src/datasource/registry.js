@@ -13,7 +13,7 @@
 // — all of it). The toy is not deprecated; both stay first-class.
 
 import { produceToy,  defaultToyParams  } from "./toy.js";
-import { produceReal, defaultRealParams, SUBSET_IDS } from "./real.js";
+import { produceReal, defaultRealParams, SUBSET_IDS, SUBSET_LABELS } from "./real.js";
 
 export const DATA_SOURCES = [
   {
@@ -64,8 +64,8 @@ export const DATA_SOURCES = [
         key: "subset",
         label: "Dataset",
         kind: "select",
-        options: SUBSET_IDS.map(id => ({ value: id, label: id })),
-        hint: "Which slice to load. Right now there's just the 1000-paper development subset; bigger ones can be carved later with literture-network/scripts/make_dev_subset.py.",
+        options: SUBSET_IDS.map(id => ({ value: id, label: SUBSET_LABELS[id] || id })),
+        hint: "Which slice to load. The random 1000-paper subset shatters citation neighbourhoods (~3 within-subset edges); the BFS 5000-paper subset preserves topology (~12,000 within-subset edges, 100% node coverage). Carve more via literture-network/scripts/make_dev_subset_bfs.py.",
       },
     ],
   },
