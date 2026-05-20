@@ -90,13 +90,18 @@ export function openClusteringModal(descriptor) {
           params: { ...row.params },
           scope:  "global",
         }];
-        descriptor.applyChange(row.algoId, levels);
-        // Reflect into the Configure tab's working state.
+        // applyChange is async (descriptor → engine.recluster runs in
+        // workers). Reflect into Configure first, hop to Validate to
+        // park the user on a useful surface, then await the recluster
+        // so Validate reads fresh clusters — not stale ones from before
+        // the apply.
         if (tabHandles.configure && tabHandles.configure.overwrite) {
           tabHandles.configure.overwrite(row.algoId, levels);
         }
-        // Hop to Validate so the user can verify the new config is stable.
         setActiveTab("validate");
+        Promise.resolve(descriptor.applyChange(row.algoId, levels)).catch(e => {
+          console.error("[clustering-modal] onApplyRow applyChange failed:", e);
+        });
       },
     });
     if (tabId === "validate") return buildValidateTab(host);
@@ -108,7 +113,7 @@ export function openClusteringModal(descriptor) {
   paneEls.configure.style.display = "";
   tabHandles.configure = buildTab("configure", paneEls.configure);
 
-  return openModal({
+  const modalHandle = openModal({
     title: descriptor.label,
     body,
     actions: [
@@ -117,19 +122,33 @@ export function openClusteringModal(descriptor) {
         label: "Apply",
         primary: true,
         onClick: () => {
-          // Apply commits the Configure tab's working state. The other
-          // tabs are read-only evaluations; their per-row Apply has
-          // already written through. So this button is meaningful
-          // when Configure is the active tab; it's harmless on the
-          // others (Apply just commits whatever's in the editor).
-          try {
-            const w = tabHandles.configure && tabHandles.configure.getWorking();
-            if (w) descriptor.applyChange(w.algoId, w.levels);
-          } catch (e) {
-            console.error("[clustering-modal] applyChange failed:", e);
-          }
+          // applyChange is async (descriptor → engine.recluster runs in
+          // workers). Show Running… on the button + keep the modal open
+          // until the cascade resolves so the user knows the click
+          // registered. Mirrors the dimred-modal + algorithm-modal
+          // pattern.
+          startProgress(modalHandle);
+          setTimeout(async () => {
+            try {
+              const w = tabHandles.configure && tabHandles.configure.getWorking();
+              if (w) await descriptor.applyChange(w.algoId, w.levels);
+            } catch (e) {
+              console.error("[clustering-modal] applyChange failed:", e);
+            }
+            modalHandle.close();
+          }, 30);
+          return false;         // suppress default close-on-click
         },
       },
     ],
   });
+  return modalHandle;
+}
+
+function startProgress(handle) {
+  const btn = handle.dialog.querySelector(".modal-action.primary");
+  if (!btn) return;
+  btn.disabled = true;
+  btn.textContent = "Running…";
+  btn.classList.add("running");
 }

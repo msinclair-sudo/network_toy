@@ -46,7 +46,10 @@
 // so this scale doesn't affect the final visible extent — but
 // centring the raw output simplifies the alignment's centroid math.
 
-import { UMAP } from "umap-js";
+// Full URL (not bare specifier) so this module loads identically on
+// the main thread AND in Web Workers — see dimred/umap.js for the
+// same note. Version-pinned alongside app/index.html's importmap.
+import { UMAP } from "https://esm.sh/umap-js@1.4.0";
 import { mulberry32 } from "../rng.js";
 
 export const ID = "umap-graph";

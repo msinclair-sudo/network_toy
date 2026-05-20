@@ -835,24 +835,105 @@ becomes unresponsive for 30-90 s during each lane. The browser's
 unresponsive-script warning fires, even though the work is
 progressing.
 
-Plan when picked up:
-- Port `dimred/umap.js` to a Web Worker first (longest lane,
-  cleanest interface). `Worker` postMessage in / postMessage out;
-  the engine's `redimred()` lane awaits a Promise that resolves
-  on the worker's response.
-- Same shape for `clustering-hdbscan.js` and
-  `citation-layout/fr.js`. All three are CPU-bound pure functions
-  with no DOM access — natural Worker fit.
-- The busy-overlay UI (a centred modal-like spinner shown
-  whenever any layerState is "running") is a useful parallel slice
-  but doesn't fix the unresponsive warning by itself — Web Workers
-  do. Skip the cosmetic-only fix.
+**Locked decisions (2026-05-20):**
+- **Per-algorithm workers, lane-orchestrated.** Each algorithm
+  (UMAP, HDBSCAN, FR, UMAP-on-graph, graph-diffusion) gets its
+  own worker entry; lanes (`redimred`, `recluster`,
+  `relayoutCitations`) compose worker calls.
+- **Explicit DAG description per lane (Option B).** Each lane
+  declares its compute graph as a small data structure; a generic
+  walker (`runDAG`) topologically sorts, fires independent nodes
+  into workers in parallel, threads results. Chosen over inline
+  `Promise.all` (Option A) to set up consistent introspection /
+  cancellation / progress-reporting across the whole engine and
+  to make future branchy lanes cheap. Overkill for today's
+  mostly-sequential lanes (`recluster`, `relayout`) is accepted —
+  they get the same shape as `redimred` for free, and growing
+  parallelism in them later costs nothing.
+- **Module workers + esm.sh URLs.** `new Worker(url, { type:
+  'module' })`; workers import `umap-js` directly from the same
+  esm.sh URL the page's importmap uses. No bundling step.
+- **Transferable TypedArrays.** All `Float32Array` / `Int32Array`
+  payloads use the `[buffer]` transfer list, not structured clone.
+  At n=5000×768 we'd otherwise copy ~15 MB per call.
+- **Spawn-per-call, no pool.** Worker spawn is ~10 ms; UMAP is
+  seconds. Revisit only if profiling shows spawn cost mattering.
+- **Cancellation: `AbortSignal` → `worker.terminate()`.** Each
+  `runDAG` call takes an optional signal; if aborted mid-run, all
+  in-flight workers are terminated. Engine wires a per-lane
+  `AbortController` so re-firing a lane mid-flight cancels the
+  prior run.
+- **Determinism preserved.** Workers don't change `mulberry32`'s
+  output (same seed → same sequence). Smoke-test anyway.
 
-Defer until working on a machine with enough headroom to test at
-n=5000+. Smaller subsets (n=1000) don't trigger the warning and
-the toy stays fast.
+**Architecture:**
 
-### 6.12 User-supplied data import (file browser) ☐
+```
+app/src/workers/
+  worker-runner.js     — runInWorker(moduleId, payload, signal?) → Promise<result>
+  dag.js               — runDAG(dag, signal?) → Promise<{nodeName: result, ...}>
+  dimred-worker.js     — module worker entry, dispatches on payload.algo
+  clustering-worker.js — module worker entry
+  layout-worker.js     — module worker entry
+```
+
+Each worker entry is a thin dispatcher: receives `{algo, input,
+params}`, imports the relevant algorithm module, calls it, posts
+the result back with the output `ArrayBuffer`s in the transfer list.
+The algorithm modules themselves (`dimred/umap.js`, etc.) stay
+unchanged — they're already pure functions with no DOM access.
+
+`runDAG(dag, signal?)` walks the DAG:
+1. Topologically sorts nodes by `inputs` dependencies.
+2. For each ready batch (all `inputs` resolved), fires
+   `runInWorker` calls in parallel via `Promise.all`.
+3. Threads outputs into dependent nodes as their inputs resolve.
+4. Returns `{nodeName: result, ...}` when all nodes complete.
+5. Honours `signal.aborted` between batches; on abort, terminates
+   all in-flight workers.
+
+**Sequencing within §6.11:**
+
+1. **Slice 1 — runner + DAG + UMAP.** Build
+   `worker-runner.js`, `dag.js`, `dimred-worker.js`. Port
+   `dimred/umap.js` (and `dimred/graph-diffusion.js` while we're
+   at it — they share the worker entry). Convert `redimred()` to a
+   DAG: noise → fusion → {compression, viz, viz2d} in parallel,
+   plus {compression-pre, viz-pre} in parallel when fusion is
+   active, plus Procrustes (main thread) at the end. Smoke at
+   n=5000: page stays responsive; sibling parallelism shaves total
+   redimred from ~25 s to ~10 s.
+2. **Slice 2 — HDBSCAN.** Add `clustering-worker.js`; port
+   `clustering-hdbscan.js`. Convert `recluster()` to DAG form
+   (mostly a sequential chain across cluster levels — DAG is
+   overkill but uniform with `redimred`).
+3. **Slice 3 — FR + UMAP-on-graph.** Add `layout-worker.js`;
+   port `citation-layout/{fr,umap-graph}.js`. Convert
+   `relayoutCitations()` to DAG form (single node — DAG is silly
+   here but cheap and uniform).
+4. **Slice 4 (optional) — progress reporting.** umap-js exposes
+   per-epoch progress; pipe it through the worker as
+   `postMessage({progress})`. `runDAG` aggregates and emits via
+   the §6.13 busy pill ("UMAP epoch 124/500" instead of just
+   "Running…"). Defer unless §6.13 needs it.
+
+**What this does NOT solve:**
+- HDBSCAN at n=5000 producing 2300 clusters with default
+  `min_cluster_size` — param-tuning issue, independent of workers.
+- §6.15 fusion path running UMAP twice — workers parallelise the
+  two halves (good), total work unchanged.
+
+Defer the full slice work until on a machine with enough headroom
+to test at n=5000+. Smaller subsets (n=1000) don't trigger the
+warning and the toy stays fast.
+
+### 6.12 User-supplied data import (file browser) ☐ — **deferred**
+
+**Deferred (2026-05-20).** The shape of incoming data will change
+when the new databasing system lands; building a file-picker
+against today's `paper_index.json` + `citation_edges.json` would
+just need rewriting against the DB-backed source. Revisit once
+the DB layer is set. Spec below preserved for that revisit.
 
 Two new entry points so the user doesn't have to drop files under
 `literture-network/artifacts/` (or re-fetch them) every time they
@@ -1080,47 +1161,35 @@ which structural property the user finds it missing
 fidelity ⇒ spectral; preserving FR's cladogram semantics
 exactly ⇒ Barnes–Hut).
 
-**Observed at BFS-5000 (n=5000, |E|=12268, density ~0.001):**
-- FR collapses to a **uniform spherical shell** — every node is
+**Observed at BFS-5000 (n=5000, |E|=12268, density ~0.001) — pre-fix baseline:**
+- FR collapsed to a **uniform spherical shell** — every node
   pushed against `wallR = R · outerWallFraction` by repulsion
-  because attractive forces from ~5 edges per node aren't enough
+  because attractive forces from ~5 edges per node weren't enough
   to balance the all-pairs `O(n²)` repulsion at this density.
   Doc `citation-layout.md:136-140` already calls this out as the
   expected failure mode for sparse graphs (it cites density 0.05
   as the trigger; we're 50× sparser).
-- MDS produces a structured **electron-orbital / concentric-shell
+- MDS produced a structured **electron-orbital / concentric-shell
   pattern** — the graph-distance matrix at this size and sparsity
-  is dominated by a few top eigendirections, so SMACOF converges
+  is dominated by a few top eigendirections, so SMACOF converged
   to nested-shell embeddings. Plus n=5000 is near the m²-BFS
   tractable ceiling for in-browser MDS (25 M distance cells), so
-  convergence quality is poor.
+  convergence quality was poor.
+- Compounded by `produceReal()` writing `t: 0` for every node
+  (`paper_index.json` carried no publication years), so FR's
+  time-axis anchor degenerated to "uniform inward pull on all
+  nodes" — rotationally symmetric, sphere as only stable
+  equilibrium.
 
-**Compounding cause specific to real data**: `produceReal()`
-(`app/src/datasource/real.js:59`) writes `t: 0` for every node
-because `paper_index.json` carries no publication years. FR's
-time-axis anchor (`fr.js:150`) computes
-`ka = max(0.2, 1−t) · tBias` — with t=0 everywhere, every node
-feels an identical radial spring. The intended cladogram structure
-(older nodes central, younger nodes peripheral) degenerates to
-"uniform inward pull on all nodes," which is rotationally symmetric.
-**The sphere is the only stable equilibrium under these symmetric
-forces.**
-
-**Short-term mitigations (no new algorithms; ~minutes of work):**
-- FR `tBias = 0` for real data → drops the symmetric anchor.
-  Won't fix the hairball but at least the spherical shell is no
-  longer geometrically pinned. Test this as a workaround before
-  picking up the bigger fixes below.
-- Either:
-  - Carve a year-bearing index in `make_dev_subset_bfs.py`
-    (years exist in citgraphv2's source files; just not yet
-    propagated to `paper_index.json`). Then real nodes get real
-    `t` values and the cladogram anchor recovers some semantic
-    structure.
-  - Or detect "all-t-equal" in the engine and skip the time
-    anchor entirely for that case (single-line guard in `fr.js`
-    or in the engine's params plumbing — refuses to apply the
-    anchor when it would only produce uniform forces).
+**Short-term mitigations — resolved.** The t=0-everywhere
+degeneracy is fixed: both carvers now emit `paper_years.json` and
+`real.js` normalises to `t ∈ [0, 1]` per subset (see "Shipped"
+above). FR's cladogram anchor recovers real semantic structure on
+BFS-5000. The sparsity-driven sphere itself isn't fixed by
+year propagation alone — UMAP-on-graph (also shipped) is the
+recommended algorithm at this density; the medium-term picks
+below remain the path forward for FR-formulation-specific or
+graph-distance-preservation work.
 
 **Medium-term: new layout algorithms for scale.** The scaling
 doc (`doc/scaling.md` §2.4.2) already enumerates the alternatives
@@ -1167,7 +1236,7 @@ the layout modal without re-implementing the sweep engine.
 - Adjacency: symmetric (A ∨ Aᵀ). Asymmetric is a one-line future toggle.
 - Save schema: no bump. Old archives load with `fusion = identity` defaulted in.
 - Algorithm: APPNP-style anchored diffusion `X' = (1−α)X + α(D⁻¹A)X'`, α as "mixing strength" (right = more fusion). Note the inverse-convention from the published APPNP paper (theirs α = teleport probability).
-- Layout-cache optimisation deferred (every fusion-param tweak still re-runs UMAP-on-graph wastefully). Workaround: tune via the Optimise tab rather than the modal.
+- ~~Layout-cache optimisation deferred (every fusion-param tweak still re-runs UMAP-on-graph wastefully).~~ Subsumed by §6.16 — the cascade no longer auto-runs citation layout on fusion-param changes.
 
 **Files touched:**
 - `app/src/dimred/graph-diffusion.js` — new algorithm.

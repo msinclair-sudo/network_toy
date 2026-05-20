@@ -18,7 +18,6 @@ import { getAlgorithm as getDimredAlgorithm,
 import { validateDimredResult }                                  from "../dimred/contract.js";
 import { getAlgorithm as getClusteringAlgorithm,
          listAlgorithms as listClusteringAlgorithms }            from "../clustering-registry.js";
-import { validateClusterResult }                                 from "../contracts/cluster.js";
 import { inferNeighbourhoods, defaultNeighbourhoodParams }       from "../neighbourhoods.js";
 import { buildCitationTaste, defaultTasteParams }                from "../citation-taste.js";
 import { generateCitations, defaultCitationParams }              from "../citations.js";
@@ -28,6 +27,15 @@ import { getAlgorithm as getCitationLayoutAlgorithm }            from "../citati
 import { alignByComponent, alignGlobal }                         from "../blend/align.js";
 import { computeBridgeAnalysis }                                 from "./bridge-analysis.js";
 import { update, getState, setLayerState }                       from "./state.js";
+import { runDAG }                                                from "../workers/dag.js";
+import { slimNodesForClustering }                                from "../clustering-cascade.js";
+
+// Worker URLs resolved relative to this module so the runtime path
+// matches the project's served file layout regardless of which page
+// hosts engine.js. import.meta.url is the engine module's own URL.
+const DIMRED_WORKER_URL     = new URL("../workers/dimred-worker.js",     import.meta.url);
+const CLUSTERING_WORKER_URL = new URL("../workers/clustering-worker.js", import.meta.url);
+const LAYOUT_WORKER_URL     = new URL("../workers/layout-worker.js",     import.meta.url);
 
 // Initialise layerParams from registry defaults on first call.
 function ensureLayerParams() {
@@ -238,7 +246,7 @@ export async function reingest() {
     engineRevision:         s.engineRevision + 1,
   });
   setLayerState("data", "fresh");
-  redimred();
+  await redimred();
 }
 
 // Backward-compat alias — old call sites + the legacy shell still
@@ -269,7 +277,7 @@ export const regenerate = reingest;
 //     default) on 768-d input would yield 768-d, which can't render —
 //     so we leave _basePos null. User has to pick a 3-d viz reduction
 //     (e.g. UMAP-3) to populate the viewer.
-export function redimred() {
+export async function redimred() {
   const s = getState();
   if (!s.genResult) return;
   const cfg = s.layerParams.dimred;
@@ -286,135 +294,169 @@ export function redimred() {
     return;
   }
 
-  // Stage 1: noise reduction.
-  const noiseAlgo = getDimredAlgorithm(cfg.noise.method);
-  const r1 = noiseAlgo.compute(input0, cfg.noise.params || {});
-  validateDimredResult(r1, n);
-  const noiseOut = { n: r1.n, d: r1.d, data: r1.data };
+  // Snapshot what we need from `s` up front. After the await we'll
+  // re-read state for the freshest version of any slot that other
+  // lanes might have touched, but the per-lane inputs (genResult
+  // identity, this lane's cfg, the seed _basePos) are fixed for this
+  // run by the inputs we feed the DAG below.
+  const initialBasePos = s._basePos;
+  const initialBasePos2d = s._basePos2d;
 
-  // Stage 1.5: citation-aware fusion. Lateral stage — same
-  // dimensionality in as out. Reads raw citation edges out of
-  // state.rawCitationEdges (populated by produceReal at ingest
-  // time). Adjacency is injected at compute() time as a flat
-  // [src, dst, …] number[]; the algorithm itself stays pure
-  // (no global-state reads). When fusion=identity OR there are
-  // no edges (toy mode), this is a no-op pass-through.
-  const fusionCfg  = cfg.fusion || { method: "identity", params: {} };
-  const fusionAlgo = getDimredAlgorithm(fusionCfg.method);
-  const fusionParams = {
-    ...(fusionCfg.params || {}),
-    adjacency: s.rawCitationEdges || [],
+  const fusionCfg     = cfg.fusion || { method: "identity", params: {} };
+  const fusionIsActive = fusionCfg.method !== "identity";
+
+  // ── Compute graph for this lane. ─────────────────────────────────
+  //
+  //   input0 ──▶ noise ──▶ fusion ─┬──▶ compression  (clustering input)
+  //                                ├──▶ viz          (3D viewer basePos)
+  //                                └──▶ viz2d        (2D viewer basePos)
+  //
+  //   when fusion is active, also:
+  //                       noise ──┬──▶ compPre       (pre-fusion clustering input)
+  //                               └──▶ vizPre        (pre-fusion 3D basePos)
+  //
+  // Each node fires in its own Worker; siblings (compression / viz /
+  // viz2d, plus optional compPre / vizPre) run in parallel via
+  // runDAG's batching. Procrustes alignment stays on the main thread
+  // (cheap, depends on two viz results being done).
+  //
+  // Identity stages still go through workers — the dispatch overhead
+  // is negligible (<10 ms spawn) compared with even the fastest real
+  // algorithm, and uniform routing keeps the lane's control flow
+  // simple. If profiling later shows identity hot, short-circuit then.
+
+  const dag = {
+    noise: {
+      workerUrl: DIMRED_WORKER_URL,
+      deps: [],
+      buildPayload: () => ({
+        algo:   cfg.noise.method,
+        input:  input0,
+        params: cfg.noise.params || {},
+      }),
+    },
+    fusion: {
+      workerUrl: DIMRED_WORKER_URL,
+      deps: ["noise"],
+      buildPayload: (r) => ({
+        algo:   fusionCfg.method,
+        input:  { n: r.noise.n, d: r.noise.d, data: r.noise.data },
+        // Adjacency is injected at compute() time; the algorithm
+        // itself stays pure (no global-state reads inside the worker).
+        params: { ...(fusionCfg.params || {}), adjacency: s.rawCitationEdges || [] },
+      }),
+    },
+    compression: {
+      workerUrl: DIMRED_WORKER_URL,
+      deps: ["fusion"],
+      buildPayload: (r) => ({
+        algo:   cfg.compression.method,
+        input:  { n: r.fusion.n, d: r.fusion.d, data: r.fusion.data },
+        params: cfg.compression.params || {},
+      }),
+    },
+    viz: {
+      workerUrl: DIMRED_WORKER_URL,
+      deps: ["fusion"],
+      buildPayload: (r) => ({
+        algo:   cfg.viz.method,
+        input:  { n: r.fusion.n, d: r.fusion.d, data: r.fusion.data },
+        params: cfg.viz.params || {},
+      }),
+    },
+    viz2d: {
+      workerUrl: DIMRED_WORKER_URL,
+      deps: ["fusion"],
+      buildPayload: (r) => ({
+        algo:   cfg.viz2d.method,
+        input:  { n: r.fusion.n, d: r.fusion.d, data: r.fusion.data },
+        params: cfg.viz2d.params || {},
+      }),
+    },
   };
-  const rFusion = fusionAlgo.compute(noiseOut, fusionParams);
-  validateDimredResult(rFusion, n);
-  // Downstream siblings (compression / viz / viz2d) read from fusion
-  // output, not noise output — so any non-identity fusion algorithm
-  // propagates into clustering, basePos, and the 2D viewer alike.
-  const fusionOut = { n: rFusion.n, d: rFusion.d, data: rFusion.data };
 
-  // Stage 2a: dimension compression (clustering input).
-  const compAlgo = getDimredAlgorithm(cfg.compression.method);
-  const r2 = compAlgo.compute(fusionOut, cfg.compression.params || {});
-  validateDimredResult(r2, n);
-
-  // Stage 2b: visualisation reduction (viewer / blend input).
-  // Skipped if the data source already supplied a 3-d basePos and the
-  // user hasn't opted into a real viz algorithm — in that case the
-  // viz default is identity, and identity-on-basePos returns the
-  // same buffer the data source gave us. Either way: viz runs, and if
-  // its output is 3-d we adopt it as _basePos; otherwise we leave
-  // _basePos as whatever reingest already packed (or null).
-  const vizAlgo = getDimredAlgorithm(cfg.viz.method);
-  const r3 = vizAlgo.compute(fusionOut, cfg.viz.params || {});
-  validateDimredResult(r3, n);
-
-  let nextBasePos = s._basePos;     // fall through unchanged unless viz produces 3-d
-  if (r3.d === 3 && r3.method !== "identity") {
-    // Normalise UMAP-3 (or any other viz reduction) output to the
-    // viewer's canonical scale. UMAP outputs in ~[-3, 3]; the toy
-    // generator's basePos lives in ~[-60, 60]. Without scaling, real
-    // data shows as a tiny blob at the centre.
-    nextBasePos = normaliseToViewerScale(r3.data);
-  } else if (s._basePos == null && r3.d === 3) {
-    // Edge case: data source had no basePos AND viz happened to be
-    // identity-on-3-d-input — adopt it (no normalisation, since
-    // identity preserves the data source's intended scale).
-    nextBasePos = r3.data;
+  if (fusionIsActive) {
+    // Pre-fusion sibling pair — same compression + viz algorithms as
+    // the post-fusion side, but fed the noise output directly so the
+    // fusion-comparison slider has a "before fusion" endpoint.
+    dag.compPre = {
+      workerUrl: DIMRED_WORKER_URL,
+      deps: ["noise"],
+      buildPayload: (r) => ({
+        algo:   cfg.compression.method,
+        input:  { n: r.noise.n, d: r.noise.d, data: r.noise.data },
+        params: cfg.compression.params || {},
+      }),
+    };
+    dag.vizPre = {
+      workerUrl: DIMRED_WORKER_URL,
+      deps: ["noise"],
+      buildPayload: (r) => ({
+        algo:   cfg.viz.method,
+        input:  { n: r.noise.n, d: r.noise.d, data: r.noise.data },
+        params: cfg.viz.params || {},
+      }),
+    };
   }
 
-  // Stage 2c: 2-d visualisation reduction (2D viewer input).
-  // Mirrors the viz handling above but only adopts when output is 2-d.
-  // _basePos2d stays null until the user picks a 2-d-producing algo
-  // (UMAP-2, PCA-2) — the 2D viewer panel surfaces an empty-state
-  // hint in that case.
-  const viz2dAlgo = getDimredAlgorithm(cfg.viz2d.method);
-  const r4 = viz2dAlgo.compute(fusionOut, cfg.viz2d.params || {});
-  validateDimredResult(r4, n);
+  // Fire the lane. Any worker rejecting will reject this entire await
+  // with the underlying error; callers (modal apply / reingest) catch
+  // and report.
+  const r = await runDAG(dag);
 
-  let nextBasePos2d = s._basePos2d;
-  if (r4.d === 2 && r4.method !== "identity") {
-    nextBasePos2d = normaliseToViewerScale2d(r4.data);
-  } else if (r4.d !== 2) {
-    // Output isn't 2-d (identity-on-3-d, identity-on-768-d, etc.).
-    // Leave _basePos2d as-is — keeps a previously-good value alive
-    // if the user is just re-running clustering, or null if there
-    // wasn't one. Either way: 2D viewer's render gate is honest.
-    if (cfg.viz2d.method === "identity" && r4.d !== 2) {
+  // Validate everything that came back. Contract violations surface
+  // here rather than silently corrupting downstream state.
+  validateDimredResult(r.noise,       n);
+  validateDimredResult(r.fusion,      n);
+  validateDimredResult(r.compression, n);
+  validateDimredResult(r.viz,         n);
+  validateDimredResult(r.viz2d,       n);
+  if (fusionIsActive) {
+    validateDimredResult(r.compPre, n);
+    validateDimredResult(r.vizPre,  n);
+  }
+
+  // ── Post-fusion viz adoption. Same branching as before — only
+  // the source (`r.viz`) changed; the rules for when to adopt and
+  // when to fall through to the seed basePos are unchanged.
+  let nextBasePos = initialBasePos;     // fall through unless viz produces 3-d
+  if (r.viz.d === 3 && r.viz.method !== "identity") {
+    nextBasePos = normaliseToViewerScale(r.viz.data);
+  } else if (initialBasePos == null && r.viz.d === 3) {
+    nextBasePos = r.viz.data;
+  }
+
+  // ── Post-fusion viz2d adoption. Same rules as before.
+  let nextBasePos2d = initialBasePos2d;
+  if (r.viz2d.d === 2 && r.viz2d.method !== "identity") {
+    nextBasePos2d = normaliseToViewerScale2d(r.viz2d.data);
+  } else if (r.viz2d.d !== 2) {
+    if (cfg.viz2d.method === "identity" && r.viz2d.d !== 2) {
       nextBasePos2d = null;
     }
   }
 
-  // Keep nodes[i].basePos in sync with the canonical _basePos buffer.
-  // Several existing consumers (clustering centre/spread output,
-  // neighbourhoods, base-edges) read the per-node form. Real data
-  // arrives without per-node basePos; once viz produces it we
-  // backfill so those consumers keep working without refactoring.
   if (nextBasePos) {
     syncNodeBasePos(s.genResult.nodes, nextBasePos);
   }
 
-  // ── Pre-fusion A/B path. ──────────────────────────────────────────
-  // When fusion is non-identity and produced a different output, run
-  // compression + viz on the *pre-fusion* (noise-stage) data too so
-  // the fusion-comparison slider has a "before fusion" endpoint, and
-  // the cluster lane can produce parallel pre-fusion labels for the
-  // "Color by pre-fusion clusters" mode.
-  //
-  // Skipped when fusion is identity (rFusion.data === noiseOut.data
-  // would still pass the check below trivially via the same algorithm;
-  // identity is the explicit signal).
+  // ── Pre-fusion adoption + Procrustes. Mirrors the post-fusion
+  // viz handling above, then aligns the result to nextBasePos so the
+  // fusion-comparison slider walks the SHORT geometric path between
+  // pre- and post-fusion layouts (UMAP picks an arbitrary rotation
+  // per fit; without alignment the lerp spins points through nonsense
+  // intermediate frames).
   let preFusionDimred  = null;
   let preFusionBasePos = null;
-  const fusionIsActive = fusionCfg.method !== "identity";
   if (fusionIsActive) {
-    // Compression on noise (pre-fusion). Different from r2 because r2's
-    // input was fusionOut.
-    const r2Pre = compAlgo.compute(noiseOut, cfg.compression.params || {});
-    validateDimredResult(r2Pre, n);
-    preFusionDimred = r2Pre;
+    preFusionDimred = r.compPre;
 
-    // viz on noise (pre-fusion). Mirror the post-fusion viz branching
-    // so 3D-output adoption + scale-normalisation behaviour matches.
-    const r3Pre = vizAlgo.compute(noiseOut, cfg.viz.params || {});
-    validateDimredResult(r3Pre, n);
-    if (r3Pre.d === 3 && r3Pre.method !== "identity") {
-      preFusionBasePos = normaliseToViewerScale(r3Pre.data);
-    } else if (s._basePos == null && r3Pre.d === 3) {
-      preFusionBasePos = r3Pre.data;
-    } else {
-      preFusionBasePos = null;
+    if (r.vizPre.d === 3 && r.vizPre.method !== "identity") {
+      preFusionBasePos = normaliseToViewerScale(r.vizPre.data);
+    } else if (initialBasePos == null && r.vizPre.d === 3) {
+      preFusionBasePos = r.vizPre.data;
     }
 
-    // Procrustes-align pre-fusion → post-fusion so the fusion-slider's
-    // linear interpolation walks the SHORT route between layouts. UMAP
-    // picks an arbitrary rotation each fit, so two runs of UMAP-3 on
-    // near-identical inputs produce near-identical topologies under a
-    // different orientation; without alignment the slider points spin
-    // through nonsense intermediate paths. Whole-graph Procrustes
-    // (rotation + reflection + match-RMS scale + translation) leaves
-    // the topology untouched while bringing the orientations into
-    // register. Skipped when nextBasePos is null (no anchor to align
-    // against) — preFusionBasePos stays in its own raw frame.
     if (preFusionBasePos && nextBasePos && preFusionBasePos.length === nextBasePos.length) {
       const alignRes = alignGlobal({
         target: nextBasePos,
@@ -425,16 +467,21 @@ export function redimred() {
     }
   }
 
+  // Re-read state for the freshest engineRevision counter. Other
+  // lanes may have written between our snapshot and now (unlikely
+  // in the current single-lane-at-a-time call pattern, but cheap
+  // insurance).
+  const sNow = getState();
   update({
-    dimredResult:          r2,
+    dimredResult:          r.compression,
     dimredResultPreFusion: preFusionDimred,
     _basePos:              nextBasePos,
     _basePosPreFusion:     preFusionBasePos,
     _basePos2d:            nextBasePos2d,
-    engineRevision:        s.engineRevision + 1,
+    engineRevision:        sNow.engineRevision + 1,
   });
   setLayerState("dimred", "fresh");
-  recluster();
+  await recluster();
 }
 
 // 2-d analogue of normaliseToViewerScale. Same centre + isotropic
@@ -531,7 +578,7 @@ function pickStage0Input(s) {
 // no parent). Backward-compat: state.clusterResult is set to the
 // finest (last) level's ClusterResult so panels not yet level-aware
 // keep working.
-export function recluster() {
+export async function recluster() {
   const s = getState();
   if (!s.genResult) return;
   const algo = activeClusterAlgorithm();
@@ -541,23 +588,68 @@ export function recluster() {
 
   if (!cfg || !cfg.levels || cfg.levels.length === 0) return;
 
-  const levels = runClusterLevels(algo, s.genResult, cfg.levels, s.dimredResult, allowNoise, n);
+  // The clustering algorithms only read .id + .basePos off each node,
+  // so we ship a slim view to the worker. Saves ~10× on postMessage
+  // copy at real-data scale (genResult.nodes carries embedding,
+  // origin, t, cite lists, …).
+  const nodesSlim = slimNodesForClustering(s.genResult.nodes);
 
-  // Pre-fusion parallel pass — runs only when fusion produced a
-  // separate pre-fusion dimredResult. Same algorithm, same level
-  // config, different input → A/B comparison labels for the colour
-  // modes. Cheap-ish (clustering is much faster than dim-red).
-  let preFusionLevels = null;
-  let preFusionFinest = null;
+  // ── Compute graph for this lane. ─────────────────────────────────
+  //
+  //   dimredResult           ──▶ post  (always; produces clusterLevels)
+  //   dimredResultPreFusion  ──▶ pre   (only when fusion ran a second
+  //                                     pass; produces the pre-fusion
+  //                                     levels used by the "Cluster —
+  //                                     pre-fusion" colour mode)
+  //
+  // The two passes are independent (different inputs, same algo /
+  // levels) so they run in parallel via runDAG's batching. Each pass
+  // is itself sequential internally — its levels chain dependencies
+  // (within-parent reads the previous level's clusterResult) — so we
+  // send one worker job per pass, not one per level. The worker
+  // imports clustering-cascade.js and runs the full chain.
+  const dag = {
+    post: {
+      workerUrl: CLUSTERING_WORKER_URL,
+      deps: [],
+      buildPayload: () => ({
+        algoId:       algo.id,
+        nodesSlim,
+        dimredResult: s.dimredResult,
+        levelCfgs:    cfg.levels,
+        allowNoise,
+        n,
+      }),
+    },
+  };
   if (s.dimredResultPreFusion) {
-    preFusionLevels = runClusterLevels(algo, s.genResult, cfg.levels, s.dimredResultPreFusion, allowNoise, n);
-    preFusionFinest = preFusionLevels[preFusionLevels.length - 1].clusterResult;
+    dag.pre = {
+      workerUrl: CLUSTERING_WORKER_URL,
+      deps: [],
+      buildPayload: () => ({
+        algoId:       algo.id,
+        nodesSlim,
+        dimredResult: s.dimredResultPreFusion,
+        levelCfgs:    cfg.levels,
+        allowNoise,
+        n,
+      }),
+    };
   }
+
+  const r = await runDAG(dag);
+
+  const levels          = r.post;
+  const preFusionLevels = r.pre || null;
+  const preFusionFinest = preFusionLevels
+    ? preFusionLevels[preFusionLevels.length - 1].clusterResult
+    : null;
 
   const finest = levels[levels.length - 1].clusterResult;
   // Derived: bridge analysis pair is taken from state.bridgeConfig
   // (or the deepest valid pair if config is empty/stale). Null when
-  // only one level exists.
+  // only one level exists. Cheap (single pass over n) — stays on
+  // the main thread.
   const cfgBridge = clampedBridgeConfig(s.bridgeConfig, levels);
   const bridgeAnalysis = computeBridgeAnalysis(levels, cfgBridge);
 
@@ -581,30 +673,6 @@ export function recluster() {
   });
   setLayerState("clustering", "fresh");
   reneighbour();
-}
-
-// Shared multi-level cluster pass — factored out so recluster() can
-// invoke it twice (once on the current dimredResult, once on the
-// pre-fusion result for A/B comparison). Pure: doesn't read or write
-// state, just folds inputs into a levels[] array shaped like the
-// existing clusterLevels output.
-function runClusterLevels(algo, genResult, levelCfgs, dimredResult, allowNoise, n) {
-  const levels = [];
-  let parent = null;
-  for (let i = 0; i < levelCfgs.length; i++) {
-    const lvl = levelCfgs[i];
-    const isGlobal = (i === 0) || lvl.scope === "global";
-    let cr;
-    if (isGlobal) {
-      cr = algo.infer(genResult, lvl.params, dimredResult);
-    } else {
-      cr = clusterWithinParents(algo, genResult, parent, lvl.params, dimredResult);
-    }
-    validateClusterResult(cr, n, { allowNoise });
-    levels.push({ uid: lvl.uid, scope: isGlobal ? "global" : "within-parent", clusterResult: cr });
-    parent = cr;
-  }
-  return levels;
 }
 
 // Re-run only the bridge analysis lane — used when the user changes
@@ -634,98 +702,9 @@ function clampedBridgeConfig(cfg, levels) {
   return { fineLevel: fine, coarseLevel: coarse };
 }
 
-// Run the clustering algorithm separately on each parent cluster's
-// member set, then stitch into a single ClusterResult with global
-// IDs. Output cluster IDs are renumbered per parent so they're
-// contiguous and non-overlapping. Singletons or empty parents become
-// trivial single-cluster outputs.
-function clusterWithinParents(algo, genResult, parent, params, dimredResult) {
-  const n = genResult.nodes.length;
-  const numParents = parent.clusters.length;
-  const nodeCluster = new Int32Array(n);
-  const clusters = [];
-  const structureEdges = [];
-  let nextId = 0;
-
-  // Group nodes by parent cluster id.
-  const byParent = Array.from({ length: numParents }, () => []);
-  for (let i = 0; i < n; i++) byParent[parent.nodeCluster[i]].push(i);
-
-  for (let p = 0; p < numParents; p++) {
-    const ids = byParent[p];
-    if (ids.length === 0) continue;
-
-    if (ids.length === 1) {
-      const orig = ids[0];
-      const node = genResult.nodes[orig];
-      nodeCluster[orig] = nextId;
-      clusters.push({
-        id:        nextId,
-        centre:    [node.basePos[0], node.basePos[1], node.basePos[2]],
-        spread:    0,
-        count:     1,
-        colour:    parent.clusters[p].colour,
-        stability: NaN,
-      });
-      nextId++;
-      continue;
-    }
-
-    // Build a sub-genResult that the algorithm can consume directly.
-    // Local node ids are 0..ids.length-1; we map back to original ids
-    // when writing into the global outputs.
-    const subNodes = ids.map((origId, localIdx) => {
-      const orig = genResult.nodes[origId];
-      return { ...orig, id: localIdx };
-    });
-    // Sub-dimredResult: copy out the rows for this parent's members so
-    // distance computations stay in the same dim-reduced space.
-    const subDimred = sliceDimred(dimredResult, ids);
-    const subResult = algo.infer({ ...genResult, nodes: subNodes }, params, subDimred);
-
-    for (let localIdx = 0; localIdx < ids.length; localIdx++) {
-      const subCid = subResult.nodeCluster[localIdx];
-      // subCid may be -1 for noise on noise-aware algos; map preserved.
-      nodeCluster[ids[localIdx]] = subCid >= 0 ? nextId + subCid : -1;
-    }
-    for (const sc of subResult.clusters) {
-      if (sc.id < 0) continue;   // noise pseudo-cluster (rare — re-emerge below)
-      clusters.push({ ...sc, id: nextId + sc.id });
-    }
-    for (const e of subResult.structureEdges) {
-      structureEdges.push([ids[e[0]], ids[e[1]]]);
-    }
-    nextId += subResult.clusters.length;
-  }
-
-  return {
-    method: parent.method,
-    params,
-    clusters,
-    nodeCluster,
-    structureEdges,
-  };
-}
-
-// Build a sub-DimredResult that holds only the rows in `ids`, in the
-// same order. Used by clusterWithinParents so a within-parent run sees
-// a flat positions buffer matching its sub-genResult's local node ids.
-function sliceDimred(dimredResult, ids) {
-  const d   = dimredResult.d;
-  const src = dimredResult.data;
-  const out = new Float32Array(ids.length * d);
-  for (let li = 0; li < ids.length; li++) {
-    const oi = ids[li];
-    for (let k = 0; k < d; k++) out[li * d + k] = src[oi * d + k];
-  }
-  return {
-    method: dimredResult.method,
-    params: dimredResult.params,
-    n:      ids.length,
-    d,
-    data:   out,
-  };
-}
+// (Multi-level cascade + within-parent + sliceDimred moved to
+// app/src/clustering-cascade.js so the clustering worker can run the
+// full pass without re-implementing the same logic.)
 
 // Entry to the Layer 3 lane after clustering. Dispatches on the
 // active citation algorithm's declared requirements:
@@ -848,7 +827,7 @@ function markCitationLayoutStale() {
 }
 
 // Layers 4 + 5a.
-export function relayoutCitations() {
+export async function relayoutCitations() {
   const s = getState();
   if (!s.genResult || !s.citationResult) return;
   const n = s.genResult.nodes.length;
@@ -857,11 +836,33 @@ export function relayoutCitations() {
 
   const layoutAlgo = getCitationLayoutAlgorithm(s.layerParams.layout.method);
   const edges = s.citationResult.citations.map(c => [c.source, c.target]);
-  const citationLayout = layoutAlgo.compute({
-    n, edges, t,
-    seed:   s.layerParams.citations.samplingSeed,
-    params: s.layerParams.layout.params,
-  });
+
+  // ── Compute graph for this lane. ─────────────────────────────────
+  //
+  //   layout (one of FR / MDS / UMAP-on-graph)   ──▶ citationLayout
+  //
+  // Single-node DAG; no parallelism to exploit (alignment depends on
+  // basePos, which lives in state, and stays on the main thread).
+  // We route through runDAG anyway for uniformity with redimred /
+  // recluster — same shape across all three heavy lanes makes future
+  // additions (progress reporting, centralised cancellation) cheap.
+  const dag = {
+    layout: {
+      workerUrl: LAYOUT_WORKER_URL,
+      deps: [],
+      buildPayload: () => ({
+        algoId:  s.layerParams.layout.method,
+        payload: {
+          n, edges, t,
+          seed:   s.layerParams.citations.samplingSeed,
+          params: s.layerParams.layout.params,
+        },
+      }),
+    },
+  };
+
+  const r = await runDAG(dag);
+  const citationLayout = r.layout;
 
   // Alignment requires a basePos to align *to*. Real-data mode has
   // no basePos until the user picks a 3-d viz reduction; in that case

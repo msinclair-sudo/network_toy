@@ -181,12 +181,28 @@ export function openAlgorithmModal(descriptor) {
         label: "Apply",
         primary: true,
         onClick: () => {
-          try { descriptor.applyChange(chosenAlgoId, chosenParams); }
-          catch (e) { console.error("[algorithm-modal] applyChange failed:", e); }
-          // returning undefined → modal closes (default)
+          // applyChange is async (descriptors await their engine lane —
+          // workers don't return synchronously). Show Running… on the
+          // button, yield once so the repaint lands, then await and
+          // close manually. Mirrors the dimred-modal pattern.
+          startProgress(modal);
+          setTimeout(async () => {
+            try { await descriptor.applyChange(chosenAlgoId, chosenParams); }
+            catch (e) { console.error("[algorithm-modal] applyChange failed:", e); }
+            modal.close();
+          }, 30);
+          return false;          // suppress default close-on-click
         },
       },
     ],
   });
   return modal;
+}
+
+function startProgress(handle) {
+  const btn = handle.dialog.querySelector(".modal-action.primary");
+  if (!btn) return;
+  btn.disabled = true;
+  btn.textContent = "Running…";
+  btn.classList.add("running");
 }

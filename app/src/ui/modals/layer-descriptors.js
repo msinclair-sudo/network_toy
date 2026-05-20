@@ -99,7 +99,7 @@ function dimredDescriptor() {
         },
       };
     },
-    applyChange: ({ noise, fusion, compression, viz, viz2d }) => {
+    applyChange: async ({ noise, fusion, compression, viz, viz2d }) => {
       const s = getState();
       update({
         layerParams: {
@@ -107,7 +107,7 @@ function dimredDescriptor() {
           dimred: { noise, fusion, compression, viz, viz2d },
         },
       });
-      try { engine.redimred(); }
+      try { await engine.redimred(); }
       catch (e) { console.error("[dimred-descriptor] redimred failed:", e); }
     },
     openModal: () => openDimredModal(desc),
@@ -128,7 +128,7 @@ function clusteringDescriptor() {
         ],
       };
     },
-    applyChange: (algoId, levels) => {
+    applyChange: async (algoId, levels) => {
       const s = getState();
       update({
         layerParams: {
@@ -136,7 +136,7 @@ function clusteringDescriptor() {
           clustering: { method: algoId, levels },
         },
       });
-      try { engine.recluster(); }
+      try { await engine.recluster(); }
       catch (e) { console.error("[clustering-descriptor] recluster failed:", e); }
     },
     openModal: () => openClusteringModal(desc),
@@ -154,7 +154,7 @@ function layoutDescriptor() {
       const params = lp && lp.params ? lp.params : getLayoutAlgo(method).defaultParams();
       return { method, params };
     },
-    applyChange: (algoId, params) => {
+    applyChange: async (algoId, params) => {
       const s = getState();
       update({
         layerParams: {
@@ -162,7 +162,7 @@ function layoutDescriptor() {
           layout: { method: algoId, params },
         },
       });
-      try { engine.relayoutCitations(); }
+      try { await engine.relayoutCitations(); }
       catch (e) { console.error("[layout-descriptor] relayoutCitations failed:", e); }
     },
     openModal: () => openAlgorithmModal(desc),

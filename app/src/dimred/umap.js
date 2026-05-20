@@ -20,7 +20,16 @@
 // and aren't re-exported at the package entrypoint, so we provide our
 // own — they're 4 lines each and avoid coupling to umap-js's internal
 // file layout. Output convention matches umap-js (non-negative scalar).
-import { UMAP } from "umap-js";
+//
+// Import note: we use the full esm.sh URL here rather than the bare
+// "umap-js" specifier because this module is consumed BOTH from the
+// main page (where the importmap in app/index.html resolves the bare
+// specifier) and from Web Workers (where importmaps don't apply
+// consistently across browsers as of 2026). Pinning the full URL lets
+// the same algorithm module load identically in both contexts. Keep
+// the version in sync with the "umap-js" entry of app/index.html's
+// importmap.
+import { UMAP } from "https://esm.sh/umap-js@1.4.0";
 import { mulberry32 } from "../rng.js";
 
 function euclideanDistance(x, y) {
