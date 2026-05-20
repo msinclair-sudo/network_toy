@@ -71,14 +71,19 @@ function dimredDescriptor() {
     getActive: () => {
       const lp = getState().layerParams.dimred;
       const fallbackParams = (algoId) => getDimredAlgo(algoId).defaultParams();
-      const noiseM = lp && lp.noise       ? lp.noise.method       : "identity";
-      const compM  = lp && lp.compression ? lp.compression.method : "identity";
-      const vizM   = lp && lp.viz         ? lp.viz.method         : "identity";
-      const viz2dM = lp && lp.viz2d       ? lp.viz2d.method       : "identity";
+      const noiseM  = lp && lp.noise       ? lp.noise.method       : "identity";
+      const fusionM = lp && lp.fusion      ? lp.fusion.method      : "identity";
+      const compM   = lp && lp.compression ? lp.compression.method : "identity";
+      const vizM    = lp && lp.viz         ? lp.viz.method         : "identity";
+      const viz2dM  = lp && lp.viz2d       ? lp.viz2d.method       : "identity";
       return {
         noise:       {
           method: noiseM,
           params: (lp && lp.noise && lp.noise.params) || fallbackParams(noiseM),
+        },
+        fusion:      {
+          method: fusionM,
+          params: (lp && lp.fusion && lp.fusion.params) || fallbackParams(fusionM),
         },
         compression: {
           method: compM,
@@ -94,12 +99,12 @@ function dimredDescriptor() {
         },
       };
     },
-    applyChange: ({ noise, compression, viz, viz2d }) => {
+    applyChange: ({ noise, fusion, compression, viz, viz2d }) => {
       const s = getState();
       update({
         layerParams: {
           ...s.layerParams,
-          dimred: { noise, compression, viz, viz2d },
+          dimred: { noise, fusion, compression, viz, viz2d },
         },
       });
       try { engine.redimred(); }

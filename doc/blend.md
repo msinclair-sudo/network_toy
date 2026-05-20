@@ -1,20 +1,30 @@
-# Blend layer — transition between the two arrangements
+# Blend layer — transition between layouts
 
-Layer 5 of the v3 pipeline. Takes the two precomputed endpoint
-arrangements — `basePos` (Layer 1's Gaussian-mixture cloud) and
-`alignedCitationLayout` (Layer 4's citation-driven layout, after the
-alignment described in §1 of this document) — and blends them per
-frame to produce the live position of every node, controlled by the
-slider value `α ∈ [0, 1]`.
+Layer 5 of the v3 pipeline. Takes up to **three** precomputed
+positional layouts — `_basePos`, `_basePosPreFusion` (optional),
+and `alignedCitationLayout` (Layer 4 after alignment) — and
+composes them per frame through a **nested lerp** controlled by
+two independent sliders. See §2 for the formula; §1 for the
+alignment machinery that produces the inputs.
+
+The original two-endpoint design (basePos ↔ aligned citation
+layout, one slider) is preserved as the fusion=identity / toy
+mode special case. When fusion is non-identity (`doc/fusion.md`),
+the fusion-comparison slider adds a second axis: pre-fusion
+semantic ↔ post-fusion (citation-aware) basePos.
 
 Two sub-layers:
 
-- **5a. Alignment** (`app/src/blend/align.js`) — runs once when the
-  citation graph or layout params change. Brings the citation
-  layout into basePos's coordinate frame, per connected component.
+- **5a. Alignment** (`app/src/blend/align.js`) — runs once per
+  trigger. Two variants:
+  - `alignByComponent` brings the citation layout into
+    basePos's coordinate frame, per connected component. Used
+    for the citation ↔ basePos endpoint pair.
+  - `alignGlobal` is a whole-graph Procrustes variant used for
+    the pre-fusion → post-fusion basePos pair (no edges needed;
+    all nodes treated as one rigid body). See §1.8.
 - **5b. Blend** (`app/src/blend/blend.js`) — runs every animation
-  tick. Linear interpolation between basePos and the aligned
-  citation layout.
+  tick. Nested linear interpolation; both sliders compose.
 
 Modules:
 
@@ -218,18 +228,65 @@ on `state.alignedCitationLayout`.
 - **Coincident points within a component** (`sumA² ≈ 0`) make scale
   undefined. Defensive fallback: `s = 1`, behaves as rotation-only.
 
+### 1.8 Whole-graph alignment for pre-fusion → post-fusion
+
+`alignGlobal({ target, source, n })` returns
+`{ aligned, correlation }` using the same Horn-quaternion + match-
+RMS-scale + translation machinery as `alignByComponent`, but
+applied to a single all-nodes "component" with no edges argument.
+Designed for the fusion-comparison slider's pre-fusion → post-
+fusion alignment.
+
+**Why a separate function:** the pre-fusion vs post-fusion basePos
+pair are two UMAP-3 fits of nearly-identical embeddings. They
+agree topologically but disagree on orientation because UMAP picks
+an arbitrary rotation per fit. Per-connected-component logic
+makes no sense here — both layouts cover the same node set as a
+single rigid body. Calling `alignByComponent` with a fake
+fully-connected edge list would work but cost `O(n²)` for the
+edge set; the global variant is `O(n)`.
+
+**Where it's called from:** `app/src/ui/engine.js`'s `redimred()`
+lane. When fusion is non-identity, after computing both
+post-fusion `_basePos` and pre-fusion `_basePosPreFusion` via two
+parallel viz UMAP fits, the pre-fusion buffer is overwritten with
+`alignGlobal(target=postFusion, source=preFusion).aligned`. The
+fusion-comparison slider in `blend/blend.js` then walks the short
+geometric path between the two layouts instead of corkscrewing
+through arbitrary intermediate rotations.
+
+Same correlation interpretation as §1.5: a number in [0, 1]
+measuring how rigidly one basePos can be mapped onto the other.
+Typical values: ~0.7–0.95 (the two are very similar; PCA + UMAP
+on slightly-different inputs produces near-identical topologies).
+
+The function is exported alongside `alignByComponent`; both
+share the inner `alignSubset(ids, target, source, out)` helper.
+
 ---
 
-## 2. Per-frame blend
+## 2. Per-frame blend (nested lerp)
 
-`app/src/blend/blend.js`. Pure linear interpolation between the two
-precomputed endpoints, applied to every data node every frame:
+`app/src/blend/blend.js`. Pure linear interpolation, applied to
+every data node every frame, but now over **two stacked axes**:
 
 ```
-live_i  =  (1 − α) · basePos_i  +  α · alignedCitationPos_i
+effective_i  =  (1 − f) · preFusionBasePos_i  +  f · basePos_i      (inner)
+live_i       =  (1 − α) · effective_i        +  α · alignedCitationPos_i   (outer)
 ```
 
-with `α ∈ [0, 1]`. No state, no momentum, no constraint solver.
+with `α ∈ [0, 1]` (the existing blend slider, `state.blend`) and
+`f ∈ [0, 1]` (the fusion-comparison slider, `state.fusionBlend`).
+No state, no momentum, no constraint solver.
+
+When `preFusionBasePos` is null (toy mode, identity fusion, or a
+data source that didn't trigger pre-fusion compute), the inner
+lerp collapses to `basePos` and the outer lerp reduces to the
+original two-endpoint formula. When `alignedCitationPos` is null
+(citation layout not yet applied — see §3 on the opt-in cascade),
+the hook bails entirely and `node.x/y/z` stay at their last write
+— visually the `α` slider does nothing until the user applies a
+citation layout.
 
 ### 2.1 Why linear
 
@@ -271,36 +328,86 @@ lib's `x += vx; vx *= 0` integration is a no-op alongside our writes
 — any stray velocity from drag interactions or lib internals zeroes
 each tick. The blend hook owns motion entirely.
 
-The hook closes over three getter callbacks (`getBasePos`,
-`getAlignedCitationPos`, `getBlend`); the registration is stable
-across the program's lifetime, and downstream changes (slider drag,
-citation reroll, regeneration, layout-algorithm swap) take effect on
-the next frame by mutating what those getters return.
+The hook closes over **five** getter callbacks (`getBasePos`,
+`getBasePosPreFusion`, `getAlignedCitationPos`, `getBlend`,
+`getFusionBlend`); the registration is stable across the program's
+lifetime, and downstream changes (slider drag, citation reroll,
+regeneration, layout-algorithm swap, fusion-param change) take
+effect on the next frame by mutating what those getters return.
 
 Slider drag still calls `Graph.d3ReheatSimulation()`. The d3
 simulation tick freezes when "the network looks settled," which is
 instantly true under deterministic blending; without reheat-on-drag,
 slider drags after the first second go ignored. The reheat is the
-only reason d3's tick scheduling stays involved at all.
+only reason d3's tick scheduling stays involved at all. **Both
+sliders** (`state.blend` and `state.fusionBlend`) trigger reheat
+via `viewer-3d.js`'s update handler — comparing each subscribed
+update's value against the last observed.
+
+### 2.4 What the per-frame hook does NOT do
+
+- It does **not** re-run alignment. Alignment happens once per
+  cascade (Layer 5a triggers; §3 of this doc).
+- It does **not** observe `state.layerStates`. If
+  `alignedCitationPos` is null because the user hasn't applied a
+  layout, the hook silently bails — workflow chart status dots
+  (orange / stale) are the visual cue.
+- It does **not** care which Layer 4 algorithm produced the
+  citation layout (FR / MDS / UMAP-on-graph). All three feed the
+  same `state.alignedCitationLayout` slot through `relayoutCitations()`.
 
 ---
 
-## 3. Recompute lanes
+## 3. Recompute lanes (opt-in citation layout)
 
-| Trigger                                                 | What recomputes                                                          |
-| ------------------------------------------------------- | ------------------------------------------------------------------------ |
-| α slider drag                                           | per-frame lerp only — both endpoint buffers stay cached                  |
-| Citation graph changes (resample / Apply on cit modal) | Layer 4 layout → Layer 5a alignment → next blend tick reflects           |
-| Citation Layout modal Apply (different params or algo)  | Layer 4 layout → Layer 5a alignment → next blend tick reflects           |
-| Generation regenerates                                  | basePos buffer + everything downstream                                    |
+| Trigger                                              | What recomputes                                                                                          |
+| ---------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| α slider drag                                        | per-frame lerp only — both endpoint buffers stay cached                                                  |
+| Fusion slider drag                                   | per-frame lerp only — pre-fusion and post-fusion basePos stay cached                                     |
+| Citation graph changes (Layer 3 emits new edges)     | `markCitationLayoutStale()`: clears layout/alignment, marks layerStates stale. **No auto-relayout.**     |
+| Fusion params change                                 | Layer 1.5 re-runs (both pre- and post-fusion paths) → Layer 2 re-clusters both → Layer 3 → stale-mark   |
+| Citation Layout modal Apply (algo / param change)    | Layer 4 layout → Layer 5a alignment → next blend tick reflects. **Explicit user action only.**           |
+| Generation regenerates                               | basePos buffer + everything downstream                                                                   |
 
-`state._basePos` is repopulated by `precomputeBasePos()` on every
-regeneration. `state.citationLayout`,
-`state.alignedCitationLayout`, and `state.alignmentCorrelation` are
-repopulated by `relayoutCitations()` whenever the citation graph or
-layout params change.
+### Opt-in citation layout (§6.16 in the plan)
 
-The blend force hook reads these three buffers through getters every
+The pipeline cascade STOPS at Layer 3. After Layer 3 publishes a
+new `citationResult`, the engine calls
+`markCitationLayoutStale()`:
+
+```js
+update({
+  citationLayout:        null,
+  alignedCitationLayout: null,
+  alignmentCorrelation:  NaN,
+});
+setLayerState("layout",    "stale");
+setLayerState("alignment", "stale");
+setLayerState("blend",     "stale");
+```
+
+`relayoutCitations()` only runs when the user explicitly applies
+in the Citation Layout modal (`modals/layer-descriptors.js` calls
+`engine.relayoutCitations()` from the Apply handler). Workflow
+chart shows orange dots on layout / alignment / blend until then;
+the `α` slider visually does nothing because the blend hook bails
+on null `alignedCitationPos`.
+
+This avoids re-running expensive layout passes (UMAP-on-graph at
+n=5000 is 5–15 s) every time the user tweaks a fusion param. It
+subsumes the layout-cache optimisation that was originally
+deferred under §6.15.
+
+### Where the buffers live
+
+`state._basePos` is repopulated by Layer 1.5's viz sub-stage on
+every dim-reduction run. `state._basePosPreFusion` is repopulated
+by the parallel pre-fusion viz path when fusion is non-identity
+(null otherwise). `state.citationLayout`,
+`state.alignedCitationLayout`, and `state.alignmentCorrelation`
+are populated only by an explicit `relayoutCitations()` call.
+
+The blend force hook reads these buffers through getters every
 tick; mutating the buffers takes effect on the next frame without
 re-registering the hook. **This is the part that's easy to break.**
 Re-registering the hook or rebinding nodes when state changes
@@ -366,3 +473,14 @@ update this doc first, then code.
   alongside `aligned`. Surfaced as `state.alignmentCorrelation`.
   Used as the ranking metric for the cross-algorithm layout sweep
   added in the same stage.
+- **§6.15 (2026-05-20)**: per-frame blend extended to a nested
+  lerp over two sliders (`blend` × `fusionBlend`). Hook closes
+  over five getter callbacks instead of three; reads
+  `_basePosPreFusion` and `getFusionBlend`. Added §1.8
+  `alignGlobal` for whole-graph Procrustes used on the pre-fusion
+  → post-fusion endpoint pair. See `doc/fusion.md` for the full
+  fusion layer spec.
+- **§6.16 (2026-05-20)**: citation layout opt-in. Cascade stops at
+  Layer 3 via `markCitationLayoutStale()`; `relayoutCitations()`
+  only runs from the Citation Layout modal's Apply. Blend hook
+  silently bails when `alignedCitationPos` is null. See §3.

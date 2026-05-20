@@ -25,25 +25,31 @@ const SECTIONS = [
     key: "noise",
     title: "Noise reduction",
     family: "noise",
-    sub: "Denoiser stage; output feeds compression, 3D viz, and 2D viz.",
+    sub: "Denoiser stage; output feeds fusion, then compression, 3D viz, and 2D viz.",
+  },
+  {
+    key: "fusion",
+    title: "Citation-aware fusion",
+    family: "fusion",
+    sub: "Optional. Blends each paper's embedding with the mean of its citation neighbours' embeddings, so clustering and viewing happen on a citation-aware representation. Requires citation edges loaded at ingest time — toy data sources don't supply edges here, so this stage falls through as identity. Pick Graph diffusion to opt in.",
   },
   {
     key: "compression",
     title: "Dimension compression (clustering input)",
     family: "compression",
-    sub: "Reduces noise output to the dim Layer 2 clusters in.",
+    sub: "Reduces fusion output to the dim Layer 2 clusters in.",
   },
   {
     key: "viz",
     title: "3D visualisation reduction (3D viewer / blend)",
     family: "viz",
-    sub: "Reduces noise output to 3-d for the 3D viewer + blend's α=0 endpoint. Pick UMAP-3 for real data; toy data already provides basePos.",
+    sub: "Reduces fusion output to 3-d for the 3D viewer + blend's α=0 endpoint. Pick UMAP-3 for real data; toy data already provides basePos.",
   },
   {
     key: "viz2d",
     title: "2D visualisation reduction (2D viewer)",
     family: "viz2d",
-    sub: "Reduces noise output to 2-d for the 2D viewer panel. Independent of the 3D viz — different seed, different fit. The 2D panel stays empty until this produces a 2-d output.",
+    sub: "Reduces fusion output to 2-d for the 2D viewer panel. Independent of the 3D viz — different seed, different fit. The 2D panel stays empty until this produces a 2-d output.",
   },
 ];
 
@@ -52,8 +58,12 @@ export function openDimredModal(descriptor) {
 
   // Working copy — committed only on Apply. Each section keeps its own
   // (algoId, params) cursor.
+  // Fusion slot may be absent from older saves / pre-fusion state —
+  // synthesise an identity stub so the modal renders without choking.
+  const fusionActive = active.fusion || { method: "identity", params: {} };
   const working = {
     noise:       { method: active.noise.method,       params: { ...active.noise.params       } },
+    fusion:      { method: fusionActive.method,       params: { ...fusionActive.params       } },
     compression: { method: active.compression.method, params: { ...active.compression.params } },
     viz:         { method: active.viz.method,         params: { ...active.viz.params         } },
     viz2d:       { method: active.viz2d.method,       params: { ...active.viz2d.params       } },

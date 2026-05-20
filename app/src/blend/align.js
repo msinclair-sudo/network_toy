@@ -107,6 +107,36 @@ export function alignByComponent({ basePos, citationPos, edges, n }) {
   return { aligned, correlation };
 }
 
+// Globally align `source` to `target` (same Horn/quaternion +
+// match-RMS-scale machinery as alignByComponent, but as a single
+// whole-graph similarity transform instead of per-component).
+//
+// Designed for the fusion-comparison slider: pre-fusion and
+// post-fusion basePos are two UMAP-3 fits of nearly-identical
+// embeddings; UMAP picks an arbitrary rotation each run, so the
+// two layouts agree topologically but disagree on orientation.
+// Linear interpolation between unaligned layouts produces nonsense
+// intermediate paths. Aligning source-to-target first means the
+// slider walks the *short route* between them.
+//
+// Returns the aligned source (Float32Array(n*3)) plus the same
+// correlation scalar in [0, 1] that alignByComponent returns. No
+// edges needed — all nodes are treated as one rigid body.
+export function alignGlobal({ target, source, n }) {
+  if (n === 0) return { aligned: new Float32Array(0), correlation: NaN };
+  if (target.length !== n * 3) throw new Error("alignGlobal: target length mismatch");
+  if (source.length !== n * 3) throw new Error("alignGlobal: source length mismatch");
+  const aligned = new Float32Array(n * 3);
+  const ids = new Array(n);
+  for (let i = 0; i < n; i++) ids[i] = i;
+  const stats = alignSubset(ids, target, source, aligned);
+  const correlation =
+    (stats && Number.isFinite(stats.traceRS) && stats.sumA2 > 0 && stats.sumB2 > 0)
+      ? Math.max(0, Math.min(1, stats.traceRS / Math.sqrt(stats.sumA2 * stats.sumB2)))
+      : NaN;
+  return { aligned, correlation };
+}
+
 // Compute optimal similarity transform aligning citationPos[ids] →
 // basePos[ids], write the transformed positions into `out`, and
 // return the per-component scalars the caller needs to aggregate

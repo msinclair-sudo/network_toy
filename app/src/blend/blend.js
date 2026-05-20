@@ -17,8 +17,10 @@
 
 export function makeBlendForce({
   getBasePos,
+  getBasePosPreFusion,        // optional — fusion-comparison endpoint A
   getAlignedCitationPos,
   getBlend,
+  getFusionBlend,             // optional — defaults to 1 (= use post-fusion basePos)
 } = {}) {
   let nodes = [];
   function force(_simAlpha) {
@@ -33,6 +35,19 @@ export function makeBlendForce({
     else if (a > 1) a = 1;
     const oneMinusA = 1 - a;
 
+    // Fusion-comparison nested lerp: if a pre-fusion basePos is
+    // available AND the fusion-slider isn't pinned at 1 (=post-fusion
+    // only), compute an effective basePos as the lerp between pre and
+    // post. The outer (basePos ↔ citation) blend then runs against
+    // this effective position. Two independent sliders, four-corner
+    // navigation: (preFusion semantic) / (postFusion semantic) /
+    // (citation aligned to preFusion) / (citation aligned to postFusion).
+    const bpPre = getBasePosPreFusion ? getBasePosPreFusion() : null;
+    let fb = getFusionBlend ? (+getFusionBlend() || 0) : 1;
+    if (fb < 0) fb = 0; else if (fb > 1) fb = 1;
+    const useFusionBlend = bpPre && bpPre.length === bp.length && fb < 0.999;
+    const oneMinusFb = 1 - fb;
+
     for (let i = 0; i < n; i++) {
       const ni = nodes[i];
       // Skip debug-only nodes (origins, centroids); they're pinned via
@@ -41,9 +56,20 @@ export function makeBlendForce({
       if (ni.kind && ni.kind !== "node") continue;
       const id = ni.id;
       if (id < 0 || id >= stride) continue;
-      ni.x = oneMinusA * bp[id*3]   + a * cp[id*3];
-      ni.y = oneMinusA * bp[id*3+1] + a * cp[id*3+1];
-      ni.z = oneMinusA * bp[id*3+2] + a * cp[id*3+2];
+      const ix = id * 3, iy = ix + 1, iz = ix + 2;
+      // Effective basePos for this node, possibly lerped against
+      // the pre-fusion position.
+      let bx, by, bz;
+      if (useFusionBlend) {
+        bx = oneMinusFb * bpPre[ix] + fb * bp[ix];
+        by = oneMinusFb * bpPre[iy] + fb * bp[iy];
+        bz = oneMinusFb * bpPre[iz] + fb * bp[iz];
+      } else {
+        bx = bp[ix]; by = bp[iy]; bz = bp[iz];
+      }
+      ni.x = oneMinusA * bx + a * cp[ix];
+      ni.y = oneMinusA * by + a * cp[iy];
+      ni.z = oneMinusA * bz + a * cp[iz];
     }
   }
   force.initialize = function (_nodes) { nodes = _nodes; };

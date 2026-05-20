@@ -8,8 +8,9 @@
 // Adding a new algorithm = one new entry here + the algorithm
 // module. No other file should grow a switch on algorithm id.
 
-import * as fr  from "./fr.js";
-import * as mds from "./mds.js";
+import * as fr        from "./fr.js";
+import * as mds       from "./mds.js";
+import * as umapGraph from "./umap-graph.js";
 
 export const ALGORITHMS = [
   {
@@ -36,6 +37,42 @@ export const ALGORITHMS = [
         format: (v) => (+v).toFixed(1),
         hint:  "Strength of the radial anchor that pulls older nodes (low t) toward origin. Higher = stronger centring; floor of 0.2 always applies so newest nodes can't escape under pure repulsion. Default 5 keeps connected layouts inside the world; sparse graphs may benefit from higher values.",
         sweepValues: [1, 3, 5, 8, 12],
+      },
+    ],
+  },
+  {
+    id:           umapGraph.ID,
+    label:        "UMAP on citation graph",
+    description:  "Treats the citation adjacency as a precomputed k-NN graph and runs UMAP for a 3-D embedding. Preserves *local* citation neighbourhoods (1-hop and 2-hop), not global pairwise distances — which is why this dodges both FR's sparsity-driven spherical collapse and MDS's nested-shell failure mode at large n. Best choice for real citation networks at n ≥ 1000 with one giant component.",
+    defaultParams: umapGraph.defaultParams,
+    compute:      umapGraph.compute,
+    modalSchema:  [
+      {
+        key:   "nNeighbors",
+        label: "neighbours per point",
+        kind:  "int",
+        min:   4, max: 50, step: 1,
+        format: (v) => String(v),
+        hint:  "Citation-graph neighbours considered for each paper (includes the paper itself, so 15 = self + 14 cited/citing). Higher emphasises global structure; lower preserves tight communities. 15 is umap-learn's default for graph-like data.",
+        sweepValues: [10, 15, 25, 40],
+      },
+      {
+        key:   "minDist",
+        label: "minimum cluster spacing",
+        kind:  "range",
+        min:   0.0, max: 1.0, step: 0.05,
+        format: (v) => (+v).toFixed(2),
+        hint:  "Minimum distance between points in tight clusters. Lower = tighter community packing (good for separation); higher = more uniform spread. Per-component alignment scales the final extent to basePos, so this only affects the relative density of the α=1 endpoint.",
+        sweepValues: [0.05, 0.1, 0.25, 0.5],
+      },
+      {
+        key:   "iterations",
+        label: "epochs",
+        kind:  "int",
+        min:   50, max: 2000, step: 50,
+        format: (v) => String(v),
+        hint:  "UMAP optimisation epochs. 500 converges in ~3 s at n=5000; lower values trade stability for speed. Higher than 1000 rarely improves visible structure.",
+        sweepValues: [200, 500, 1000],
       },
     ],
   },

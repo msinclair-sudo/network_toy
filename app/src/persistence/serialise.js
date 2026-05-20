@@ -31,6 +31,7 @@ const PASS_THROUGH_KEYS = [
   "selection",
   "filter",
   "blend",
+  "fusionBlend",
   "bridgeConfig",
 ];
 
@@ -63,6 +64,13 @@ export function serialiseState(state) {
   if (state._basePos instanceof Float32Array) {
     out._basePos = stashBinary(arrays, "arrays/basePos.f32", state._basePos);
   }
+  // 3aa. _basePosPreFusion — flat Float32Array(n*3) for the fusion
+  //      comparison slider's α=0 endpoint. Present only when a fusion
+  //      run has produced a parallel pre-fusion viz output.
+  if (state._basePosPreFusion instanceof Float32Array) {
+    out._basePosPreFusion = stashBinary(arrays, "arrays/basePosPreFusion.f32", state._basePosPreFusion);
+  }
+
   // 3a. _basePos2d — flat Float32Array(n*2) for the 2D viewer. Null
   //     when viz2d hasn't produced a 2-d output yet.
   if (state._basePos2d instanceof Float32Array) {
@@ -77,6 +85,17 @@ export function serialiseState(state) {
     };
   }
 
+  // 4a. rawCitationEdges — flat number[] of length 2|E| populated at
+  // ingest time for data sources that supply edges directly. Needed
+  // on load so a subsequent fusion-param change can re-run dim-red
+  // without losing the graph (real-data path) or falling back to
+  // identity. Stored as Int32Array for compactness — typical size at
+  // n=5000 is ~25 k entries (100 KB), small relative to the embedding.
+  if (Array.isArray(state.rawCitationEdges) && state.rawCitationEdges.length > 0) {
+    const flat = new Int32Array(state.rawCitationEdges);
+    out.rawCitationEdges = stashBinary(arrays, "arrays/rawCitationEdges.i32", flat);
+  }
+
   // 5. dimredResult — {method, params, n, d, data: Float32Array(n*d)}.
   if (state.dimredResult && state.dimredResult.data instanceof Float32Array) {
     out.dimredResult = {
@@ -88,6 +107,18 @@ export function serialiseState(state) {
     };
   }
 
+  // 5a. dimredResultPreFusion — same shape, fusion-comparison A
+  // endpoint (Layer 2 ran twice when fusion was non-identity).
+  if (state.dimredResultPreFusion && state.dimredResultPreFusion.data instanceof Float32Array) {
+    out.dimredResultPreFusion = {
+      method: state.dimredResultPreFusion.method,
+      params: state.dimredResultPreFusion.params,
+      n:      state.dimredResultPreFusion.n,
+      d:      state.dimredResultPreFusion.d,
+      data:   stashBinary(arrays, "arrays/dimredResultPreFusion.f32", state.dimredResultPreFusion.data),
+    };
+  }
+
   // 6. clusterLevels — array of {uid, scope, clusterResult}.
   //    clusterResult.nodeCluster is Int32Array; noiseFlags (HDBSCAN
   //    only) is Uint8Array. Other fields are JSON-friendly.
@@ -96,6 +127,16 @@ export function serialiseState(state) {
       uid:           lvl.uid,
       scope:         lvl.scope,
       clusterResult: serialiseClusterResult(lvl.clusterResult, arrays, idx),
+    }));
+  }
+  // 6a. clusterLevelsPreFusion — fusion-comparison A endpoint
+  // cluster labels. Same shape; separate binary key prefix so the
+  // reviver assigns distinct payloads.
+  if (Array.isArray(state.clusterLevelsPreFusion)) {
+    out.clusterLevelsPreFusion = state.clusterLevelsPreFusion.map((lvl, idx) => ({
+      uid:           lvl.uid,
+      scope:         lvl.scope,
+      clusterResult: serialiseClusterResult(lvl.clusterResult, arrays, `pre.${idx}`),
     }));
   }
   // clusterResult is a backward-compat alias for the finest level.

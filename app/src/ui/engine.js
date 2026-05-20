@@ -25,7 +25,7 @@ import { generateCitations, defaultCitationParams }              from "../citati
 import { getAlgorithm as getCitationAlgorithm }                  from "../citations/registry.js";
 import { assertCitationResult }                                  from "../citations/contract.js";
 import { getAlgorithm as getCitationLayoutAlgorithm }            from "../citation-layout/registry.js";
-import { alignByComponent }                                      from "../blend/align.js";
+import { alignByComponent, alignGlobal }                         from "../blend/align.js";
 import { computeBridgeAnalysis }                                 from "./bridge-analysis.js";
 import { update, getState, setLayerState }                       from "./state.js";
 
@@ -37,20 +37,35 @@ function ensureLayerParams() {
   const next = { ...lp };
 
   if (!lp.dimred) {
-    // Four-stage shape:
-    //   noise         (PCA denoiser; consumed by all three downstream stages)
+    // Five-stage shape:
+    //   noise         (PCA denoiser; consumed by all downstream stages)
+    //   fusion        (citation-aware re-embedding; consumes noise output + raw citation edges)
     //   compression   (UMAP-50; produces the clustering input)
     //   viz           (UMAP-3; produces the 3D viewer / blend input — basePos)
     //   viz2d         (UMAP-2; produces the 2D viewer input — _basePos2d)
     // Defaults are identity everywhere, so dimredResult is just the
     // input embedding (or basePos in toy mode) and behaviour is
     // unchanged until the user picks a real algorithm in any slot.
+    // Fusion stays at identity until rawCitationEdges is populated;
+    // an explicit `graph-diffusion` pick is required to opt in.
     const idAlgo = getDimredAlgorithm("identity");
     next.dimred = {
       noise:       { method: "identity", params: idAlgo.defaultParams() },
+      fusion:      { method: "identity", params: idAlgo.defaultParams() },
       compression: { method: "identity", params: idAlgo.defaultParams() },
       viz:         { method: "identity", params: idAlgo.defaultParams() },
       viz2d:       { method: "identity", params: idAlgo.defaultParams() },
+    };
+    dirty = true;
+  } else if (!lp.dimred.fusion) {
+    // Backwards-compat for older save files / state restored from
+    // pre-fusion archives: synthesise an identity fusion slot in-place
+    // so redimred() doesn't trip on an undefined section. No schema
+    // bump — old data flows through unchanged.
+    const idAlgo = getDimredAlgorithm("identity");
+    next.dimred = {
+      ...lp.dimred,
+      fusion: { method: "identity", params: idAlgo.defaultParams() },
     };
     dirty = true;
   }
@@ -192,22 +207,35 @@ export async function reingest() {
   // Bump engineRevision so panels rebuild even if downstream lanes
   // bail (e.g. real-data has no basePos → citation chain skips →
   // relayoutCitations never runs to trigger the conventional bump).
+  // Cache raw citation edges from the data source if it supplied them
+  // (today: real-data via produceReal()). Flat number[] of length 2|E|
+  // in [src, dst, …] form, read by the fusion stage and Layer 3's
+  // imported-edges algorithm. Toy returns no edges → null cleared.
+  const rawCitationEdges = Array.isArray(result.citationEdges)
+    ? result.citationEdges
+    : null;
+
   update({
-    genResult:             result,
-    _basePos:              bp,
-    _basePos2d:            null,
-    embedding:             result.embedding || null,
-    dimredResult:          null,
-    clusterLevels:         null,
-    clusterResult:         null,
-    bridgeAnalysis:        null,
-    neighbourhoodResult:   null,
-    tasteResult:           null,
-    citationResult:        null,
-    citationLayout:        null,
-    alignedCitationLayout: null,
-    alignmentCorrelation:  NaN,
-    engineRevision:        s.engineRevision + 1,
+    genResult:              result,
+    _basePos:               bp,
+    _basePos2d:             null,
+    _basePosPreFusion:      null,
+    embedding:              result.embedding || null,
+    rawCitationEdges,
+    dimredResult:           null,
+    dimredResultPreFusion:  null,
+    clusterLevels:          null,
+    clusterLevelsPreFusion: null,
+    clusterResult:          null,
+    clusterResultPreFusion: null,
+    bridgeAnalysis:         null,
+    neighbourhoodResult:    null,
+    tasteResult:            null,
+    citationResult:         null,
+    citationLayout:         null,
+    alignedCitationLayout:  null,
+    alignmentCorrelation:   NaN,
+    engineRevision:         s.engineRevision + 1,
   });
   setLayerState("data", "fresh");
   redimred();
@@ -264,9 +292,29 @@ export function redimred() {
   validateDimredResult(r1, n);
   const noiseOut = { n: r1.n, d: r1.d, data: r1.data };
 
+  // Stage 1.5: citation-aware fusion. Lateral stage — same
+  // dimensionality in as out. Reads raw citation edges out of
+  // state.rawCitationEdges (populated by produceReal at ingest
+  // time). Adjacency is injected at compute() time as a flat
+  // [src, dst, …] number[]; the algorithm itself stays pure
+  // (no global-state reads). When fusion=identity OR there are
+  // no edges (toy mode), this is a no-op pass-through.
+  const fusionCfg  = cfg.fusion || { method: "identity", params: {} };
+  const fusionAlgo = getDimredAlgorithm(fusionCfg.method);
+  const fusionParams = {
+    ...(fusionCfg.params || {}),
+    adjacency: s.rawCitationEdges || [],
+  };
+  const rFusion = fusionAlgo.compute(noiseOut, fusionParams);
+  validateDimredResult(rFusion, n);
+  // Downstream siblings (compression / viz / viz2d) read from fusion
+  // output, not noise output — so any non-identity fusion algorithm
+  // propagates into clustering, basePos, and the 2D viewer alike.
+  const fusionOut = { n: rFusion.n, d: rFusion.d, data: rFusion.data };
+
   // Stage 2a: dimension compression (clustering input).
   const compAlgo = getDimredAlgorithm(cfg.compression.method);
-  const r2 = compAlgo.compute(noiseOut, cfg.compression.params || {});
+  const r2 = compAlgo.compute(fusionOut, cfg.compression.params || {});
   validateDimredResult(r2, n);
 
   // Stage 2b: visualisation reduction (viewer / blend input).
@@ -277,7 +325,7 @@ export function redimred() {
   // its output is 3-d we adopt it as _basePos; otherwise we leave
   // _basePos as whatever reingest already packed (or null).
   const vizAlgo = getDimredAlgorithm(cfg.viz.method);
-  const r3 = vizAlgo.compute(noiseOut, cfg.viz.params || {});
+  const r3 = vizAlgo.compute(fusionOut, cfg.viz.params || {});
   validateDimredResult(r3, n);
 
   let nextBasePos = s._basePos;     // fall through unchanged unless viz produces 3-d
@@ -300,7 +348,7 @@ export function redimred() {
   // (UMAP-2, PCA-2) — the 2D viewer panel surfaces an empty-state
   // hint in that case.
   const viz2dAlgo = getDimredAlgorithm(cfg.viz2d.method);
-  const r4 = viz2dAlgo.compute(noiseOut, cfg.viz2d.params || {});
+  const r4 = viz2dAlgo.compute(fusionOut, cfg.viz2d.params || {});
   validateDimredResult(r4, n);
 
   let nextBasePos2d = s._basePos2d;
@@ -325,11 +373,65 @@ export function redimred() {
     syncNodeBasePos(s.genResult.nodes, nextBasePos);
   }
 
+  // ── Pre-fusion A/B path. ──────────────────────────────────────────
+  // When fusion is non-identity and produced a different output, run
+  // compression + viz on the *pre-fusion* (noise-stage) data too so
+  // the fusion-comparison slider has a "before fusion" endpoint, and
+  // the cluster lane can produce parallel pre-fusion labels for the
+  // "Color by pre-fusion clusters" mode.
+  //
+  // Skipped when fusion is identity (rFusion.data === noiseOut.data
+  // would still pass the check below trivially via the same algorithm;
+  // identity is the explicit signal).
+  let preFusionDimred  = null;
+  let preFusionBasePos = null;
+  const fusionIsActive = fusionCfg.method !== "identity";
+  if (fusionIsActive) {
+    // Compression on noise (pre-fusion). Different from r2 because r2's
+    // input was fusionOut.
+    const r2Pre = compAlgo.compute(noiseOut, cfg.compression.params || {});
+    validateDimredResult(r2Pre, n);
+    preFusionDimred = r2Pre;
+
+    // viz on noise (pre-fusion). Mirror the post-fusion viz branching
+    // so 3D-output adoption + scale-normalisation behaviour matches.
+    const r3Pre = vizAlgo.compute(noiseOut, cfg.viz.params || {});
+    validateDimredResult(r3Pre, n);
+    if (r3Pre.d === 3 && r3Pre.method !== "identity") {
+      preFusionBasePos = normaliseToViewerScale(r3Pre.data);
+    } else if (s._basePos == null && r3Pre.d === 3) {
+      preFusionBasePos = r3Pre.data;
+    } else {
+      preFusionBasePos = null;
+    }
+
+    // Procrustes-align pre-fusion → post-fusion so the fusion-slider's
+    // linear interpolation walks the SHORT route between layouts. UMAP
+    // picks an arbitrary rotation each fit, so two runs of UMAP-3 on
+    // near-identical inputs produce near-identical topologies under a
+    // different orientation; without alignment the slider points spin
+    // through nonsense intermediate paths. Whole-graph Procrustes
+    // (rotation + reflection + match-RMS scale + translation) leaves
+    // the topology untouched while bringing the orientations into
+    // register. Skipped when nextBasePos is null (no anchor to align
+    // against) — preFusionBasePos stays in its own raw frame.
+    if (preFusionBasePos && nextBasePos && preFusionBasePos.length === nextBasePos.length) {
+      const alignRes = alignGlobal({
+        target: nextBasePos,
+        source: preFusionBasePos,
+        n,
+      });
+      preFusionBasePos = alignRes.aligned;
+    }
+  }
+
   update({
-    dimredResult:   r2,
-    _basePos:       nextBasePos,
-    _basePos2d:     nextBasePos2d,
-    engineRevision: s.engineRevision + 1,
+    dimredResult:          r2,
+    dimredResultPreFusion: preFusionDimred,
+    _basePos:              nextBasePos,
+    _basePosPreFusion:     preFusionBasePos,
+    _basePos2d:            nextBasePos2d,
+    engineRevision:        s.engineRevision + 1,
   });
   setLayerState("dimred", "fresh");
   recluster();
@@ -439,21 +541,17 @@ export function recluster() {
 
   if (!cfg || !cfg.levels || cfg.levels.length === 0) return;
 
-  const levels = [];
-  let parent = null;     // ClusterResult of the previous level
+  const levels = runClusterLevels(algo, s.genResult, cfg.levels, s.dimredResult, allowNoise, n);
 
-  for (let i = 0; i < cfg.levels.length; i++) {
-    const lvl = cfg.levels[i];
-    const isGlobal = (i === 0) || lvl.scope === "global";
-    let cr;
-    if (isGlobal) {
-      cr = algo.infer(s.genResult, lvl.params, s.dimredResult);
-    } else {
-      cr = clusterWithinParents(algo, s.genResult, parent, lvl.params, s.dimredResult);
-    }
-    validateClusterResult(cr, n, { allowNoise });
-    levels.push({ uid: lvl.uid, scope: isGlobal ? "global" : "within-parent", clusterResult: cr });
-    parent = cr;
+  // Pre-fusion parallel pass — runs only when fusion produced a
+  // separate pre-fusion dimredResult. Same algorithm, same level
+  // config, different input → A/B comparison labels for the colour
+  // modes. Cheap-ish (clustering is much faster than dim-red).
+  let preFusionLevels = null;
+  let preFusionFinest = null;
+  if (s.dimredResultPreFusion) {
+    preFusionLevels = runClusterLevels(algo, s.genResult, cfg.levels, s.dimredResultPreFusion, allowNoise, n);
+    preFusionFinest = preFusionLevels[preFusionLevels.length - 1].clusterResult;
   }
 
   const finest = levels[levels.length - 1].clusterResult;
@@ -464,8 +562,10 @@ export function recluster() {
   const bridgeAnalysis = computeBridgeAnalysis(levels, cfgBridge);
 
   update({
-    clusterLevels: levels,
-    clusterResult: finest,
+    clusterLevels:          levels,
+    clusterResult:          finest,
+    clusterLevelsPreFusion: preFusionLevels,
+    clusterResultPreFusion: preFusionFinest,
     bridgeAnalysis,
     bridgeConfig: cfgBridge,
     // Stale eval results → previous clustering. Drop them so the
@@ -475,6 +575,30 @@ export function recluster() {
   });
   setLayerState("clustering", "fresh");
   reneighbour();
+}
+
+// Shared multi-level cluster pass — factored out so recluster() can
+// invoke it twice (once on the current dimredResult, once on the
+// pre-fusion result for A/B comparison). Pure: doesn't read or write
+// state, just folds inputs into a levels[] array shaped like the
+// existing clusterLevels output.
+function runClusterLevels(algo, genResult, levelCfgs, dimredResult, allowNoise, n) {
+  const levels = [];
+  let parent = null;
+  for (let i = 0; i < levelCfgs.length; i++) {
+    const lvl = levelCfgs[i];
+    const isGlobal = (i === 0) || lvl.scope === "global";
+    let cr;
+    if (isGlobal) {
+      cr = algo.infer(genResult, lvl.params, dimredResult);
+    } else {
+      cr = clusterWithinParents(algo, genResult, parent, lvl.params, dimredResult);
+    }
+    validateClusterResult(cr, n, { allowNoise });
+    levels.push({ uid: lvl.uid, scope: isGlobal ? "global" : "within-parent", clusterResult: cr });
+    parent = cr;
+  }
+  return levels;
 }
 
 // Re-run only the bridge analysis lane — used when the user changes
@@ -668,7 +792,10 @@ export async function resampleViaImport() {
 
   update({ citationResult });
   setLayerState("citations", "fresh");
-  relayoutCitations();
+  // Citation layout is opt-in: the user explicitly applies a layout
+  // algorithm via the Citation Layout modal. Cascade STOPS here.
+  // Downstream lanes are marked stale until the user triggers them.
+  markCitationLayoutStale();
 }
 
 // taste-network's internal stages 2 + 3.
@@ -691,7 +818,27 @@ export function resample() {
   );
   update({ citationResult });
   setLayerState("citations", "fresh");
-  relayoutCitations();
+  // Citation layout opt-in: see resampleViaImport — same rule.
+  markCitationLayoutStale();
+}
+
+// Mark layout / alignment / blend as stale and CLEAR cached layouts
+// so the existing-stale-blend doesn't keep rendering against a
+// citation-result that no longer matches it. Called from both the
+// import path (resampleViaImport) and the generation path (resample)
+// when citations change. Until the user explicitly applies a layout
+// algorithm, citationLayout / alignedCitationLayout stay null and
+// the per-frame blend hook falls back to basePos only (α=1 visually
+// snaps to basePos because alignedCitationPos is null → blend bails).
+function markCitationLayoutStale() {
+  update({
+    citationLayout:        null,
+    alignedCitationLayout: null,
+    alignmentCorrelation:  NaN,
+  });
+  setLayerState("layout",    "stale");
+  setLayerState("alignment", "stale");
+  setLayerState("blend",     "stale");
 }
 
 // Layers 4 + 5a.

@@ -1,17 +1,22 @@
 # Network Dynamics Demonstrator
 
-An interactive 3D toy for comparing **two arrangements of the same
-network**: the spatial embedding nodes are generated from, vs. a
-layout derived purely from the citation topology between them. A
-single slider blends between them — α=0 is the embedding, α=1 is
-the citation-driven arrangement, anything in between is a smooth
-deterministic interpolation.
+An interactive 3D toy for comparing **multiple arrangements of the
+same network**: a spatial embedding, a layout derived purely from
+the citation topology, and — when the data carries citations — a
+**fused** embedding that lets citation context reshape the topic
+map before clustering. Two independent sliders blend between
+endpoints deterministically, so you can ask both "do these two
+views agree?" *and* "what changes when citations inform the
+embedding itself?" in one interactive surface.
 
 Built as a teaching / demo aid for network-science intuition.
 Lets you ask "what does this dataset look like as positions vs. as
-a graph?" and watch the answer fade between the two. Works on a
-toy Gaussian-mixture dataset (n ≈ 400) for fast exploration, or on
-a SPECTER2-embedding subset of real research papers (n = 1000+).
+a graph?" and watch the answer fade between the two — then ask
+"what does it look like when we fold the citation graph back into
+the embedding?" and watch *that* answer too. Works on a toy
+Gaussian-mixture dataset (n ≈ 400) for fast exploration, or on a
+SPECTER2-embedding subset of real research papers (n = 1000+;
+5000-paper BFS subset is the current load-bearing fixture).
 
 ## Running
 
@@ -47,15 +52,33 @@ A small SVG of the pipeline. Click any node to open its
 configuration modal:
 
 - **Data** — pick between the toy Gaussian-mixture generator and
-  the real SPECTER2 paper subset.
-- **Dim reduce** — four-stage dim-reduction layer. Noise
-  reduction (PCA), dimension compression (UMAP-50, clustering
-  input), 3D visualisation reduction (UMAP-3, basePos), 2D
-  visualisation reduction (UMAP-2, the 2D viewer's input). All
-  four are independent fits with their own seeds.
+  the real SPECTER2 paper subset (random 1000-paper or BFS-carved
+  5000-paper). Real data brings its own publication years
+  (`t ∈ [0, 1]` normalised over the subset's year range) and a
+  citation edge list cached at ingest for the fusion stage to
+  consume.
+- **Dim reduce** — **five**-stage dim-reduction layer.
+  1. **Noise** reduction (PCA-100).
+  2. **Fusion** (optional) — citation-aware re-embedding via
+     graph diffusion. Pulls papers that cite each other closer
+     in feature space while keeping each anchored to its
+     original SPECTER2 vector. Default identity (no fusion).
+  3. **Compression** (UMAP-50, clustering input).
+  4. **Viz** (UMAP-3, basePos for the 3D viewer / blend).
+  5. **Viz2d** (UMAP-2, the 2D viewer's input).
+  Each stage's algorithm is independent; UMAP fits get distinct
+  seeds so they don't sync. When fusion is non-identity, the
+  pipeline ALSO runs compression + viz on the pre-fusion data so
+  the A/B comparison slider has both endpoints.
 - **Clustering** — tabbed modal: **Configure**, **Optimise**,
-  **Validate**.
-- **Cit. layout** — citation-driven 3D arrangement (FR or MDS).
+  **Validate**. When fusion is non-identity, clustering runs
+  twice (pre- and post-fusion) so the "Color by pre-fusion
+  cluster" mode is available.
+- **Cit. layout** — citation-driven 3D arrangement (FR, MDS, or
+  UMAP-on-citation-graph). **Opt-in**: the pipeline cascade
+  stops at Layer 3 and does not auto-run this layer. Open the
+  modal, pick an algorithm, hit Apply. The status dot shows
+  orange (stale) until you do.
 
 Status dots on each node colour-coded fresh / stale / not-run.
 
@@ -64,35 +87,79 @@ Status dots on each node colour-coded fresh / stale / not-run.
 **Toy generator** — synthetic 3-d Gaussian-mixture cloud. Knobs:
 seed, node count, number of groups, group spread.
 
-**Real (SPECTER2 dev subset)** — loads a 1000-paper slice of the
-full SPECTER2 768-d embedding from
-`literture-network/artifacts/dev_subset/`. Toy and real are
-mutually exclusive — switching modes drops the other side's
-state. Real mode leaves the viewers empty by default — pick a
-3-d (or 2-d) viz reduction in the dim-reduction modal to render.
+**Real (SPECTER2 dev subset)** — loads a slice of the full
+SPECTER2 768-d embedding. Two carved subsets available:
+
+- `dev_subset_1000` — random 1000-paper sample (seed 42). Useful
+  as a minimal smoke fixture; citation topology is shattered
+  (~3 within-subset edges).
+- `dev_subset_bfs_5000` — BFS-carved 5000-paper subset (default).
+  Preserves topology (~12 k within-subset edges, 100% node
+  coverage). This is what fusion + UMAP-on-graph are tested on.
+
+Both come with `paper_years.json` for `t ∈ [0, 1]` normalisation
+(newest → 1, oldest → 0) and `citation_edges.json` for the
+fusion stage. Toy and real are mutually exclusive — switching
+modes drops the other side's state. Real mode leaves the viewers
+empty by default — pick a 3-d (or 2-d) viz reduction in the
+dim-reduction modal to render.
 
 ### Dim-reduction (Layer 1.5)
 
-Four sequential / sibling sub-stages:
+Five sequential / sibling sub-stages:
 
 ```
-embedding ─▶ noise ─┬─▶ compression ──▶ clustering input
-                    │
-                    ├─▶ viz          ──▶ 3D viewer + blend
-                    │
-                    └─▶ viz2d        ──▶ 2D viewer
+embedding ─▶ noise ─▶ fusion ─┬─▶ compression ──▶ clustering input
+                              │
+                              ├─▶ viz          ──▶ 3D viewer + blend
+                              │
+                              └─▶ viz2d        ──▶ 2D viewer
 ```
 
 Each algorithm declares which sub-stages it's eligible for via a
 `family` tag. Recommended defaults (clustering-research locked):
 
 - **PCA** in noise → `n_components = 100`
+- **Graph diffusion** in fusion → `alpha = 0.3, iterations = 4` (real-data only)
 - **UMAP** in compression → `n_components = 50, n_neighbors = 50, min_dist = 0`
 - **UMAP** in viz (3-d) → `n_components = 3, n_neighbors = 15, min_dist = 0.1`
 - **UMAP** in viz2d (2-d) → `n_components = 2, n_neighbors = 15, min_dist = 0.1`
 
 Picking an algorithm drops the user at these locked-default
 values for that slot.
+
+### Citation-aware fusion (the new stage)
+
+Optional Layer 1.5 sub-stage. When enabled, each paper's
+embedding vector is iteratively mixed with the mean of its
+citation neighbours' vectors (APPNP-style anchored graph
+diffusion: `X' = (1−α)X + α·D⁻¹A·X'`). The original SPECTER2
+vector stays anchored at all α<1, so no paper drifts away
+entirely.
+
+Effect: downstream clustering, basePos, and the 2D viewer all
+operate on a citation-informed representation. Communities that
+agree across semantic and citation signals tighten; communities
+that disagree may split or merge. Requires real-data mode
+(citations imported at ingest); toy mode falls through as
+identity because citations are generated *after* clustering
+there.
+
+### Fusion-comparison slider
+
+When fusion is non-identity, a second slider — labelled `fusion`
+— appears in the left rail under Blend. It interpolates between
+**pre-fusion basePos** (UMAP-3 on the noise-stage output) and
+**post-fusion basePos** (UMAP-3 on the fusion-stage output). The
+two endpoints are Procrustes-aligned (whole-graph rotation + match-
+RMS scale + translation) so the interpolation walks a clean
+straight-line path between each node's two locations instead of
+corkscrewing through arbitrary UMAP rotations.
+
+Pair it with the **Color by pre-fusion cluster** mode in the
+viewer's colour-mode dropdown to see exactly which papers were
+reorganised by citation context — colours stay constant (defined
+by pre-fusion clusters), positions drift.
 
 ### Multi-level clustering
 
@@ -169,10 +236,23 @@ gradients display a min↔max gradient bar.
 
 ### Blend slider (left rail bottom)
 
-Sweeps `α: 0 → 1`. At α=0 you see the embedding; at α=1 you see
-the citation-driven layout (per-component aligned so the two
-views share scale/orientation); in between is a per-frame linear
-interpolation. Round-trip is exact. 3D-only feature.
+Sweeps `α: 0 → 1`. At α=0 you see the embedding (basePos); at
+α=1 you see the citation-driven layout (per-component aligned to
+basePos so the two views share scale/orientation); in between is
+a per-frame linear interpolation. **Inert until you explicitly
+apply a Citation Layout algorithm** — the cascade no longer
+auto-runs that layer.
+
+When fusion is non-identity, a second `fusion` row appears with
+its own slider; the two compose as a nested lerp inside the
+blend hook. The four corners of `(fusion, α)`-space are:
+
+|              | α=0                          | α=1                                   |
+|--------------|------------------------------|---------------------------------------|
+| fusion=0     | pre-fusion semantic basePos  | citation layout aligned to pre-fusion |
+| fusion=1     | post-fusion (citation-aware) | citation layout aligned to post-fusion|
+
+Round-trip is exact for each slider independently. 3D-only.
 
 ### Multi-tab panels
 
@@ -190,36 +270,42 @@ other file changes needed.
 
 ```
 datasource/registry.js        Layer 1    pluggable data source
-                                          → {nodes, origins?, embedding?, basePos?}
+                                          → {nodes, origins?, embedding?, basePos?, citationEdges?}
         ↓
-dimred/registry.js            Layer 1.5  four-stage dim-reduction
-                                          → dimredResult (clustering input)
-                                          → _basePos     (3D viewer / blend)
-                                          → _basePos2d   (2D viewer)
+dimred/registry.js            Layer 1.5  five-stage dim-reduction
+                                          noise → fusion → (compression, viz, viz2d)
+                                          → dimredResult (+ dimredResultPreFusion)
+                                          → _basePos     (+ _basePosPreFusion)
+                                          → _basePos2d
         ↓
 clustering-registry.js        Layer 2    pluggable clustering (mutual k-NN, HDBSCAN, CC)
                                           → ClusterResult contract (multi-level)
+                                          → clusterLevelsPreFusion (when fusion active)
         ↓
-citations/registry.js         Layer 3    pluggable citation generation (taste-network)
+citations/registry.js         Layer 3    taste-network (toy) or imported-edges (real)
                                           → CitationResult contract
-                                          (bypassed under real-data mode)
-        ↓
-citation-layout/registry.js   Layer 4    citation-driven 3D arrangement (FR or MDS)
-        ↓
-blend/align.js                Layer 5a   per-component similarity alignment of the citation
-                                          layout to basePos → alignedCitationLayout
-blend/blend.js                Layer 5b   per-frame lerp:
-                                          live = (1−α)·basePos + α·alignedCitationLayout
+        ↓                                 CASCADE STOPS HERE (citation layout is opt-in)
+citation-layout/registry.js   Layer 4    citation-driven 3D arrangement (FR / MDS / UMAP-on-graph)
+        ↓                                 user explicitly applies via the Citation Layout modal
+blend/align.js                Layer 5a   similarity alignment:
+                                          alignByComponent — per-component, citation → basePos
+                                          alignGlobal      — whole-graph, preFusion → postFusion
+                                          → alignedCitationLayout + alignmentCorrelation
+blend/blend.js                Layer 5b   per-frame nested lerp:
+                                          effective = lerp(preFusion, postFusion, fusionBlend)
+                                          live      = lerp(effective, alignedCitation, blend)
 ```
 
 Math reference for each layer is in `doc/`. Start with
 `doc/dynamics.md` for the index.
 
 Doc highlights:
+- `doc/dimred.md` — Layer 1.5 sub-stages, registry contract, engine orchestration, slot-aware defaults
+- `doc/fusion.md` — Layer 1.5 fusion sub-stage: graph-diffusion algorithm, fusion-comparison slider, pre-fusion cluster colour mode, A/B comparison semantics
 - `doc/clustering.md` — Layer 2 contract + algorithms
-- `doc/citations.md` — Layer 3 contract + taste-network's four stages
-- `doc/citation-layout.md` — Layer 4 algorithms (FR, MDS / SMACOF)
-- `doc/blend.md` — Layer 5 (alignment math, blend formula, correlation metric)
+- `doc/citations.md` — Layer 3 contract + taste-network (toy) + imported-edges (real)
+- `doc/citation-layout.md` — Layer 4 algorithms (FR, MDS / SMACOF, UMAP-on-graph) + which to pick at which scale
+- `doc/blend.md` — Layer 5 alignment + per-frame blend; covers per-component vs whole-graph (alignGlobal) Procrustes, the nested-lerp formula, and the opt-in cascade policy
 - `doc/multi-level.md` — multi-level clustering + bridge analysis derivation
 - `doc/ui-architecture.md` — the new shell's state container, engine orchestrator, workflow chart, panel system, modals
 - `doc/scaling.md` — toy-vs-real-data scaling analysis (`n ≈ 400` toy, `n = 810 k` real)
@@ -247,6 +333,7 @@ app/                              static page + ES modules
       identity.js
       pca.js
       umap.js                     wraps umap-js
+      graph-diffusion.js          fusion stage — APPNP-style citation-aware re-embedding
     clustering-registry.js        Layer 2 dispatcher
     clustering.js                 L2: mutual k-NN
     clustering-hdbscan.js         L2: HDBSCAN
@@ -254,7 +341,11 @@ app/                              static page + ES modules
     citations/                    Layer 3
       registry.js
       contract.js
-      taste-network.js
+      taste-network.js            L3: toy synthetic citation generator
+      imported-edges.js           L3: real-data citation importer (consumes state.rawCitationEdges)
+      importers/
+        registry.js
+        json-file.js              fetches literture-network/artifacts/<subset>/citation_edges.json
     neighbourhoods.js             taste-network's stage 1
     citation-taste.js             taste-network's stages 2 + 3
     citations.js                  taste-network's stage 4
@@ -264,9 +355,10 @@ app/                              static page + ES modules
       contract.js
       fr.js                       L4: Fruchterman–Reingold
       mds.js                      L4: MDS / SMACOF
+      umap-graph.js               L4: UMAP on the citation graph (precomputed k-NN)
     blend/                        Layer 5
-      align.js                    L5a: per-component similarity alignment
-      blend.js                    L5b: per-frame lerp
+      align.js                    L5a: alignByComponent + alignGlobal (Procrustes)
+      blend.js                    L5b: per-frame nested lerp (blend × fusionBlend)
     eval/                         bootstrap-Jaccard + cross-algo sweep
       jaccard.js
       bootstrap.js
@@ -306,7 +398,7 @@ app/                              static page + ES modules
           configure-tab.js
           optimise-tab.js
           validate-tab.js
-        dimred-modal.js           four-stage
+        dimred-modal.js           five-stage (noise / fusion / compression / viz / viz2d)
         data-source-modal.js
         panel-picker.js
         layer-descriptors.js
@@ -314,16 +406,20 @@ app/                              static page + ES modules
 literture-network/                real-data pipeline (Python)
   artifacts/
     expanded_embeddings.npy       full SPECTER2 (810 k × 768)
-    dev_subset/                   1000-paper carved subset
+    dev_subset/                   1000-paper random subset
       expanded_embeddings.npy     subset embedding (n × 768, float32)
       expanded_embeddings_paper_index.json   row → paper_id
-      subset_meta.json            provenance (seed, indices_into_source, …)
+      paper_years.json            row → publication year (drives node.t)
       citation_edges.json         induced citation-edge subgraph (carved separately)
+      subset_meta.json            provenance (seed, indices_into_source, …)
+    dev_subset_bfs/               5000-paper BFS-carved subset (default real-mode fixture)
+      (same shape as dev_subset; ~12 k edges, 100% node coverage, years 1954–2026)
   citgraphv2/output/
     edges.csv                     raw directed citation network
-    nodes.csv                     paper metadata
+    nodes.csv                     paper metadata (includes `year` column)
   scripts/
-    make_dev_subset.py            carve embedding subset
+    make_dev_subset.py            carve random embedding subset (+ paper_years.json)
+    make_dev_subset_bfs.py        carve BFS connectivity-aware subset (+ paper_years.json)
     make_subset_citation_edges.py carve induced citation-edge subgraph for a subset
 doc/
   dynamics.md                     layer index
@@ -342,9 +438,11 @@ doc/
   still uses the spring / PBD layout solver. Final v2 commit is
   `v2 stage 6: PBD layout solver replacing spring physics`.
 - `v3` — current. Replaces the constraint solver entirely with
-  deterministic blend between two precomputed arrangements,
-  adds MDS as a second layout algorithm, adds the alignment-
-  correlation metric and cross-algorithm layout sweep, plus all
-  the slices documented in `doc/plan.md` (multi-level clustering,
-  bridge analysis, data-source + dim-reduction layers, two
-  viewers, save/load, optimisation + validation).
+  deterministic blend between precomputed arrangements, adds
+  MDS + UMAP-on-citation-graph as additional layout algorithms,
+  adds the alignment-correlation metric and cross-algorithm
+  layout sweep, plus all the slices documented in `doc/plan.md`
+  (multi-level clustering, bridge analysis, data-source +
+  dim-reduction layers, two viewers, save/load, optimisation +
+  validation, citation-aware embedding fusion + comparison
+  slider, opt-in citation layout).

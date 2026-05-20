@@ -158,32 +158,59 @@ and main.js's sub-stage caching.
 
 ---
 
-## 4. Layout dynamics: deterministic blend between two topologies
+## 4. Layout dynamics: deterministic blend between layouts
 
-Live node positions are produced by linear interpolation between two
-precomputed endpoint arrangements: `basePos` (Layer 1's Gaussian-
-mixture cloud, α=0) and `alignedCitationLayout` (Layer 4's citation-
-driven layout, after per-component similarity alignment to basePos,
-α=1). The slider value `α ∈ [0, 1]` picks where on the continuum the
-user wants to see; the per-frame work is one lerp per data node.
+Live node positions are produced by **nested linear interpolation**
+over two independent sliders, between up to three precomputed
+endpoint arrangements:
+
+- `_basePosPreFusion` — pre-fusion semantic basePos (Layer 1.5
+  viz on noise-stage output; non-null only when the fusion
+  sub-stage is active).
+- `_basePos` — post-fusion basePos (Layer 1.5 viz on fusion-stage
+  output; identical to pre-fusion when fusion is identity).
+- `alignedCitationLayout` — Layer 4's citation-driven layout
+  after Layer 5a alignment.
+
+The two sliders are `state.blend` and `state.fusionBlend`. The
+per-frame work is two lerps per data node:
+
+```
+effective = lerp(_basePosPreFusion, _basePos,             fusionBlend)
+live      = lerp(effective,         alignedCitationLayout, blend)
+```
+
+When `_basePosPreFusion` is null the inner lerp collapses to
+`_basePos` and the model reduces to the original two-endpoint
+design. When `alignedCitationLayout` is null (citation layout
+not yet applied — see §6.16 in `doc/plan.md`) the hook bails
+entirely.
 
 **See `doc/blend.md`** for:
 
 - §1 the per-component similarity alignment that produces
-  `alignedCitationLayout` from the raw citation-layout output
-  (rotation + uniform scale + translation, per connected component;
-  match-RMS scale rather than Procrustes-optimal; Horn quaternion +
-  Jacobi eigendecomp for the rotation)
-- §1.5 the alignment correlation coefficient — a `[0, 1]` quality
-  metric that falls out of the alignment math for free, surfaced in
-  the Citation Layout ▾ modal and used as the ranking metric for
-  the layout sweep
-- §2 the per-frame blend — `live = (1 − α)·basePos + α·alignedCitationPos`
-  registered as a d3-force-3d hook, with `d3VelocityDecay = 1.0` so
-  no velocity integration interferes
-- §3 the recompute lanes (which trigger refreshes which buffers)
-- §4 historical context: why v3 replaced v2's spring / PBD constraint
-  solver with this deterministic blend
+  `alignedCitationLayout` (rotation + uniform scale + translation,
+  per connected component; match-RMS scale rather than
+  Procrustes-optimal; Horn quaternion + Jacobi eigendecomp for
+  the rotation)
+- §1.5 the alignment correlation coefficient — a `[0, 1]`
+  quality metric that falls out of the alignment math for free
+- §1.8 `alignGlobal` — whole-graph Procrustes variant used for
+  pre-fusion → post-fusion alignment so the fusion-comparison
+  slider walks the short geometric path
+- §2 the per-frame nested-lerp blend, registered as a d3-force-3d
+  hook with `d3VelocityDecay = 1.0` so no velocity integration
+  interferes
+- §3 the recompute lanes (including the opt-in policy that stops
+  the cascade at Layer 3 — `relayoutCitations()` runs only on
+  explicit user Apply)
+- §4 historical context: why v3 replaced v2's spring / PBD
+  constraint solver with this deterministic blend
+
+**See `doc/fusion.md`** for the Layer 1.5 fusion sub-stage:
+graph-diffusion (APPNP-style anchored), the fusion-comparison
+slider, the "Cluster — pre-fusion" colour mode, and the cost /
+parameter notes.
 
 What's stable across the implementation (and therefore safe to rely
 on from elsewhere):
@@ -217,8 +244,10 @@ on from elsewhere):
 | `density`, `intraRate`, `crossRate`                  | Stage 4 budget                         | resample → relayout                                                   |
 | `epsilonIntra`, `epsilonCross`                       | Stage 4 base rates                     | resample → relayout                                                   |
 | `samplingSeed`, *Randomize sampling*                 | Stage 4                                | resample → relayout                                                   |
-| Citation Layout ▾ algorithm switch / layout-modal sliders | Citation-layout params (FR knobs)     | relayout (FR + per-component alignment)                              |
+| Citation Layout ▾ algorithm switch / layout-modal Apply | Citation-layout params (FR / MDS / UMAP-on-graph knobs) | relayout (chosen algo + per-component alignment) — **opt-in, only on Apply** |
 | `blend` (slider)                                     | Per-frame interpolation factor only    | reheat (no recompute; blend force re-reads each tick)                |
+| `fusionBlend` (slider)                               | Per-frame interpolation factor only    | reheat (no recompute; blend force re-reads each tick)                |
+| Fusion (Layer 1.5) algorithm switch / params         | Citation-aware re-embedding            | redimred → recluster → reneighbour → resampleViaImport → mark layout stale |
 | `baseDensity` (visual)                               | Visible base edges only                | rebuild graph data (no layout change)                                |
 | Freeze                                               | Sim pause                              | `Graph.pauseAnimation/resumeAnimation`                                |
 | edge toggles, colours, γ                             | Render only                            | rebuild graph data / refresh                                          |

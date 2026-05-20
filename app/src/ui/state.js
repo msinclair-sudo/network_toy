@@ -55,11 +55,31 @@ const state = {
   embedding:             null,    // Real-data Layer 1 output: {d, data:Float32Array(n*d)} — high-dim
                                   //   feature vectors, set when the active data source supplied them.
                                   //   Layer 1.5 reads this as its noise-stage input. Null in toy mode.
+  rawCitationEdges:      null,    // Citation graph cached at ingest time, populated by data sources
+                                  //   that can supply edges directly (today: real-data via
+                                  //   produceReal()). Flat number[] of length 2|E| in [src, dst, src,
+                                  //   dst, …] form. Read-only outside the data-source layer —
+                                  //   consumers: dimred fusion stage, Layer 3 imported-edges. Null in
+                                  //   toy mode (taste-network generates citations later in the
+                                  //   pipeline; fusion stage falls through as identity).
   dimredResult:          null,    // Layer 1.5 output: {method, params, n, d, data:Float32Array(n*d)}
                                   //   Layer 2 reads from this for distance computations.
+  dimredResultPreFusion: null,    // Layer 1.5 *without* fusion applied — same shape as dimredResult.
+                                  //   Populated only when fusion is non-identity; lets the cluster
+                                  //   lane produce a parallel pre-fusion clusterLevels for A/B colour
+                                  //   comparison. Null when fusion=identity (nothing to compare).
+  _basePosPreFusion:     null,    // Float32Array(n × 3) — viz UMAP-3 result on the pre-fusion (noise-
+                                  //   stage) embedding. Drives the fusion-comparison slider in the
+                                  //   blend hook; nested with the existing basePos↔citation blend.
+                                  //   Null when fusion=identity OR fusion is set but the cascade
+                                  //   hasn't produced one yet.
   clusterLevels:         null,    // Layer 2 output: [{uid, scope, clusterResult}] one per level
+  clusterLevelsPreFusion:null,    // Same shape as clusterLevels, but computed on dimredResultPreFusion.
+                                  //   Drives the "Color by pre-fusion clusters" colour mode. Null when
+                                  //   pre-fusion compute didn't run.
   clusterResult:         null,    // Backward-compat alias for the FINEST level's clusterResult
                                   //   (used by panels that aren't yet level-aware)
+  clusterResultPreFusion:null,    // Backward-compat alias for clusterLevelsPreFusion's finest level.
   neighbourhoodResult:   null,    // taste-network internal: {neighbourhoods, nodeNeighbourhood}
   tasteResult:           null,    // taste-network internal: {tasteByNeighbourhood, tasteByCluster}
   citationResult:        null,    // Layer 3 output: CitationResult contract
@@ -150,6 +170,12 @@ const state = {
   selection: { type: null, id: null },
   filter: null,
   blend: 0.0,
+  // Fusion-comparison slider (Layer 1.5 A/B). Interpolates basePos
+  // between pre-fusion (semantic-only) and post-fusion (citation-aware)
+  // positions. Inert when _basePosPreFusion is null — i.e. fusion is
+  // identity (toy mode default) OR pre-fusion compute hasn't run yet.
+  // 0 = pre-fusion semantic, 1 = post-fusion citation-aware embedding.
+  fusionBlend: 1.0,
 
   // ── viewer-3d display toggles ────────────────────────────────
   // Which edge layers to draw, and their per-layer styling. Mirrors
@@ -289,6 +315,10 @@ export function setActiveAlgorithm(layer, algoId) {
 
 export function setBlend(alpha) {
   update({ blend: Math.max(0, Math.min(1, +alpha || 0)) });
+}
+
+export function setFusionBlend(alpha) {
+  update({ fusionBlend: Math.max(0, Math.min(1, +alpha || 0)) });
 }
 
 // Switch the active data source. Mirrors mode into both the legacy

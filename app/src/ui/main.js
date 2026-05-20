@@ -15,7 +15,7 @@ import { mountTopbar }         from "./topbar.js";
 import { mountDataPanel }      from "./data-panel.js";
 import { mountWorkflowChart }  from "./workflow-chart.js";
 import { mountPanelSystem }    from "./panel-system.js";
-import { setBlend, setView, getState, subscribe } from "./state.js";
+import { setBlend, setFusionBlend, setView, getState, subscribe } from "./state.js";
 import * as engine             from "./engine.js";
 
 export function boot() {
@@ -24,6 +24,7 @@ export function boot() {
   mountWorkflowChart();
   mountPanelSystem();
   mountBlendSlider();
+  mountFusionBlendSlider();
   mountEdgeControls();
 
   // Run the toy pipeline once so the 3D viewer has data on first
@@ -57,6 +58,41 @@ function mountBlendSlider() {
     if (Math.abs(+input.value - state.blend) > 1e-9) {
       input.value = String(state.blend);
       readout.textContent = state.blend.toFixed(2);
+    }
+  });
+}
+
+// Fusion-comparison slider — interpolates between pre-fusion and
+// post-fusion basePos via the same blend hook (nested lerp inside
+// makeBlendForce). Hidden when _basePosPreFusion is null (fusion is
+// identity or hasn't run); shown as soon as a fusion run produces a
+// pre-fusion endpoint to compare against.
+function mountFusionBlendSlider() {
+  const row     = document.getElementById("fusion-blend-row");
+  const input   = document.getElementById("fusion-blend-slider");
+  const readout = document.getElementById("fusion-blend-readout");
+  if (!row || !input || !readout) return;
+
+  const s0 = getState();
+  input.value = String(s0.fusionBlend);
+  readout.textContent = (+input.value).toFixed(2);
+  row.style.display = s0._basePosPreFusion ? "" : "none";
+
+  input.addEventListener("input", (e) => {
+    const v = +e.target.value;
+    setFusionBlend(v);
+    readout.textContent = v.toFixed(2);
+  });
+
+  subscribe((state) => {
+    if (Math.abs(+input.value - state.fusionBlend) > 1e-9) {
+      input.value = String(state.fusionBlend);
+      readout.textContent = state.fusionBlend.toFixed(2);
+    }
+    const wantShown = !!state._basePosPreFusion;
+    const isShown   = row.style.display !== "none";
+    if (wantShown !== isShown) {
+      row.style.display = wantShown ? "" : "none";
     }
   });
 }

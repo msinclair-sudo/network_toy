@@ -24,6 +24,7 @@
 import { computeIdentity, defaultIdentityParams } from "./identity.js";
 import { computePca,      defaultPcaParams      } from "./pca.js";
 import { computeUmap,     defaultUmapParams     } from "./umap.js";
+import * as graphDiffusion                       from "./graph-diffusion.js";
 
 export const ALGORITHMS = [
   {
@@ -55,6 +56,35 @@ export const ALGORITHMS = [
         format: (v) => String(v),
         hint: "How many directions to keep. Recommended: 100 — keeps the signal in 768-d embeddings while dropping noise. Compute clamps automatically when the input has fewer dimensions, so it's safe to leave at 100 even for toy data.",
         sweepValues: [50, 100, 200],
+      },
+    ],
+  },
+  {
+    id: graphDiffusion.ID,
+    label: "Graph diffusion (citation-aware)",
+    family: ["fusion"],
+    description: "Pulls papers that cite each other closer in feature space while keeping each paper anchored to its original SPECTER2 vector. Anchored graph diffusion (APPNP): X' = (1−α)·X + α·(D⁻¹A)·X' iterated k times. Requires citation edges loaded at ingest time — toy data sources skip this stage.",
+    defaultParams:        graphDiffusion.defaultParams,
+    defaultParamsForSlot: (_slot) => ({ alpha: 0.3, iterations: 4 }),
+    compute: (input, params) => graphDiffusion.compute(input, params),
+    modalSchema: [
+      {
+        key:   "alpha",
+        label: "Citation influence (α)",
+        kind:  "range",
+        min:   0, max: 0.95, step: 0.05,
+        format: (v) => (+v).toFixed(2),
+        hint:  "How much each paper's vector is pulled toward its citation neighbours per iteration. 0 = no fusion (identical to identity); higher = more citation influence on the topic map. Recommended start: 0.3 — mild fusion that preserves SPECTER2's semantic content.",
+        sweepValues: [0.1, 0.3, 0.5, 0.7],
+      },
+      {
+        key:   "iterations",
+        label: "Diffusion depth (k)",
+        kind:  "int",
+        min:   1, max: 20, step: 1,
+        format: (v) => String(v),
+        hint:  "How many hops information propagates. Each iteration moves citation influence one hop further. Recommended 4 — covers most short-path influence on a giant component. Higher dilutes the original SPECTER2 signal more.",
+        sweepValues: [2, 4, 8, 12],
       },
     ],
   },

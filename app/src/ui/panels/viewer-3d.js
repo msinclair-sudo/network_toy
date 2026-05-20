@@ -113,6 +113,8 @@ export function mount(container, _state, config = {}, tabContext = null) {
   let lastDataRevision = -1;
   let resizeObs = null;
   let lastSelection = null;
+  let lastBlend = null;
+  let lastFusionBlend = null;
 
   // Settings overlay (gear button + popup with sliders).
   const settingsRoot = buildSettingsOverlay(container, cam, (newCam) => {
@@ -158,11 +160,16 @@ export function mount(container, _state, config = {}, tabContext = null) {
     const link   = Graph.d3Force("link");   if (link   && link.strength)   link.strength(0);
     const center = Graph.d3Force("center"); if (center && center.strength) center.strength(0);
 
-    // Blend hook reads state through getters every tick.
+    // Blend hook reads state through getters every tick. Two
+    // independent sliders feed it: (1) `blend` = basePos ↔ citation
+    // layout, and (2) `fusionBlend` = pre-fusion basePos ↔ post-fusion
+    // basePos (the citation-aware re-embedding endpoint).
     Graph.d3Force("blend", makeBlendForce({
       getBasePos:            () => getState()._basePos,
+      getBasePosPreFusion:   () => getState()._basePosPreFusion,
       getAlignedCitationPos: () => getState().alignedCitationLayout,
       getBlend:              () => getState().blend,
+      getFusionBlend:        () => getState().fusionBlend,
     }));
     Graph.d3VelocityDecay(1.0);
 
@@ -384,7 +391,9 @@ export function mount(container, _state, config = {}, tabContext = null) {
   init();
   if (Graph) rebuildData();
   lastDataRevision = getState().engineRevision;
-  let lastViewSig = viewSignature(getState().view);
+  lastBlend        = getState().blend;
+  lastFusionBlend  = getState().fusionBlend;
+  let lastViewSig  = viewSignature(getState().view);
 
   return {
     update(s) {
@@ -402,12 +411,27 @@ export function mount(container, _state, config = {}, tabContext = null) {
         lastDataRevision = s.engineRevision;
         lastViewSig      = viewSig;
         lastSelection    = s.selection;
+        lastBlend        = s.blend;
         if (dataChanged) {
           // New engine output may have added/removed cluster levels —
           // refresh the dropdown options.
           colourOverlay.refreshOptions();
         }
         return;
+      }
+
+      // Blend-slider change: d3-force-3d's tick loop quiesces when the
+      // network looks settled (instantly true under deterministic
+      // blending), so the blend hook stops firing and slider drags go
+      // ignored. Reheat + resume so the tick loop runs again and the
+      // hook picks up the new α. Matches the legacy shell's behaviour
+      // (main.js:1270-1277). Same applies to the fusion-comparison
+      // slider — it feeds the same blend hook via getFusionBlend.
+      if (s.blend !== lastBlend || s.fusionBlend !== lastFusionBlend) {
+        lastBlend       = s.blend;
+        lastFusionBlend = s.fusionBlend;
+        try { Graph.d3ReheatSimulation(); }   catch (_) {}
+        try { Graph.resumeAnimation();   }   catch (_) {}
       }
 
       // Selection-only change: re-paint colours, no rebuild.

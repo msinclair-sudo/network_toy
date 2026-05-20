@@ -19,25 +19,31 @@ Two-stage pipeline:
 citation graph + t + seed
     │
     ▼
-citation-layout/{fr|mds}.js  →  citationPos    (algorithm of choice)
+citation-layout/{fr|mds|umap-graph}.js  →  citationPos   (algorithm of choice)
     │
     ▼
-blend/align.js               →  alignedCitationPos
-                                 (per-component similarity
-                                  alignment to basePos)
+blend/align.js                          →  alignedCitationPos
+                                            (per-component similarity
+                                             alignment to basePos)
 ```
 
-The layout module exposes a registry; today there are two
+The layout module exposes a registry; today there are **three**
 algorithms with different flavours:
 
-| id                       | flavour     | what it preserves                                    |
-|--------------------------|-------------|------------------------------------------------------|
-| `fruchterman-reingold`   | cladogram   | topology only; edge LENGTHS are arbitrary force balance |
-| `mds-graph-distance`     | dendrogram  | per-pair distance ≈ graph-shortest-path distance     |
+| id                       | flavour       | what it preserves                                            |
+|--------------------------|---------------|---------------------------------------------------------------|
+| `fruchterman-reingold`   | cladogram     | topology only; edge LENGTHS are arbitrary force balance       |
+| `mds-graph-distance`     | dendrogram    | per-pair distance ≈ graph-shortest-path distance              |
+| `umap-graph`             | manifold      | **local** citation neighbourhoods (1-hop, padded with 2-hop)  |
 
-User picks via the **Citation Layout ▾** menu. Phase 7 added MDS;
-the registry pattern means future additions (spectral, hierarchical
-tree-by-`t`, etc.) plug in the same way.
+User picks via the **Citation Layout ▾** modal. Each algorithm
+suits a different scale and density regime — see §6 below.
+
+**Opt-in policy.** As of §6.16 the cascade no longer auto-runs
+this layer. After Layer 3 emits a citationResult, layout /
+alignment / blend are marked stale and the workflow chart shows
+orange dots. `relayoutCitations()` only runs when the user
+applies in the Citation Layout modal. See `doc/blend.md` §3.
 
 ---
 
@@ -260,7 +266,165 @@ of the layout, use FR.
 
 ---
 
-## 3. Alignment to basePos
+## 3. Layout: UMAP on the citation graph (manifold)
+
+`app/src/citation-layout/umap-graph.js`. Third entry, registered
+to address the two failure modes the other algorithms exhibit on
+sparse large-scale citation networks:
+
+- **FR collapses to a uniform spherical shell** at density
+  ≲ 0.005 — repulsion dominates and the outer wall clamps
+  everyone to the boundary (see §1.2 and §5).
+- **MDS produces nested orbital shells** at n ≳ 5000 — the
+  graph-distance matrix's top eigendirections dominate the
+  SMACOF stress, and the m²-BFS cost becomes prohibitive.
+
+UMAP on the citation graph avoids both by **discarding the
+global distance regime entirely** and preserving only local
+neighbourhoods — exactly the property MDS-at-scale loses.
+
+### 3.1 Why it works for citation graphs
+
+The citation literature converges on community / cluster
+structure as the most worth preserving in a visualisation (see
+VOSviewer's LinLog-modularity, CiteSpace's modified spring
+embedder, the broader graph-embedding family node2vec /
+DeepWalk). Stress-minimising and force-directed methods fail on
+sparse graphs because they assume the distance matrix is
+informative; for n=5000 with average degree ≈ 5, long shortest
+paths are unreliable and small perturbations swing distances by
+factors of 2 or more.
+
+UMAP's fuzzy-simplicial-set construction reads only the **direct
+neighbour list** per node (k-NN) and lets larger structure emerge
+from local overlaps. Citation adjacency *is* the k-NN graph: each
+paper's "neighbours" are the papers it cites + the papers that
+cite it.
+
+### 3.2 Adjacency preparation
+
+Symmetrise (A ∨ Aᵀ) so the algorithm treats direction-agnostic.
+Direction encodes time/flow but contains no positional meaning —
+two papers in a citation relationship belong near each other
+regardless of who cites whom.
+
+```
+For each citation edge (u, v):
+  adj[u].add(v)
+  adj[v].add(u)
+```
+
+### 3.3 Building the precomputed k-NN graph
+
+`nNeighbors` total slots per node (default 15, umap-js
+convention: includes self at index 0 with distance 0). Filled by
+BFS-layer expansion from the source node:
+
+```
+For each source s:
+  visited = {s}
+  output[s][0] = (s, distance 0)        # self
+  frontier = adj[s]                      # layer 1
+  hop = 1, slot = 1
+  while slot < nNeighbors and frontier non-empty:
+    for v in frontier:
+      output[s][slot++] = (v, distance hop)
+      mark v visited
+      if slot == nNeighbors: break
+    frontier = unvisited neighbours of last frontier
+    hop += 1
+  if slot < nNeighbors:
+    pad remaining slots with random unvisited nodes
+    at distance lastHop + 1
+```
+
+Two interpretive notes:
+
+- **Distance = hop count.** UMAP's fuzzy-set construction reads
+  these as ascending — the algorithm doesn't care about the
+  numeric scale, just the ordering and the local connectivity.
+  Hop 1 vs hop 2 is informative; absolute numbers are not.
+- **Padding for low-degree nodes.** Papers with degree < 14 get
+  the rest of their k-NN slots filled with 2-hop or 3-hop
+  neighbours via BFS, then with random unvisited nodes at a
+  distance just past the last real hop. UMAP downweights these
+  via the fuzzy-set normalisation; they prevent isolated-corner
+  embeddings without dominating the structure.
+
+### 3.4 UMAP fit
+
+Feeds umap-js's `setPrecomputedKNN(knnIndices, knnDistances)`
+API directly, then calls `fit(X)` with a dummy `X` (single-feature
+index vectors — UMAP doesn't consult X when k-NN is precomputed).
+nComponents = 3 for the 3D viewer.
+
+```js
+const umap = new UMAP({
+  nComponents: 3,
+  nNeighbors:  kTotal,
+  minDist:     params.minDist,
+  nEpochs:     params.iterations,
+  random:      mulberry32(seed ^ 0x9E3779B9),
+});
+umap.setPrecomputedKNN(knnIndices, knnDistances);
+const Y = umap.fit(X);     // X is dummy index vectors
+```
+
+Determinism: `mulberry32(seed)` flows in via the `random`
+parameter. Same `(n, edges, seed, params)` → byte-identical
+output across re-runs.
+
+### 3.5 Output centring + scale
+
+UMAP outputs in roughly `[-5, 10]` per axis with no canonical
+orientation. We centre at origin and multiply by a configurable
+`scaleD` so the output sits at a coordinate range comparable to
+FR / MDS before per-component alignment (`doc/blend.md` §1)
+scales it to basePos's extent:
+
+```
+out[i] = scale · (Y[i] − centroid(Y))
+```
+
+The whole-graph alignment in Layer 5a then takes care of the
+final visible scale.
+
+### 3.6 Parameters
+
+| Param        | Default | Range       | Effect                                                                                   |
+|--------------|---------|-------------|------------------------------------------------------------------------------------------|
+| `nNeighbors` | 15      | [4, 50]     | k-NN size (includes self). Higher = global structure; lower = local communities tighter |
+| `minDist`    | 0.1     | [0.0, 1.0]  | Minimum embedded distance between tight-cluster points. Lower = tighter packing         |
+| `iterations` | 500     | [50, 2000]  | UMAP optimisation epochs. 500 converges in ~3 s at n=5000 with precomputed k-NN          |
+
+### 3.7 Cost
+
+`O(|E| + n · k)` for k-NN construction (BFS expansion) +
+`O(iterations · n · k)` for UMAP optimisation. At n=5000,
+|E|=12 268, k=15, iterations=500: ~5–15 s wall time on modern V8,
+main-thread synchronous. Same Web Worker port that helps UMAP-50
+(`doc/plan.md` §6.11) applies here.
+
+### 3.8 Failure modes
+
+- **Highly disconnected graphs** — UMAP can't bridge components
+  except by accident; small components float as separate
+  "blobs" with no metric relationship to the giant component.
+  Per-component alignment in Layer 5a places each at its basePos
+  centroid; the gaps between them are basePos-determined, not
+  citation-determined. Honest — there's no citation evidence to
+  span the gap.
+- **Hub papers (high in-degree).** They sit between many
+  communities semantically and topologically — UMAP places them
+  at the boundary regions. After alignment, these are the nodes
+  that travel the most distance when the fusion-comparison
+  slider drags from α=0 to α=1. That's the algorithm's payoff;
+  see `doc/fusion.md` §6 for the cluster A/B colour-mode that
+  visualises this.
+
+---
+
+## 4. Alignment to basePos
 
 The layout produced by either §1 or §2 sits in its own coordinate
 frame (orientation, centroid, and scale picked by the algorithm's
@@ -283,7 +447,7 @@ coefficient that falls out for free as a quality metric.
 
 ---
 
-## 4. Output contract
+## 5. Output contract
 
 `Float32Array(n × 3)`. Every value finite. Indexed by data-node id:
 
@@ -299,11 +463,27 @@ basePos and lerps each frame.
 
 ---
 
-## 5. Failure modes worth knowing about
+## 6. Failure modes worth knowing about
 
 These are layout-side failure modes. Alignment-side failure modes
 (component overlap, two-node degeneracy, coincident-points) are
 documented in `doc/blend.md` §1.7.
+
+**Which algorithm for which scale / density:**
+
+- **FR** — toy (n ≤ 400) and small dense graphs. The cladogram
+  flavour is most informative when the time anchor has meaningful
+  variation (`t` values spread across [0, 1]); on real-data with
+  paper_years.json populated, FR makes sense again. On sparse
+  large graphs (n=5000, density ≈ 0.001) it collapses to a sphere.
+- **MDS** — toy and small connected components where intrinsic
+  graph dimensionality ≤ 3. At n ≳ 1000 the m²-BFS cost becomes
+  prohibitive and the layout degenerates into nested orbital
+  shells.
+- **UMAP-on-graph** — real-data (n = 1000+) sparse citation
+  networks. Best choice for the BFS-5000 fixture and anything
+  larger. Discards global distances; preserves local
+  neighbourhoods only.
 
 - **Very sparse graphs** (most nodes isolated) produce a layout
   where most nodes sit near origin and the few connected components

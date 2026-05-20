@@ -450,6 +450,90 @@ citations until the user dials them up. The other knobs are tuned so
 the staged taste model produces interesting structure at typical
 density values (≥ 0.3).
 
+### 4.2 Imported edges (real-data path)
+
+- **Module:** `app/src/citations/imported-edges.js`, with the
+  fetch-side importer at `app/src/citations/importers/json-file.js`.
+- **Registry id:** `imported-edges`
+- **Default params:** `{ importer: "json-file" }`
+- **Async:** yes — the importer does I/O.
+
+Materialises a **pre-existing citation graph** carved from
+`citgraphv2` into the same `CitationResult` shape that
+taste-network produces, so every downstream consumer (citation
+layout, Layer 5a alignment, viewer-3d edge rendering, in-degree
+colour mode) is source-agnostic.
+
+#### 4.2.1 When this algorithm runs
+
+Picked automatically by `engine.reingest()` when the active data
+source is `real`. The toy default stays at `taste-network`.
+
+The `imported-edges` algorithm declares two flags on its registry
+entry that drive the engine's cascade:
+
+- `needsNeighbourhoods: false` — short-circuits past the
+  `reneighbour()` / `retaste()` / `resample()` lanes. The
+  algorithm runs through a dedicated `resampleViaImport()` lane
+  that just calls `infer()` and materialises.
+- `needsBasePos: false` — unlike taste-network, doesn't need a
+  Euclidean basePos to reason about. The cascade reaches Layer 3
+  even on the real-data ingest path where basePos starts null
+  (it gets populated later when the user picks a 3-d viz
+  reduction).
+
+#### 4.2.2 Inputs
+
+- Embedding subset metadata (just `nodes.length` — i.e. n).
+- `dataSourceParams.subset` — the registered subset id (today:
+  `"dev_subset_1000"` or `"dev_subset_bfs_5000"`).
+
+Importer maps subset id → directory name inline (`SUBSET_DIRS` in
+`importers/json-file.js`) and fetches
+`/literture-network/artifacts/<dir>/citation_edges.json`.
+
+The same file is *also* fetched at ingest time by `produceReal()`
+and cached in `state.rawCitationEdges` for the Layer 1.5 fusion
+stage (see `doc/fusion.md` §4). Layer 3 currently re-fetches the
+same URL; HTTP cache covers the wire cost. Tightening this to
+read from `state.rawCitationEdges` is a follow-up.
+
+#### 4.2.3 Direction handling
+
+`citgraphv2`'s on-disk convention: `source_key → target_key`
+means "source is cited by target" (DB convention). The toy's
+`CitationResult.citations` convention is the inverse: `source`
+did the citing, `target` got cited. The materialiser flips
+direction on the way in:
+
+```
+For each (a, b) in the imported edge list  // "a is cited by b"
+  citations.push({ source: b, target: a })  // toy: b cites a
+  inDeg[a]++                                // a was cited
+  hasCit[a*n + b] = 1; hasCit[b*n + a] = 1
+  edges.push(min(a,b), max(a,b))
+```
+
+The fusion stage's diffusion is direction-agnostic (symmetric A
+∨ Aᵀ) so it doesn't care which direction the JSON stores.
+
+#### 4.2.4 No clustering, no neighbourhoods, no sampling
+
+The topology is **given, not inferred**. `cluster_result`,
+`neighbourhoodResult`, `tasteResult` are not consumed; the
+materialise function takes `(genResult, rawEdges, paramsEcho)`
+and writes the full `CitationResult` directly. `pools` is
+populated with diagnostic counters (`imported`, `dropped`,
+`selfLoops`) rather than taste-network's category buckets.
+
+#### 4.2.5 Scaling
+
+`O(|E|)` materialisation + `O(n²)` for the `hasCit` matrix. At
+BFS-5000 with |E|=12 268, `hasCit` is 25 MB and materialisation
+is sub-second. The `hasCit` cost is the same scaling-cliff
+liability taste-network has and is what motivates the sparse-
+storage upgrade in `doc/plan.md` §2.4.
+
 ---
 
 ## 5. Pipeline rerun semantics
