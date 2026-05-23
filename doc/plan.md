@@ -827,13 +827,52 @@ Known scale issues (deferred to §6.11 below):
   n=5000 it produces ~2300 clusters (mostly singletons). Either
   needs source-aware defaults or sweep via the Optimise tab.
 
-### 6.11 Web Worker port for heavy compute lanes ☐
+### 6.11 Web Worker port for heavy compute lanes ✓ — **Slices 1–3 shipped (2026-05-23)**
 
-UMAP, HDBSCAN, and FR all run synchronously on the main thread.
-At n=400 (toy) that's invisible; at n=5000 (BFS subset) the page
-becomes unresponsive for 30-90 s during each lane. The browser's
-unresponsive-script warning fires, even though the work is
-progressing.
+**What landed:** Slices 1–3 of the DAG-based worker port. The three
+heavy lanes (`redimred`, `recluster`, `relayoutCitations`) all run
+their compute in module workers via a generic `runDAG` walker. Toy
+mode is unaffected; at BFS-5000 + HDBSCAN the main thread stays
+responsive throughout the ~18 s clustering pass.
+
+Files:
+- `app/src/workers/{worker-runner, dag, dimred-worker, clustering-worker, layout-worker}.js` — runner, DAG walker, three module-worker entries.
+- `app/src/clustering-cascade.js` — multi-level cascade extracted from `engine.js` so the clustering worker can re-use the same code on the worker thread.
+- `app/src/ui/engine.js` — all three lanes now `async`, build DAGs, await `runDAG`.
+- `app/src/ui/modals/{algorithm-modal, clustering-modal, layer-descriptors}.js` — modal Apply now shows `Running…` and stays open until the async cascade resolves.
+- `app/src/dimred/umap.js`, `app/src/citation-layout/umap-graph.js` — full esm.sh URLs (not bare specifiers) so workers load identically to the main thread.
+
+Two follow-up bug fixes landed alongside (both pre-existing
+regressions exposed by the move off the main thread):
+- **Multi-level cluster dropdown** — `recluster()` now bumps
+  `engineRevision` so the viewer's colour-by dropdown refreshes
+  when levels are added/removed. Without it the DAG version
+  silently left the dropdown stuck at one level.
+- **Fusion slider when no citation layout** — `blend/blend.js`
+  used to bail entirely when `alignedCitationLayout` was null
+  (the default state since §6.16 made citation layout opt-in).
+  Now the inner pre/post-fusion lerp drives the viewer even
+  without citation layout — the outer α just forces to 0.
+- **`setLayerState("X", "running")`** at the start of each async
+  lane so the workflow chart shows in-flight work as orange while
+  workers crunch. Pre-DAG the page-freeze itself was the progress
+  signal; workers fixed responsiveness but exposed this gap.
+
+**Slice 4 (progress reporting)** still ☐ — deferred until §6.13
+busy pill lands or per-epoch UMAP progress becomes load-bearing.
+
+**Pending follow-ups** (issues observed but not blocking):
+- **Optimise → Validate hop is fire-and-forget.** `clustering-modal.js`'s `onApplyRow` calls `descriptor.applyChange(...)` then `setActiveTab("validate")` without awaiting. User lands on Validate tab while the apply is still in flight; if they hit Run, they validate stale clusters. Either gate Validate's Run button on `layerStates.clustering === "fresh"`, or show a Running indicator on the tab during in-flight apply.
+- **Optimise / Validate tab `algo.infer` calls still sync.** The eval surface (`app/src/eval/{bootstrap,sweep}.js`) calls `algo.infer` directly, not via the worker. Heavy sweeps (HDBSCAN × resolution grid at BFS scale) still freeze the page. Treat as a Slice 5 candidate: pipe the eval surface through workers too.
+
+See `RESUMING.md` (committed at the repo root) for the design
+notes + the postmortem of the two demo-night bugs that pushed us
+to revert + re-merge.
+
+**Background (kept for posterity):**
+UMAP, HDBSCAN, and FR all used to run synchronously on the main
+thread. At n=400 (toy) that's invisible; at n=5000 (BFS subset) the
+page became unresponsive for 30-90 s during each lane.
 
 **Locked decisions (2026-05-20):**
 - **Per-algorithm workers, lane-orchestrated.** Each algorithm
