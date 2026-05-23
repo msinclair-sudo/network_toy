@@ -19,6 +19,7 @@
 // and re-runs engine.redimred(). Cancel discards the working copy.
 
 import { openModal } from "./modal.js";
+import { enqueueBusy } from "../busy.js";
 
 const SECTIONS = [
   {
@@ -76,8 +77,7 @@ export function openDimredModal(descriptor) {
     body.appendChild(renderSection(section, working, descriptor));
   }
 
-  let modalHandle = null;
-  modalHandle = openModal({
+  const modalHandle = openModal({
     title: descriptor.label,
     body,
     actions: [
@@ -86,31 +86,20 @@ export function openDimredModal(descriptor) {
         label: "Apply",
         primary: true,
         onClick: () => {
-          // Heavy work (PCA + UMAP + recluster cascade) blocks the main
-          // thread. Show "Running…" on the button, yield once via
-          // setTimeout so the repaint lands, then run synchronously.
-          // Modal closes when we manually call modalHandle.close()
-          // after the work resolves.
-          startProgress(modalHandle);
-          setTimeout(async () => {
-            try { await descriptor.applyChange(working); }
-            catch (e) { console.error("[dimred-modal] applyChange failed:", e); }
-            modalHandle.close();
-          }, 30);
-          return false;
+          // Apply commits the working state, closes the modal, and
+          // hands the (potentially slow) engine cascade to the global
+          // busy queue. The bottom bar shows progress; the user is
+          // free to open another modal and stack a follow-up. The
+          // engine lanes update the bar's label as the cascade walks
+          // through (Dim-reduction… → Clustering… → Citations…).
+          enqueueBusy("Dim-reduction…", () => descriptor.applyChange(working))
+            .catch(e => console.error("[dimred-modal] applyChange failed:", e));
+          // returning undefined → modal closes via the default handler
         },
       },
     ],
   });
   return modalHandle;
-}
-
-function startProgress(handle) {
-  const btn = handle.dialog.querySelector(".modal-action.primary");
-  if (!btn) return;
-  btn.disabled = true;
-  btn.textContent = "Running…";
-  btn.classList.add("running");
 }
 
 function renderSection(section, working, descriptor) {

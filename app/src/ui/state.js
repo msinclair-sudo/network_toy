@@ -219,6 +219,15 @@ const state = {
     validate: null,   // {perCluster, aggregate, bootstrapsRun, settings, timestamp}
     optimise: null,   // {ranked, top, totalConfigs, completed, settings, scorerLabel, timestamp, runtime}
   },
+
+  // ── Global busy queue (§6.13). ──────────────────────────────────
+  // Drives the bottom status bar. null when idle. When a job runs:
+  //   current: { id, label, since }
+  //   queue:   [{ id, label }, …]  ← jobs waiting their turn
+  // Mutated only through actions in ui/busy.js (enqueueBusy +
+  // setBusyLabel) so the queue stays consistent with the in-memory
+  // pending list.
+  busy: null,
 };
 
 const subscribers = new Set();

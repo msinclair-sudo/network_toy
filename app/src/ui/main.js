@@ -15,6 +15,7 @@ import { mountTopbar }         from "./topbar.js";
 import { mountDataPanel }      from "./data-panel.js";
 import { mountWorkflowChart }  from "./workflow-chart.js";
 import { mountPanelSystem }    from "./panel-system.js";
+import { mountBusyBar }        from "./busy-bar.js";
 import { setBlend, setFusionBlend, setView, getState, subscribe } from "./state.js";
 import * as engine             from "./engine.js";
 
@@ -23,6 +24,7 @@ export function boot() {
   mountDataPanel();
   mountWorkflowChart();
   mountPanelSystem();
+  mountBusyBar();
   mountBlendSlider();
   mountFusionBlendSlider();
   mountEdgeControls();

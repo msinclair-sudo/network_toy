@@ -19,6 +19,7 @@
 // lane (recluster, relayoutCitations, …).
 
 import { openModal } from "./modal.js";
+import { enqueueBusy } from "../busy.js";
 
 export function openAlgorithmModal(descriptor) {
   const active = descriptor.getActive();
@@ -171,8 +172,7 @@ export function openAlgorithmModal(descriptor) {
     renderForAlgo(algoSelect.value);
   });
 
-  let modal = null;
-  modal = openModal({
+  const modal = openModal({
     title: descriptor.label,
     body,
     actions: [
@@ -181,28 +181,16 @@ export function openAlgorithmModal(descriptor) {
         label: "Apply",
         primary: true,
         onClick: () => {
-          // applyChange is async (descriptors await their engine lane —
-          // workers don't return synchronously). Show Running… on the
-          // button, yield once so the repaint lands, then await and
-          // close manually. Mirrors the dimred-modal pattern.
-          startProgress(modal);
-          setTimeout(async () => {
-            try { await descriptor.applyChange(chosenAlgoId, chosenParams); }
-            catch (e) { console.error("[algorithm-modal] applyChange failed:", e); }
-            modal.close();
-          }, 30);
-          return false;          // suppress default close-on-click
+          // Apply commits the choice, closes the modal, and hands the
+          // (potentially slow) engine cascade to the global busy queue.
+          // The engine lane's own setBusyLabel calls override this
+          // generic "Applying…" label as the cascade walks; the user
+          // sees the specific step in the bottom bar.
+          enqueueBusy("Applying…", () => descriptor.applyChange(chosenAlgoId, chosenParams))
+            .catch(e => console.error("[algorithm-modal] applyChange failed:", e));
         },
       },
     ],
   });
   return modal;
-}
-
-function startProgress(handle) {
-  const btn = handle.dialog.querySelector(".modal-action.primary");
-  if (!btn) return;
-  btn.disabled = true;
-  btn.textContent = "Running…";
-  btn.classList.add("running");
 }

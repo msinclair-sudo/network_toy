@@ -15,6 +15,7 @@ import { openModal } from "./modal.js";
 import { buildConfigureTab } from "./clustering-tabs/configure-tab.js";
 import { buildOptimiseTab }  from "./clustering-tabs/optimise-tab.js";
 import { buildValidateTab }  from "./clustering-tabs/validate-tab.js";
+import { enqueueBusy }       from "../busy.js";
 
 const TABS = [
   { id: "configure", label: "Configure" },
@@ -99,9 +100,8 @@ export function openClusteringModal(descriptor) {
           tabHandles.configure.overwrite(row.algoId, levels);
         }
         setActiveTab("validate");
-        Promise.resolve(descriptor.applyChange(row.algoId, levels)).catch(e => {
-          console.error("[clustering-modal] onApplyRow applyChange failed:", e);
-        });
+        enqueueBusy("Clustering…", () => descriptor.applyChange(row.algoId, levels))
+          .catch(e => console.error("[clustering-modal] onApplyRow applyChange failed:", e));
       },
     });
     if (tabId === "validate") return buildValidateTab(host);
@@ -122,33 +122,20 @@ export function openClusteringModal(descriptor) {
         label: "Apply",
         primary: true,
         onClick: () => {
-          // applyChange is async (descriptor → engine.recluster runs in
-          // workers). Show Running… on the button + keep the modal open
-          // until the cascade resolves so the user knows the click
-          // registered. Mirrors the dimred-modal + algorithm-modal
-          // pattern.
-          startProgress(modalHandle);
-          setTimeout(async () => {
-            try {
-              const w = tabHandles.configure && tabHandles.configure.getWorking();
-              if (w) await descriptor.applyChange(w.algoId, w.levels);
-            } catch (e) {
-              console.error("[clustering-modal] applyChange failed:", e);
-            }
-            modalHandle.close();
-          }, 30);
-          return false;         // suppress default close-on-click
+          // Apply commits the Configure tab's working state, closes
+          // the modal, and hands the (potentially slow) cascade to
+          // the global busy queue. The bottom bar shows progress with
+          // labels updated by the engine lanes (Clustering… →
+          // Citations…).
+          const w = tabHandles.configure && tabHandles.configure.getWorking();
+          if (w) {
+            enqueueBusy("Clustering…", () => descriptor.applyChange(w.algoId, w.levels))
+              .catch(e => console.error("[clustering-modal] applyChange failed:", e));
+          }
+          // returning undefined → modal closes
         },
       },
     ],
   });
   return modalHandle;
-}
-
-function startProgress(handle) {
-  const btn = handle.dialog.querySelector(".modal-action.primary");
-  if (!btn) return;
-  btn.disabled = true;
-  btn.textContent = "Running…";
-  btn.classList.add("running");
 }

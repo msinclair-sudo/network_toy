@@ -10,6 +10,7 @@
 import { getState, subscribe, setToyParam, setProjectName, update } from "./state.js";
 import { serialiseState }   from "../persistence/serialise.js";
 import { deserialiseFile }  from "../persistence/deserialise.js";
+import { enqueueBusy }      from "./busy.js";
 
 const MENUS = [
   {
@@ -187,18 +188,21 @@ function saveProject({ promptForName }) {
     setProjectName(name);
   }
 
-  let blob;
-  try {
-    // Re-read state — projectName was just set above, so it lands in
-    // the saved bundle.
-    blob = serialiseState(getState());
-  } catch (e) {
-    console.error("[topbar] save failed:", e);
-    window.alert("Save failed — see browser console.");
-    return;
-  }
-
-  triggerDownload(blob, `${name}.zip`);
+  // Hand the (possibly slow at BFS scale) serialise+download to the
+  // busy queue so the bottom bar shows progress. We don't await here;
+  // the queue runs the job when prior work finishes and the user can
+  // keep interacting.
+  enqueueBusy(`Saving "${name}"…`, async () => {
+    let blob;
+    try {
+      blob = serialiseState(getState());
+    } catch (e) {
+      console.error("[topbar] save failed:", e);
+      window.alert("Save failed — see browser console.");
+      return;
+    }
+    triggerDownload(blob, `${name}.zip`);
+  });
 }
 
 function loadProject() {
@@ -206,34 +210,37 @@ function loadProject() {
   input.type = "file";
   input.accept = ".zip,application/zip";
   input.style.display = "none";
-  input.addEventListener("change", async () => {
+  input.addEventListener("change", () => {
     const file = input.files && input.files[0];
     input.remove();
     if (!file) return;
-    let res;
-    try {
-      res = await deserialiseFile(file);
-    } catch (e) {
-      console.error("[topbar] load failed:", e);
-      window.alert(`Load failed: ${e.message || e}`);
-      return;
-    }
-    // Apply the patch wholesale — engine cascade is intentionally
-    // skipped (we have all the results already; re-running would
-    // overwrite them and defeat the point of saving). engineRevision
-    // bumps so panels rebuild from the loaded data.
-    const cur = getState();
-    update({
-      ...res.patch,
-      // Default the reconstructed-but-missing slots so the UI doesn't
-      // see undefined. clusterResult is rebuilt from clusterLevels.
-      clusterResult:  res.patch.clusterLevels && res.patch.clusterLevels.length
-                       ? res.patch.clusterLevels[res.patch.clusterLevels.length - 1].clusterResult
-                       : null,
-      projectName:    res.patch.projectName || stripExtension(file.name),
-      engineRevision: cur.engineRevision + 1,
+    // Hand the deserialise + state-apply to the busy queue. Loading a
+    // BFS-5000 project archive can take a few seconds (unzip + binary
+    // payload reassembly); the bottom bar shows progress meanwhile.
+    enqueueBusy(`Loading "${file.name}"…`, async () => {
+      let res;
+      try {
+        res = await deserialiseFile(file);
+      } catch (e) {
+        console.error("[topbar] load failed:", e);
+        window.alert(`Load failed: ${e.message || e}`);
+        return;
+      }
+      // Apply the patch wholesale — engine cascade is intentionally
+      // skipped (we have all the results already; re-running would
+      // overwrite them and defeat the point of saving). engineRevision
+      // bumps so panels rebuild from the loaded data.
+      const cur = getState();
+      update({
+        ...res.patch,
+        clusterResult:  res.patch.clusterLevels && res.patch.clusterLevels.length
+                         ? res.patch.clusterLevels[res.patch.clusterLevels.length - 1].clusterResult
+                         : null,
+        projectName:    res.patch.projectName || stripExtension(file.name),
+        engineRevision: cur.engineRevision + 1,
+      });
+      console.log(`[topbar] loaded project '${file.name}' (saved ${res.manifest.savedAt})`);
     });
-    console.log(`[topbar] loaded project '${file.name}' (saved ${res.manifest.savedAt})`);
   });
   document.body.appendChild(input);
   input.click();

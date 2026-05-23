@@ -1699,3 +1699,81 @@ td.node-table-spread, td.node-table-stab { width: 50px; }
   border-color: var(--accent);
   color: var(--accent);
 }
+
+/* ── bottom busy bar (§6.13) ────────────────────────────────────────── */
+
+/* Fixed-position strip at the viewport bottom. Hidden via the `hidden`
+   attribute when state.busy is null; ui/busy-bar.js toggles it on
+   state change. Reuses the same shimmer keyframes as modal-action.running
+   so the visual language stays consistent. */
+#busy-bar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 200;             /* above panels, below modal-root (z=1000+) */
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  background: var(--bg-3);
+  border-top: 1px solid #353a44;
+  color: var(--text);
+  font-size: 12px;
+  font-family: var(--mono, ui-monospace, SFMono-Regular, monospace);
+  overflow: hidden;
+}
+#busy-bar[hidden] { display: none; }
+
+#busy-bar::after {
+  /* Shimmer sweep across the whole bar to signal in-flight work.
+     Identical timing to modal-action-running so the two surfaces
+     read as the same "we are working" cue. */
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent              0%,
+    rgba(97, 175, 239, 0.10) 50%,
+    transparent              100%
+  );
+  background-size: 200% 100%;
+  animation: modal-action-running 1.8s linear infinite;
+  pointer-events: none;
+}
+
+#busy-bar .busy-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex-shrink: 0;
+  /* gentle pulse so the dot reads as "alive" even when shimmer is
+     subtle. */
+  animation: busy-dot-pulse 1.4s ease-in-out infinite;
+}
+@keyframes busy-dot-pulse {
+  0%, 100% { opacity: 0.55; }
+  50%      { opacity: 1.0; }
+}
+
+#busy-bar .busy-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+#busy-bar .busy-queue-count {
+  color: var(--text-dim);
+  flex-shrink: 0;
+}
+#busy-bar .busy-queue-count[hidden] { display: none; }
+
+#busy-bar .busy-elapsed {
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}

@@ -11,6 +11,7 @@
 // and the modal stays open until the work completes.
 
 import { openModal } from "./modal.js";
+import { enqueueBusy } from "../busy.js";
 
 export function openDataSourceModal(descriptor) {
   const active = descriptor.getActive();
@@ -82,8 +83,7 @@ export function openDataSourceModal(descriptor) {
   });
   renderForSource(chosenId);
 
-  let modalHandle = null;
-  modalHandle = openModal({
+  const modalHandle = openModal({
     title: descriptor.label,
     body,
     actions: [
@@ -92,33 +92,19 @@ export function openDataSourceModal(descriptor) {
         label: "Apply",
         primary: true,
         onClick: () => {
-          // Show progress on the button itself; the real source
-          // fetches over the network + runs the full pipeline, which
-          // can take seconds. Schedule the heavy work via setTimeout
-          // so the button repaint lands first, then await + close on
-          // done. applyChange is async — without await, modal would
-          // close the instant the Promise is created.
-          startProgress(modalHandle);
-          setTimeout(async () => {
-            try { await descriptor.applyChange(chosenId, chosenParams); }
-            catch (e) { console.error("[datasource-modal] applyChange failed:", e); }
-            modalHandle.close();
-          }, 30);
-          return false;   // keep open until we close manually
+          // Apply commits the source choice, closes the modal, and
+          // hands the (potentially slow) reingest + downstream cascade
+          // to the global busy queue. Real source fetches over the
+          // network can take 10-30 s at BFS-5000; the bottom bar
+          // shows the current step ("Loading data…" → "Dim-reduction…"
+          // → "Clustering…").
+          enqueueBusy("Loading data…", () => descriptor.applyChange(chosenId, chosenParams))
+            .catch(e => console.error("[datasource-modal] applyChange failed:", e));
         },
       },
     ],
   });
   return modalHandle;
-}
-
-function startProgress(handle) {
-  const btn = handle.dialog.querySelector(".modal-action.primary");
-  if (!btn) return;
-  btn.disabled = true;
-  btn.dataset.originalLabel = btn.textContent;
-  btn.textContent = "Running…";
-  btn.classList.add("running");
 }
 
 function renderField(field, params) {
