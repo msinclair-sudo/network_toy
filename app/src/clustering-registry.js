@@ -18,6 +18,20 @@ import { inferConnectedComponents, defaultCCParams } from "./clustering-cc.js";
 // and must return a ClusterResult. Distance computations run in
 // dimredResult's space; cluster.centre / cluster.spread stay in basePos
 // (3-d) space per the cluster contract.
+//
+// modalSchema scale annotation (used by the target-range sweep's
+// Latin-hypercube sampler in eval/lhs.js):
+//
+//   scale: "linear"  — uniform random in [min, max].  Default when
+//                       absent. Right for small ranges (1-20, 0-1)
+//                       and any field whose min is 0 (log undefined).
+//   scale: "log"     — log-uniform in [min, max]. Right for fields
+//                       whose useful values span multiple orders of
+//                       magnitude (e.g. minClusterSize 2-500).
+//
+// Numeric fields without `scale` are linear by default. `select` and
+// boolean fields ignore scale entirely (sampler enumerates / cycles
+// their options).
 export const ALGORITHMS = [
   {
     id: "mutualKNN",
@@ -61,6 +75,11 @@ export const ALGORITHMS = [
         label: "min cluster size",
         kind: "int",
         min: 2, max: 500, step: 1,
+        // Log-scaled: useful values span 2-10 (toy), 10-50 (mid),
+        // 50-500 (macro-clusters at real-data scale). Linear sampling
+        // would over-represent the 100-500 band where cluster-count
+        // changes are slow.
+        scale: "log",
         format: (v) => String(v),
         hint: "Smallest acceptable cluster size. Splits where one side falls below the threshold dissolve the smaller side into noise. Larger values → fewer, more substantial clusters. Scale with dataset size: 5-20 at n≈400 gives fine clusters; 50-200 at n≈5000 gives a small number of macro-clusters suitable for a top-level partition.",
         sweepValues: [2, 5, 10, 20, 50, 100, 200],
