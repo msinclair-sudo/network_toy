@@ -30,6 +30,10 @@ doc/ui.md
 # diagnostic harnesses and acceptance scripts kept locally, not shared
 scratch/
 
+# user-generated project archives (File ▾ → Save in the app) — these
+# are personal exports of session state, not source code.
+saves/
+
 # legacy real-data pipeline — the v3 toy is moving away from this
 # framework; nothing in literture-network/ is committed even though the
 # toy currently reads its dev_subset artifacts for the real data-source
