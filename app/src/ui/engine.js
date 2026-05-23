@@ -572,6 +572,12 @@ export function recluster() {
     // Validate / Optimise tabs don't show outdated scores. The user
     // can re-run; we'd rather an empty tab body than misleading data.
     evalResults: { validate: null, optimise: null },
+    // Bump engineRevision so panels rebuild — the colour-by dropdown
+    // depends on this signal to refresh its options when cluster
+    // levels are added or removed. Without it, adding a second level
+    // updates state.clusterLevels but the viewer's option list stays
+    // pinned to whatever it had at the last upstream cascade.
+    engineRevision: s.engineRevision + 1,
   });
   setLayerState("clustering", "fresh");
   reneighbour();

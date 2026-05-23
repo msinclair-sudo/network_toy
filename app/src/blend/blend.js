@@ -27,10 +27,16 @@ export function makeBlendForce({
     const n = nodes.length;
     if (n === 0) return;
     const bp = getBasePos();
+    if (!bp) return;                   // no basePos = nothing to render
+    // alignedCitationPos may be null when the user hasn't applied a
+    // citation layout yet (per §6.16 the cascade stops at Layer 3 and
+    // citation layout is opt-in). We still want the inner pre/post-
+    // fusion blend to be drivable in that state — the fusion slider
+    // is meaningful on its own. Effective outer α is forced to 0
+    // when cp is missing, and we skip the cp term in the final write.
     const cp = getAlignedCitationPos();
-    if (!bp || !cp) return;
     const stride = bp.length / 3;
-    let a = +getBlend() || 0;
+    let a = cp ? (+getBlend() || 0) : 0;
     if (a < 0) a = 0;
     else if (a > 1) a = 1;
     const oneMinusA = 1 - a;
@@ -67,9 +73,16 @@ export function makeBlendForce({
       } else {
         bx = bp[ix]; by = bp[iy]; bz = bp[iz];
       }
-      ni.x = oneMinusA * bx + a * cp[ix];
-      ni.y = oneMinusA * by + a * cp[iy];
-      ni.z = oneMinusA * bz + a * cp[iz];
+      if (cp) {
+        ni.x = oneMinusA * bx + a * cp[ix];
+        ni.y = oneMinusA * by + a * cp[iy];
+        ni.z = oneMinusA * bz + a * cp[iz];
+      } else {
+        // No citation layout → effective basePos (post-fusion-blend)
+        // IS the final position. Slider still drives bx/by/bz via the
+        // inner fusion lerp above.
+        ni.x = bx; ni.y = by; ni.z = bz;
+      }
     }
   }
   force.initialize = function (_nodes) { nodes = _nodes; };
