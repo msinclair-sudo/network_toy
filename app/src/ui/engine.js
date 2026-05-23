@@ -294,6 +294,14 @@ export async function redimred() {
     return;
   }
 
+  // Mark the layer as "running" so the workflow chart's status dot
+  // turns orange while the workers crunch. The matching "fresh" set
+  // at the end of the lane swaps it back to green. Without this the
+  // dot stays green throughout the (potentially 30+ s) compute and
+  // there's no visible progress signal outside the modal's Running…
+  // button.
+  setLayerState("dimred", "running");
+
   // Snapshot what we need from `s` up front. After the await we'll
   // re-read state for the freshest version of any slot that other
   // lanes might have touched, but the per-lane inputs (genResult
@@ -588,6 +596,11 @@ export async function recluster() {
 
   if (!cfg || !cfg.levels || cfg.levels.length === 0) return;
 
+  // Mark the layer "running" so the workflow chart's status dot turns
+  // orange while the worker crunches (HDBSCAN at BFS-5000 is ~18 s).
+  // The matching "fresh" set at the end swaps it back to green.
+  setLayerState("clustering", "running");
+
   // The clustering algorithms only read .id + .basePos off each node,
   // so we ship a slim view to the worker. Saves ~10× on postMessage
   // copy at real-data scale (genResult.nodes carries embedding,
@@ -833,6 +846,14 @@ export async function relayoutCitations() {
   const n = s.genResult.nodes.length;
   const t = new Float32Array(n);
   for (let i = 0; i < n; i++) t[i] = s.genResult.nodes[i].t;
+
+  // Mark "running" so the workflow chart's layout / alignment / blend
+  // dots reflect the in-flight work. UMAP-on-graph at BFS-5000 is
+  // ~5-15 s; without this signal there's no visible progress outside
+  // the modal's Running… button. We only mark "layout" running (the
+  // worker-bound stage); alignment + blend stay stale until the
+  // worker's result lands and we kick off the main-thread alignment.
+  setLayerState("layout", "running");
 
   const layoutAlgo = getCitationLayoutAlgorithm(s.layerParams.layout.method);
   const edges = s.citationResult.citations.map(c => [c.source, c.target]);
