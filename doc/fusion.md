@@ -59,7 +59,7 @@ embedding ─▶ noise ─▶ fusion ─┬─▶ compression ──▶ dimredRe
 
 Fusion is a **lateral** stage — input dimension equals output
 dimension. It does not reduce, it re-weights. Sits between noise
-(typically PCA-100) and the sibling triple (UMAP-50 / UMAP-3 /
+(typically PCA-100) and the sibling triple (UMAP-100 / UMAP-3 /
 UMAP-2) so that:
 
 - PCA denoises first, removing the variance directions that don't

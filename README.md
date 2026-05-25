@@ -63,7 +63,7 @@ configuration modal:
      graph diffusion. Pulls papers that cite each other closer
      in feature space while keeping each anchored to its
      original SPECTER2 vector. Default identity (no fusion).
-  3. **Compression** (UMAP-50, clustering input).
+  3. **Compression** (UMAP-100, clustering input — bumped from 50 after §6.9 ARI dim-sweep validation showed ARI(50, 100) = 0.806 < 0.9 threshold on BFS-5000; see `doc/dim-sweep-results.md`).
   4. **Viz** (UMAP-3, basePos for the 3D viewer / blend).
   5. **Viz2d** (UMAP-2, the 2D viewer's input).
   Each stage's algorithm is independent; UMAP fits get distinct
@@ -122,7 +122,7 @@ Each algorithm declares which sub-stages it's eligible for via a
 
 - **PCA** in noise → `n_components = 100`
 - **Graph diffusion** in fusion → `alpha = 0.3, iterations = 4` (real-data only)
-- **UMAP** in compression → `n_components = 50, n_neighbors = 50, min_dist = 0`
+- **UMAP** in compression → `n_components = 100, n_neighbors = 50, min_dist = 0`
 - **UMAP** in viz (3-d) → `n_components = 3, n_neighbors = 15, min_dist = 0.1`
 - **UMAP** in viz2d (2-d) → `n_components = 2, n_neighbors = 15, min_dist = 0.1`
 

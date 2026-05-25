@@ -13,7 +13,7 @@ math sits in source headers and (for the fusion sub-stage) in
 ## 1. Five sub-stages
 
 ```
-embedding ─▶ noise ─▶ fusion ─┬─▶ compression ──▶ dimredResult (clustering input, e.g. UMAP-50)
+embedding ─▶ noise ─▶ fusion ─┬─▶ compression ──▶ dimredResult (clustering input, e.g. UMAP-100)
                               │
                               ├─▶ viz         ──▶ _basePos     (3D viewer / blend, UMAP-3)
                               │
@@ -24,7 +24,7 @@ embedding ─▶ noise ─▶ fusion ─┬─▶ compression ──▶ dimredRe
 |---------------|------------------------------------------------------------------|-------------------------------------|----------------|
 | `noise`       | Denoise the input embedding (typically PCA-100)                  | (intermediate; consumed by next)    | identity       |
 | `fusion`      | **Lateral** — re-weight by citation context. Same d in as out    | (intermediate; consumed by siblings) | identity       |
-| `compression` | Reduce to clustering input (UMAP-50 at real-data scale)          | `state.dimredResult`                | identity       |
+| `compression` | Reduce to clustering input (UMAP-100 at real-data scale; §6.9 verdict 2026-05-25) | `state.dimredResult`         | identity       |
 | `viz`         | Reduce to 3-d for the 3D viewer / Layer 5 blend                  | `state._basePos`                    | identity       |
 | `viz2d`       | Reduce to 2-d for the 2D viewer panel                            | `state._basePos2d`                  | identity       |
 
@@ -97,7 +97,7 @@ each slot — picked from `doc/clustering-research.md`:
 | Algorithm × slot          | Locked params                                                            |
 |---------------------------|--------------------------------------------------------------------------|
 | `pca` × `noise`           | `n_components = 100`                                                     |
-| `umap` × `compression`    | `n_components = 50, n_neighbors = 50, min_dist = 0,   metric=cosine, seed=42` |
+| `umap` × `compression`    | `n_components = 100, n_neighbors = 50, min_dist = 0,  metric=cosine, seed=42` (was 50; bumped per §6.9 dim-sweep) |
 | `umap` × `viz`            | `n_components = 3,  n_neighbors = 15, min_dist = 0.1, metric=cosine, seed=43` |
 | `umap` × `viz2d`          | `n_components = 2,  n_neighbors = 15, min_dist = 0.1, metric=cosine, seed=44` |
 | `graph-diffusion` × `fusion` | `alpha = 0.3, iterations = 4`                                          |
@@ -214,7 +214,7 @@ normalised — they keep their native scale.
 - `doc/blend.md` §1.8 — `alignGlobal()`, called from redimred()
   to align pre-fusion vs post-fusion basePos.
 - `doc/clustering-research.md` — why the slot-aware defaults are
-  what they are (PCA-100, UMAP-50/50/0 compression, UMAP-3/15/0.1
+  what they are (PCA-100, UMAP-100/50/0 compression, UMAP-3/15/0.1
   viz).
 - `doc/scaling.md` §2.3 — how each algorithm scales from toy
   (n ≈ 400) to real (n = 810 k).

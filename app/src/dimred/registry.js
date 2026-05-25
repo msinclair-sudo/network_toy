@@ -92,7 +92,7 @@ export const ALGORITHMS = [
     id: "umap",
     label: "UMAP",
     family: ["compression", "viz", "viz2d"],
-    description: "Builds a map that keeps similar points near each other. Use it in the compression stage to give clustering a clean ~50-d input; use it in the visualisation stage to reduce to 3-d (or 2-d) for the viewer.",
+    description: "Builds a map that keeps similar points near each other. Use it in the compression stage to give clustering a clean ~100-d input; use it in the visualisation stage to reduce to 3-d (or 2-d) for the viewer.",
     defaultParams: defaultUmapParams,
     // Slot-specific defaults — these are the locked values from
     // clustering-research §4. Compression: tight clusters (min_dist=0)
@@ -103,7 +103,13 @@ export const ALGORITHMS = [
     // per slot so re-running one doesn't accidentally jiggle others.
     defaultParamsForSlot: (slot) => {
       if (slot === "compression") {
-        return { n_components: 50, n_neighbors: 50, min_dist: 0.0, metric: "cosine", random_state: 42 };
+        // n_components bumped 50 → 100 per §6.9 dim-sweep validation
+        // (2026-05-25): on the BFS-5000 fixture, ARI(50, 100) = 0.806
+        // ± 0.063 — below the 0.9 threshold for "50-d preserves enough
+        // information". ARI(100, 200) = 1.000 exactly, so information
+        // saturates by d=100 (no point going higher).
+        // See doc/dim-sweep-results.md.
+        return { n_components: 100, n_neighbors: 50, min_dist: 0.0, metric: "cosine", random_state: 42 };
       }
       if (slot === "viz") {
         return { n_components: 3,  n_neighbors: 15, min_dist: 0.1, metric: "cosine", random_state: 43 };
@@ -119,10 +125,10 @@ export const ALGORITHMS = [
         key: "n_components",
         label: "Output dimensions",
         kind: "int",
-        min: 1, max: 100, step: 1,
+        min: 1, max: 200, step: 1,
         format: (v) => String(v),
-        hint: "How many dimensions the map should have. Recommended: 50 for compression (clustering input), 3 for the 3-d viewer, 2 for a flat scatterplot.",
-        sweepValues: [3, 10, 30, 50, 100],
+        hint: "How many dimensions the map should have. Recommended: 100 for compression (clustering input — §6.9 found ARI(50, 100) = 0.806 on BFS-5000, below the 0.9 threshold for 50-d defensibility; ARI(100, 200) = 1.000 so information saturates by 100), 3 for the 3-d viewer, 2 for a flat scatterplot.",
+        sweepValues: [3, 10, 30, 50, 100, 200],
       },
       {
         key: "n_neighbors",

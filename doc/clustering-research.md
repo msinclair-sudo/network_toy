@@ -96,7 +96,19 @@ The dominant pipeline at ~10⁶+ paper scale is **UMAP → HDBSCAN**
 use this exact recipe. Direct k-means in 768-d is documented to
 fail from the curse of dimensionality regardless of encoder.
 
-### 2.2 Dim reduction: UMAP-50 doesn't trade accuracy for compression
+### 2.2 Dim reduction: UMAP-100 doesn't trade accuracy for compression
+
+> **2026-05-25 update (§6.9 dim-sweep validation):** the original
+> default was UMAP-50 per the literature surveyed below. Empirical
+> validation on the BFS-5000 fixture found `ARI(50, 100) = 0.806`
+> — below the 0.9 threshold for "50-d preserves enough information."
+> `ARI(100, 200) = 1.000` exactly, so 100 is the saturation point:
+> below loses clustering structure, above is wasted compute.
+> Default bumped 50 → 100. See `doc/dim-sweep-results.md` for the
+> full protocol + table. The original literature-led narrative
+> below is preserved; the 50-d figure was the right starting hypothesis
+> from prior work, but our specific corpus + clustering combination
+> wanted more dimensions.
 
 The "don't trade accuracy" anxiety is real and legitimate, but it
 applies to UMAP-to-2-d (visualisation), not UMAP-to-50-d

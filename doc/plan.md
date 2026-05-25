@@ -446,11 +446,15 @@ For 810 k SPECTER2 papers, the path we're starting from:
 
 2. PCA → 100 components (denoiser)
 
-3. UMAP → 50 components for clustering
+3. UMAP → 100 components for clustering
    n_neighbors=50, min_dist=0, init='pca', metric='cosine',
    random_state=42, low_memory=True
+   (Bumped from 50 → 100 per §6.9 dim-sweep validation
+   2026-05-25 — ARI(50, 100) = 0.806 < 0.9 threshold on
+   BFS-5000; ARI(100, 200) = 1.000 so 100 is the saturation
+   point. See doc/dim-sweep-results.md.)
 
-4. HDBSCAN on UMAP-50 output
+4. HDBSCAN on UMAP-100 output
    min_cluster_size=100, min_samples=10,
    cluster_selection_method='eom', metric='euclidean',
    prediction_data=True
@@ -2222,10 +2226,48 @@ For posterity:
 - Layer 5b (per-frame blend) — α slider in scoring app; plotly
   scattergl repaints.
 
-### 6.9 ARI dim-sweep validation ☐
-Was item 4 (and §2.5). Depends on dim-reduction (6.4) being live.
-Run the same clustering at UMAP target dim ∈ {30, 50, 100, 200},
-ARI between resulting partitions, threshold check.
+### 6.9 ARI dim-sweep validation ✓ — complete 2026-05-25
+
+Was item 4 (and §2.5). Run the same clustering at UMAP target dim
+∈ {30, 50, 100, 200}, ARI between resulting partitions, threshold
+check `ARI(50, 100) > 0.9` for 50-d defensibility.
+
+**Verdict: FAIL — bump compression default 50 → 100.**
+
+- `mean ARI(50, 100) = 0.806 ± 0.063` across 3 seeds (42, 43, 44)
+  on the BFS-5000 fixture with HDBSCAN at `min_cluster_size=15,
+  min_samples=5` (the locked `min_cluster_size=100` produced
+  2-cluster degenerate partitions at n=5000, so the sweep was
+  re-run at the n=5000-appropriate value to keep the ARI signal
+  meaningful).
+- **Notable secondary finding:** `ARI(100, 200) = 1.000 ± 0.000`
+  exactly — at d=100 and d=200, HDBSCAN recovers byte-identical
+  partitions across all three seeds. Past d=100 the embedding
+  adds no clustering-relevant information on this fixture. So
+  the new default is **100**, not "as high as possible".
+
+**Changes shipped:**
+- `app/src/dimred/registry.js` — UMAP `defaultParamsForSlot("compression")`
+  now returns `n_components=100` (was 50); `n_components` max raised
+  to 200; sweepValues + hint updated.
+- §3.3 locked default config table updated.
+- `doc/dimred.md`, `doc/fusion.md`, `README.md` — stale "UMAP-50"
+  references replaced with UMAP-100 + brief rationale.
+- `doc/dim-sweep-results.md` — new file; full results table +
+  protocol + limitations.
+
+**Script:** `scratch/dim_sweep_validation.py`. ~17 minutes wall
+on this fixture. Re-run when a new real-data fixture (or a new
+clustering algorithm) lands — the verdict may not transfer.
+
+**Limitations carried forward** (from `dim-sweep-results.md`):
+- Single fixture (BFS-5000) and single algorithm (HDBSCAN). Per-
+  algorithm sensitivity to compression dim could differ; Leiden /
+  spectral may have a different saturation point.
+- Single `min_cluster_size`. Coarser / finer clustering granularity
+  may show different ARI patterns.
+- ARI compares labels only; cluster *shape* could drift inside the
+  ARI tolerance.
 
 ### 6.10 `doc/method-manual.md` ☐
 Was item 9. Still too early.
@@ -2263,9 +2305,10 @@ exploration. Out of scope for the immediate plan.
   coherence threshold, or modularity-gain. Not urgent at toy scale.
 - **Subsample size for the toy at real-data shape.** 5 k? 10 k?
   20 k? Empirical, deferred to large-data compression work.
-- **ARI dim-sweep verdict.** If `ARI(50, 100) < 0.9` on real data,
-  bump default to 100-d. Currently 50-d is a defensible starting
-  point. Resolved when 6.4 + 6.7 land.
+- ~~**ARI dim-sweep verdict.**~~ Resolved 2026-05-25 (§6.9):
+  `ARI(50, 100) = 0.806` on BFS-5000 — below 0.9, so default
+  bumped 50 → 100. `ARI(100, 200) = 1.000` so 100 is the
+  saturation point.
 - **`min_cluster_size` for HDBSCAN at 810 k.** 100 is a defensible
   starting point (≈ 0.01% of n); the cluster-sweep eval will
   refine on real data.
