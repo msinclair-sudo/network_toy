@@ -2101,3 +2101,189 @@ td.node-table-spread, td.node-table-stab { width: 50px; }
   font-variant-numeric: tabular-nums;
   flex-shrink: 0;
 }
+
+/* ── §6.19 step 4 — dim-sweep panel + chart helpers ─────────────────── */
+
+.panel-ds {
+  padding: 10px 12px;
+  font-size: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.panel-ds-header { display: flex; flex-direction: column; gap: 2px; }
+.panel-ds-title  { font-weight: 600; color: var(--accent); }
+.panel-ds-meta   { color: var(--text-dim); font-size: 11px; }
+.panel-ds-empty  { color: var(--text-faint); padding: 12px; font-style: italic; }
+
+.panel-ds-section {
+  color: var(--text-dim);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-top: 4px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 3px;
+}
+
+.panel-ds-cfg            { display: flex; flex-direction: column; gap: 4px; }
+.panel-ds-algo-section   { display: flex; flex-direction: column; gap: 4px; padding-left: 6px; border-left: 2px solid var(--border); }
+.panel-ds-algo-params    { display: flex; flex-direction: column; gap: 3px; padding-left: 4px; }
+
+.panel-ds-cfg-row {
+  display: grid;
+  grid-template-columns: 130px 1fr 56px;
+  align-items: center;
+  gap: 6px;
+}
+.panel-ds-cfg-row label    { color: var(--text-dim); font-size: 11px; }
+.panel-ds-cfg-readout      { font-family: var(--font-mono); font-size: 11px; color: var(--text); text-align: right; }
+.panel-ds-cfg-text         {
+  grid-column: 2 / 4;
+  background: var(--bg-3);
+  color: var(--text);
+  border: 1px solid var(--border-light);
+  border-radius: 3px;
+  padding: 3px 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+.panel-ds-cfg-hint         { color: var(--text-faint); font-style: italic; font-size: 11px; padding-left: 4px; }
+
+.panel-ds-estimate {
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 6px 8px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.panel-ds-estimate[data-warn="true"] { color: var(--warning, #d88); }
+
+.panel-ds-runrow { display: flex; gap: 6px; align-items: center; }
+.panel-ds-run    {
+  background: var(--bg-3);
+  color: var(--text);
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  padding: 4px 12px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.panel-ds-run:hover    { background: var(--accent); }
+.panel-ds-run:disabled { opacity: 0.6; cursor: not-allowed; }
+.panel-ds-cancel {
+  background: transparent;
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 3px 8px;
+  cursor: pointer;
+  font-size: 11px;
+}
+.panel-ds-status { color: var(--text-dim); font-size: 11px; font-family: var(--font-mono); }
+
+.panel-ds-results { display: flex; flex-direction: column; gap: 10px; }
+
+.panel-ds-verdict-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text-dim);
+  flex-wrap: wrap;
+}
+.panel-ds-verdict-pickerlabel,
+.panel-ds-verdict-thlabel { color: var(--text-dim); font-size: 11px; }
+.panel-ds-verdict-row select,
+.panel-ds-verdict-row input[type="number"] {
+  background: var(--bg-3);
+  color: var(--text);
+  border: 1px solid var(--border-light);
+  border-radius: 3px;
+  padding: 2px 6px;
+  font-size: 11px;
+  font-family: var(--font-mono);
+}
+
+.panel-ds-verdict-banner {
+  padding: 8px 10px;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+  font-size: 12px;
+  background: var(--bg-3);
+}
+.panel-ds-verdict-banner[data-defensible="true"]  { border-left: 3px solid #6cb86a; }
+.panel-ds-verdict-banner[data-defensible="false"] { border-left: 3px solid #d88; }
+.panel-ds-verdict-banner b { color: var(--text); }
+
+.panel-ds-chart-title {
+  font-size: 11px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-top: 6px;
+}
+.panel-ds-chart-host {
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 6px;
+  overflow-x: auto;
+}
+
+.panel-ds-saverow { margin-top: 6px; }
+.panel-ds-save {
+  background: var(--bg-3);
+  color: var(--text);
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  padding: 4px 12px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.panel-ds-save:hover    { background: var(--accent); }
+.panel-ds-save:disabled { opacity: 0.7; cursor: default; }
+
+/* ── Generic chart helpers (heatmap + bars) ─────────────────────────── */
+
+.chart-heatmap, .chart-bars {
+  display: block;
+  font-family: var(--font-sans);
+}
+.chart-title {
+  fill: var(--text);
+  font-size: 11px;
+  font-weight: 600;
+}
+.chart-axis-label {
+  fill: var(--text-dim);
+  font-size: 10px;
+  font-family: var(--font-mono);
+}
+.chart-heatmap-cell {
+  stroke: var(--bg-2);
+  stroke-width: 0.5;
+}
+.chart-heatmap-overlay {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  pointer-events: none;
+}
+.chart-grid-line {
+  stroke: var(--border);
+  stroke-width: 0.5;
+  stroke-dasharray: 2 2;
+}
+.chart-bars-rect {
+  /* fill comes from JS so we can colour by value or fall back uniformly */
+}
+.chart-bars-value {
+  fill: var(--text);
+  font-size: 10px;
+  font-family: var(--font-mono);
+}
+.chart-bars-whisker line {
+  stroke: var(--text-dim);
+  stroke-width: 1;
+}

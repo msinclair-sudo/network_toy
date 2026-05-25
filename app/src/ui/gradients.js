@@ -34,9 +34,37 @@ export const BOUNDARY_STOPS = [
   [1.00, [230, 108, 117]],    // perfect mixing
 ];
 
+// ARI / correlation palette. Bounded [0, 1] (negative ARI is rare and
+// not meaningful for the dim-sweep use case; we clamp it). Diverging-
+// ish: red for poor agreement, neutral for the 0.5 midpoint, green for
+// strong agreement. Used by the dim-sweep panel's heatmap; reusable by
+// any future cross-partition comparison.
+export const ARI_STOPS = [
+  [0.00, [180,  68,  74]],    // poor agreement — close to random
+  [0.50, [200, 180, 120]],    // neutral
+  [0.90, [120, 180, 100]],    // strong agreement (Hennig "stable" threshold lives here)
+  [1.00, [ 60, 140,  80]],    // identical partition (modulo label permutation)
+];
+
 export function tGradient(t)              { return interp(T_STOPS, t); }
 export function inDegGradient(t)          { return interp(INDEG_STOPS, t); }
 export function boundaryScoreGradient(t)  { return interp(BOUNDARY_STOPS, t); }
+export function ariGradient(t)            { return interp(ARI_STOPS, t); }
+
+/**
+ * Generic helper: get the rgb(...) string for a value on a named or
+ * explicit palette. Convenience for chart code that doesn't want to
+ * import every individual gradient function.
+ */
+export function heatmapCell(value, palette) {
+  const stops = Array.isArray(palette) ? palette
+              : palette === "ari"      ? ARI_STOPS
+              : palette === "indeg"    ? INDEG_STOPS
+              : palette === "boundary" ? BOUNDARY_STOPS
+              : palette === "t"        ? T_STOPS
+              : T_STOPS;
+  return interp(stops, value);
+}
 
 function interp(stops, t) {
   const v = Math.max(0, Math.min(1, +t || 0));

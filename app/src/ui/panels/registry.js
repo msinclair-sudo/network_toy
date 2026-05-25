@@ -14,6 +14,7 @@ import * as ValidationRunOptimise  from "./validation-run-optimise.js";
 import * as MethodReceipt          from "./method-receipt.js";
 import * as BootstrapStability     from "./bootstrap-stability.js";
 import * as BridgeAnalysis         from "./bridge-analysis.js";
+import * as DimSweep               from "./dim-sweep.js";
 
 const entries = new Map();
 
@@ -41,6 +42,7 @@ register(ValidationRunOptimise);
 register(MethodReceipt);
 register(BootstrapStability);
 register(BridgeAnalysis);
+register(DimSweep);
 
 // Future entries (mounted as their modules come online):
 // register(await import("./cluster-tree.js"));

@@ -2264,9 +2264,50 @@ whether to keep, drop, or upgrade. Same migration pattern as
    was `null`, collided with `findSource()`'s null return →
    skipped the first empty-state render. Switched to `undefined`
    sentinel.
-4. **Dim-sweep results panel** ☐ — depends on §6.9 promoting from
-   `validation/dim_sweep_validation.py` to an in-app surface.
-   ARI heatmap renderer (first chart panel). Saved as next slice.
+4. **Dim-sweep results panel ✓ — shipped 2026-05-25.** Promotes
+   `validation/dim_sweep_validation.py` to an in-app surface; ships
+   the first SVG chart renderers (heatmap + bars).
+   - `app/src/eval/dim-sweep.js` — pure runner. Stage-0 input (embedding
+     or basePos) → noise once → per-iter compression + clustering via
+     the dimred + clustering workers. Pairwise ARI between same-seed
+     partitions, aggregated mean ± SD across seeds. Doesn't touch
+     global state — caller passes everything in. `runDimSweep`,
+     `dimSweepVerdict(d1, d2, threshold)`, `estimateDimSweepCost`
+     (powers the confirm-dialog banner).
+   - `app/src/ui/charts/heatmap.js` + `app/src/ui/charts/bars.js` —
+     tiny SVG-from-scratch helpers per the plan's "strategy not
+     library" call. Heatmap reads palettes from the new `ariGradient` /
+     `heatmapCell(value, palette)` helpers in `gradients.js` (extended
+     with an ARI palette: red poor / neutral 0.5 / green ≥ 0.9). Bars
+     supports symmetric error whiskers and optional value-colouring.
+     ~280 LoC combined; reusable for any future pairwise matrix or
+     scalar-sequence panel.
+   - `app/src/ui/panels/dim-sweep.js` — dual-mode singleton. Live mode:
+     dims + seeds text fields, noise / compression / clustering
+     algorithm dropdowns + schema-driven param widgets (n_components +
+     random_state hidden on the swept compression slot), estimated
+     wall-time banner, confirm dialog before Run, Run/Cancel,
+     AbortController-backed cancellation, results = verdict pair
+     picker + threshold + PASS/FAIL banner + ARI heatmap +
+     cluster-count bars + Save-this-run. Saved mode: read-only render
+     of the bound ValidationRun; verdict picker disabled so the saved
+     verdict pair travels with the archive.
+   - HDBSCAN default tuned to `minClusterSize=15, minSamples=5` per
+     the validation script's finding that locked default
+     `min_cluster_size=100` degenerates to 2-cluster partitions at
+     sub-10k sizes (mechanically ARI ≈ 1 regardless of dim, signal
+     destroyed).
+   - `panel-picker.js`'s `panelTypeForRun`: `"dimSweep" → "dim-sweep"`.
+   - Smoke (`scratch/dim_sweep_panel_smoke.py`): live mount config
+     surface, end-to-end runner exercise at dims={2,3} × seed=42 on
+     toy n=400 (~2 s), heatmap + bar SVG output shapes, save flow +
+     ValidationRun schema, picker routing, saved-mode read-only
+     render. ~25 s wall.
+   - Note: this panel doesn't supersede `validation/dim_sweep_validation.py`
+     — the script remains the right tool for headless batch runs and
+     for the markdown-doc artifact (`doc/dim-sweep-results.md`). The
+     panel is for the same check inside a project's lifecycle, with
+     results saved as a portable ValidationRun.
 5. **Bootstrap stability panel ✓ — shipped 2026-05-25.** New
    `bootstrap-stability` panel; dual-mode like step 3.
    - **Live mode** (no `runId`): config UI (B / subsampleFrac /

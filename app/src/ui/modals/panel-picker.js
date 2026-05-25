@@ -31,7 +31,7 @@ function panelTypeForRun(run) {
   if (run.type === "optimise")           return "validation-run-optimise";
   if (run.type === "targetRange")        return "validation-run-optimise";   // same renderer
   if (run.type === "bootstrapStability") return "bootstrap-stability";       // dual-mode panel
-  // future: dimSweep, etc.
+  if (run.type === "dimSweep")           return "dim-sweep";                  // dual-mode panel
   return null;
 }
 
