@@ -2187,9 +2187,21 @@ whether to keep, drop, or upgrade. Same migration pattern as
 
 #### Order to land in
 
-1. **State shape + persistence** — `validationRuns` slot, schema
-   migration, save/load round-trip. Smallest first step; nothing
-   visible yet but unblocks everything below.
+1. **State shape + persistence ✓ — shipped 2026-05-25.**
+   `state.validationRuns: ValidationRun[]` slot with typed actions
+   (`saveValidationRun` / `deleteValidationRun` /
+   `clearValidationRuns` in `app/src/ui/state.js`). Persistence
+   plumbing in `app/src/persistence/serialise.js` — added a
+   generic `stashBinariesIn` deep-walker that replaces any
+   TypedArray anywhere in a run's nested `results` with a
+   `{__binary, type, length}` descriptor. The deserialiser's
+   `reviveBinaries` walker is already generic, so the round trip
+   closes automatically. **Additive schema** — older saves with
+   no `validationRuns` key load cleanly (state default `[]` kicks
+   in). Smoke: `scratch/validation_runs_persistence_smoke.py`
+   verifies the default, all three typed actions, bad-input
+   rejection, full round-trip with an Int32Array buried in
+   `results.partition`, and the legacy-save case.
 2. **Save-this-run + panel-picker integration** — the UX entry
    and exit points. Pick one type to wire first; Optimise is the
    obvious one (existing renderer already lifted).

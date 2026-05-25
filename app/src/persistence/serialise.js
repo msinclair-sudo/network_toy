@@ -178,6 +178,21 @@ export function serialiseState(state) {
     out.evalResults = state.evalResults;
   }
 
+  // 10a. Validation runs (§6.19). Each run is a typed entry whose
+  //      `results` field may contain TypedArrays (e.g. an Optimise
+  //      run with per-row _cr Int32Arrays, a dim-sweep run with
+  //      partition arrays). Use the generic stashBinariesIn walker
+  //      so each run type doesn't need bespoke serialisation —
+  //      anywhere a TypedArray appears under the run, it gets
+  //      replaced with a {__binary, type, length} descriptor and
+  //      the bytes go into arrays/. The deserialiser's generic
+  //      reviveBinaries walker reconstructs them automatically.
+  if (Array.isArray(state.validationRuns) && state.validationRuns.length > 0) {
+    out.validationRuns = state.validationRuns.map((run, i) =>
+      stashBinariesIn(run, arrays, `arrays/validationRuns/${i}`),
+    );
+  }
+
   // 11. Project name (display only — used by Save vs Save-as).
   if (state.projectName) out.projectName = state.projectName;
 
@@ -233,4 +248,47 @@ function stashBinary(arrays, path, typedArray) {
     type:     typedArray.constructor.name,
     length:   typedArray.length,
   };
+}
+
+// Generic deep-walk: replace any TypedArray found anywhere inside
+// `node` with a {__binary, ...} descriptor, stashing the bytes
+// under `pathPrefix/<n>.<ext>`. Returns a new object (deep-copied
+// where the walk modified anything; the originals stay untouched).
+//
+// Used for heterogeneous slots like state.validationRuns where each
+// entry's results shape varies by type and listing them all in
+// serialise.js would mean per-type bespoke code. The deserialiser's
+// reviveBinaries walker is already generic, so a generic stasher on
+// this side closes the loop.
+function stashBinariesIn(node, arrays, pathPrefix, counter = { n: 0 }) {
+  if (node == null) return node;
+  if (typeof node !== "object") return node;
+
+  // TypedArray detection — ArrayBuffer.isView returns true for any
+  // TypedArray or DataView; we accept all TypedArrays and skip DataView.
+  if (ArrayBuffer.isView(node) && !(node instanceof DataView)) {
+    const ext  = extForTypedArray(node);
+    const path = `${pathPrefix}/${counter.n++}.${ext}`;
+    return stashBinary(arrays, path, node);
+  }
+
+  if (Array.isArray(node)) {
+    return node.map(child => stashBinariesIn(child, arrays, pathPrefix, counter));
+  }
+
+  const out = {};
+  for (const [k, v] of Object.entries(node)) {
+    out[k] = stashBinariesIn(v, arrays, pathPrefix, counter);
+  }
+  return out;
+}
+
+function extForTypedArray(ta) {
+  if (ta instanceof Float32Array) return "f32";
+  if (ta instanceof Int32Array)   return "i32";
+  if (ta instanceof Uint8Array)   return "u8";
+  if (ta instanceof Float64Array) return "f64";
+  if (ta instanceof Int16Array)   return "i16";
+  if (ta instanceof Uint16Array)  return "u16";
+  return "bin";   // fallback; reviver matches on the `type` field, not the path
 }

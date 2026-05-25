@@ -235,6 +235,35 @@ const state = {
   // setBusyLabel) so the queue stays consistent with the in-memory
   // pending list.
   busy: null,
+
+  // ── Validation runs (§6.19). ────────────────────────────────────
+  // First-class persistent entities for any analytical sweep /
+  // validation the user explicitly saves. Each entry self-describes
+  // (type, label, inputs snapshot, settings, results, timestamp,
+  // scoreVersion). Survives save/load. Renderable in panels via the
+  // panel-picker's "Validation runs" category (panel work pending).
+  //
+  // Shape (each entry):
+  //   {
+  //     id:           string,           // uid for panel binding
+  //     type:         "optimise" | "dimSweep" | "bootstrapStability" |
+  //                   "targetRange" | ...,
+  //     label:        string,           // user-set or auto-generated
+  //     timestamp:    string,           // ISO datetime
+  //     inputs: {                        // snapshot at time-of-run
+  //       dataSourceId:       string,    // "real" / "toy"
+  //       dataSourceConfig:   object,    // subset, seed, etc.
+  //       layerParamsSnapshot: object,   // dim/fusion/etc. active
+  //     },
+  //     settings:     object,           // type-specific knobs
+  //     results:      object,           // type-specific (may contain TypedArrays)
+  //     scoreVersion: int,              // bootstrap protocol at time of run
+  //     runtimeSec:   number,           // wall time of the run
+  //   }
+  //
+  // Mutate via saveValidationRun / deleteValidationRun / clearValidationRuns.
+  // Default empty array — additive schema; older saves load with [].
+  validationRuns: [],
 };
 
 const subscribers = new Set();
@@ -400,6 +429,52 @@ export function setOptimiseResult(result) {
 
 export function clearEvalResults() {
   update({ evalResults: { validate: null, optimise: null } });
+}
+
+// ── Validation runs (§6.19.1) ───────────────────────────────────
+// First-class persistent entities. saveValidationRun appends; the
+// caller supplies most fields, we stamp an id + timestamp if absent.
+// Order is insertion order (newest at the end); UI can re-sort.
+
+function makeValidationRunId() {
+  return `vr-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+/**
+ * Append a validation run to state.validationRuns.
+ *
+ * @param {object} run  See state.validationRuns comment for shape.
+ *                      `id` and `timestamp` are auto-stamped when absent.
+ *                      Required: type, results. Recommended: label,
+ *                      inputs, settings.
+ * @returns {string}    The (possibly auto-generated) id of the saved run.
+ */
+export function saveValidationRun(run) {
+  if (!run || typeof run !== "object") {
+    throw new Error("[state] saveValidationRun: run must be an object");
+  }
+  if (!run.type || typeof run.type !== "string") {
+    throw new Error("[state] saveValidationRun: run.type is required");
+  }
+  const stamped = {
+    id:        run.id        || makeValidationRunId(),
+    timestamp: run.timestamp || new Date().toISOString(),
+    ...run,
+  };
+  update({ validationRuns: [...(state.validationRuns || []), stamped] });
+  return stamped.id;
+}
+
+/** Remove a validation run by id. No-op if id not found. */
+export function deleteValidationRun(id) {
+  const cur = state.validationRuns || [];
+  const next = cur.filter(r => r.id !== id);
+  if (next.length !== cur.length) update({ validationRuns: next });
+}
+
+/** Remove every validation run. */
+export function clearValidationRuns() {
+  update({ validationRuns: [] });
 }
 
 // Update the bridge analysis pair (fineLevel and/or coarseLevel).
