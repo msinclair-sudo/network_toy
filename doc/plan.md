@@ -1739,7 +1739,7 @@ Smoke-tested at toy scale (n=400):
   richness scorer correctly penalises that (richness =
   201 × 0.005 ≈ 1) and finds the balanced sweet spot.
 
-### 6.18 Optimise hardening pass ☐ — in flight 2026-05-24
+### 6.18 Optimise hardening pass ✓ — complete 2026-05-25
 
 The Optimise tab is the load-bearing surface for choosing a
 clustering. Clustering choice drives every downstream conclusion
