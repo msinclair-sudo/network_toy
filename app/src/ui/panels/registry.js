@@ -15,6 +15,7 @@ import * as MethodReceipt          from "./method-receipt.js";
 import * as BootstrapStability     from "./bootstrap-stability.js";
 import * as BridgeAnalysis         from "./bridge-analysis.js";
 import * as DimSweep               from "./dim-sweep.js";
+import * as FusionComparison       from "./fusion-comparison.js";
 
 const entries = new Map();
 
@@ -43,6 +44,7 @@ register(MethodReceipt);
 register(BootstrapStability);
 register(BridgeAnalysis);
 register(DimSweep);
+register(FusionComparison);
 
 // Future entries (mounted as their modules come online):
 // register(await import("./cluster-tree.js"));

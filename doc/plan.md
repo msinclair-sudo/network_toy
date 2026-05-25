@@ -2341,8 +2341,46 @@ whether to keep, drop, or upgrade. Same migration pattern as
    cluster in the viewers via `setSelection`. Empty hint when
    fewer than two clustering levels exist or no bridges at the
    selected pair.
-8. **Fusion comparison panel** ☐ — depends on better cross-view
-   metrics (currently fusion changes are qualitative).
+8. **Fusion comparison panel ✓ — shipped 2026-05-26.** Closes the
+   §6.19 list and resolves the §6.15 follow-up for a cross-view
+   metric. Lifts fusion-vs-baseline from qualitative ("watch the
+   slider") to quantitative ("ARI 0.42 · 38% of clusters reorganised").
+   - `app/src/eval/nmi.js` — normalised mutual information (arithmetic
+     + geometric normalisations) and adjusted MI via the
+     Vinh-Epps-Bailey 2009 hypergeometric form. Pure helper, no
+     special-case math elsewhere. Smoke verifies NMI(identical) = 1.0,
+     NMI(permuted) = 1.0, NMI(independent) ≈ 0.
+   - `app/src/eval/fusion-compare.js` — `compareFusionPartitions(preCr,
+     postCr, opts)` returns three views: aggregate {ari, nmi_arith,
+     nmi_geom, macroJaccard, nClustersPre/Post, noiseFractions,
+     nReorganised}, per-pre-cluster rows {preId, postId via
+     bipartite-matched Jaccard, jaccard, memberCount, retainedCount,
+     lostCount, biggestPostShare (unilateral)}, per-node retention
+     (1 − |prePeers ∩ postPeers| / |prePeers|) + top-N mover list.
+     Reuses `bipartiteMatchJaccard` from §6.18.7 so the matching
+     convention is consistent across panels.
+   - `app/src/ui/panels/fusion-comparison.js` — singleton, live-only.
+     Empty hint when `clusterLevelsPreFusion` is null (toy mode or
+     fusion=identity). Level picker when ≥ 2 levels. Aggregate strip,
+     plain-English interpretation line (strong / moderate /
+     substantial reorganisation based on ARI), sortable per-cluster
+     table with click-to-select-in-viewer, top-N movers list (each
+     row selects the paper in viewers). Computation is memoised
+     across irrelevant state ticks via a (level, preUid, postUid) key
+     so selection / blend churn doesn't recompare.
+   - Save-this-run ☐ deferred — plan §6.19's `type:
+     "fusionComparison"` ValidationRun lands as a follow-up once the
+     metric set has a chance to stabilise in real-data use. The
+     comparison is pure-deterministic from state, so the saved view
+     is the same shape as the live view (read-only render of a
+     stored result) when added.
+   - Smoke (`scratch/fusion_comparison_smoke.py`, toy n=400, ~10 s):
+     NMI helper unit checks, hand-crafted partition comparison
+     (3-cluster → 3-cluster with 2 drifters, expected ARI 0.512 +
+     macro J 0.717), empty-state mount with no preFusion, synthetic
+     pre-fusion injection rendering aggregate + per-cluster + movers
+     tables, row click sets cluster selection. Pre-existing
+     dim-sweep + multi-panel smokes still pass.
 
 The two highest-payoff use cases (per user 2026-05-25):
 - **Saved Optimise sweep**: 10-minute HDBSCAN × full-grid sweep on

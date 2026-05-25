@@ -2287,3 +2287,105 @@ td.node-table-spread, td.node-table-stab { width: 50px; }
   stroke: var(--text-dim);
   stroke-width: 1;
 }
+
+/* ── §6.19 step 8 — fusion-comparison panel ─────────────────────────── */
+
+.panel-fc {
+  padding: 10px 12px;
+  font-size: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.panel-fc-header {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.panel-fc-title  { font-weight: 600; color: var(--accent); }
+.panel-fc-empty  { color: var(--text-faint); padding: 12px; font-style: italic; }
+
+.panel-fc-levelpicker {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.panel-fc-levelpicker select {
+  background: var(--bg-3);
+  color: var(--text);
+  border: 1px solid var(--border-light);
+  border-radius: 3px;
+  padding: 2px 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.panel-fc-agg {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 11px;
+  color: var(--text-dim);
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 6px 8px;
+}
+.panel-fc-agg b      { color: var(--text); font-weight: 600; margin-right: 3px; }
+.panel-fc-hint       { color: var(--text-faint); font-style: italic; }
+
+.panel-fc-interpretation {
+  font-size: 11px;
+  color: var(--text);
+  font-style: italic;
+  border-left: 2px solid var(--accent);
+  padding-left: 8px;
+}
+
+.panel-fc-section {
+  color: var(--text-dim);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-top: 4px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 3px;
+}
+
+.panel-fc-table, .panel-fc-movers {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+  font-family: var(--font-mono);
+}
+.panel-fc-table th, .panel-fc-table td,
+.panel-fc-movers th, .panel-fc-movers td {
+  padding: 3px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.panel-fc-table th, .panel-fc-movers th {
+  text-align: right;
+  color: var(--text-dim);
+  font-weight: 400;
+  user-select: none;
+}
+.panel-fc-table th.sortable {
+  cursor: pointer;
+}
+.panel-fc-table th.sortable:hover { color: var(--text); }
+.panel-fc-table th.sorted-asc::after  { content: " ▲"; opacity: 0.7; }
+.panel-fc-table th.sorted-desc::after { content: " ▼"; opacity: 0.7; }
+.panel-fc-row, .panel-fc-mover-row {
+  cursor: pointer;
+}
+.panel-fc-row:hover, .panel-fc-mover-row:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+.panel-fc-row.selected {
+  background: rgba(255, 255, 255, 0.07);
+}
+.panel-fc-movers .r { text-align: right; }
