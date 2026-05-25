@@ -399,9 +399,13 @@ Results table:
   just `Clusters` (numClusters). Target-range adds a `Source` column
   when sweep-against = Both.
 - Per-row Apply has a **level picker** (`L0 / L1 / … / + New level`)
-  that drops the chosen config into the named slot, then **hops to
-  the Validate tab** so the natural workflow is Configure → Optimise
-  → Validate.
+  that drops the chosen config into the named slot. The cascade
+  runs in the background via the global busy queue; the modal
+  closes immediately.
+- A **Save this run** button appears in the run-row after a
+  successful sweep — persists the table as a saved validation run
+  (§6.19). Re-openable later from the panel picker's *Validation
+  runs* section, even after a project reload.
 
 Scrollable tbody (max-height 320px) keeps long sweeps manageable.
 
@@ -409,7 +413,10 @@ Scrollable tbody (max-height 320px) keeps long sweeps manageable.
 
 ## 8. Persistence
 
-`state.evalResults` holds the Optimise cache:
+Two complementary stores:
+
+### `state.evalResults` — the "latest sweep" cache
+
 ```ts
 {
   validate: null,    // DEPRECATED — slot kept for backward-compat with
@@ -419,9 +426,31 @@ Scrollable tbody (max-height 320px) keeps long sweeps manageable.
 }
 ```
 
-Survives tab hops + project saves. `recluster()` clears
-`evalResults` so stale Optimise scores don't survive a clustering
-config change.
+Holds whatever the Optimise tab last produced — overwritten each
+sweep. Survives tab hops + project saves. `recluster()` clears it
+so stale scores don't survive a clustering config change.
+
+### `state.validationRuns` — saved-run archive (§6.19)
+
+```ts
+ValidationRun[]
+```
+
+Persistent, user-curated list of saved sweeps. Each entry
+self-describes (type, label, inputs snapshot, settings, results,
+timestamp, scoreVersion). Populated by clicking the **Save this
+run** button in the Optimise tab after a sweep completes.
+
+Survives project save/load. Renderable in panels via the panel
+picker's *Validation runs* section — picking one opens it in a
+`validation-run-optimise` panel that uses the same
+`renderResults` renderer the modal Optimise tab uses.
+
+Per-row Apply on a saved run currently re-infers (v1 strips `_cr`
+to match the in-modal cache shape). Persisting `_cr` for instant
+Apply is a §6.19 follow-up.
+
+See `doc/plan.md` §6.19 for the full spec.
 
 ---
 

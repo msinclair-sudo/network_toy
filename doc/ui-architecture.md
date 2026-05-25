@@ -52,6 +52,7 @@ app/
         viewer-3d.js        — live blend (3d-force-graph); colour-mode dropdown + camera settings
         viewer-2d.js        — 2D scatter (force-graph canvas); same colour-mode dropdown
         node-table.js       — mode-aware legend table (the right-side panel)
+        validation-run-optimise.js — renders a saved Optimise run from state.validationRuns (§6.19)
         placeholder.js      — empty-slot hint
       modals/
         modal.js            — generic dialog (header / body / footer / Esc / backdrop close)
@@ -59,10 +60,11 @@ app/
         clustering-modal.js — tabbed clustering modal (Configure / Optimise)
         clustering-tabs/
           configure-tab.js  — multi-level config editor
-          optimise-tab.js   — sweep modes (Resolution / Full grid / Target range) + results
+          optimise-tab.js   — sweep modes (Resolution / Full grid / Target range) + Save-this-run button
+          optimise-results-renderer.js — shared table renderer (modal + saved-run panel)
         dimred-modal.js     — five-stage (noise / fusion / compression / viz / viz2d)
         data-source-modal.js — data-source registry picker + per-source params
-        panel-picker.js     — "Add panel" modal listing registered panel types
+        panel-picker.js     — "Add panel" modal: panel types + saved validation runs (§6.19)
         layer-descriptors.js — per-workflow-node binding {label, openModal(), applyChange}
     workers/                — module workers driven by runDAG (see doc/workers.md)
       worker-runner.js
@@ -372,19 +374,26 @@ changes; otherwise its `update()` runs every state tick.
 | `viewer-3d` | live blend (3d-force-graph); colour-mode + camera-speed overlays | **singleton** (one WebGL ctx max). Reads `state._basePos`. |
 | `viewer-2d` | 2D scatter (force-graph canvas); same colour-mode dropdown | **singleton**. Reads `state._basePos2d` (populated by Layer 1.5's viz2d sub-stage); empty-state hint until then. Shares colour resolution with viewer-3d via `viewer-shared/colour-modes.js`. |
 | `node-table` | mode-aware legend (cluster / cluster-pre-fusion / origin / inDeg / t / bridge / boundaryScore) | see "Node table" below |
+| `validation-run-optimise` | renders a saved Optimise run (§6.19) | `HIDE_FROM_TYPE_LIST` — only appears in the picker via the *Validation runs* section, bound to a specific `config.runId`. Uses the shared `optimise-results-renderer.js`; per-row Apply routes through the clustering descriptor like the modal Apply. |
 
 ### Adding a new panel type
 
 1. Create `panels/<id>.js` exporting `ID`, `LABEL`, `DESCRIPTION`,
-   `mount`, optionally `SINGLETON`.
+   `mount`, optionally `SINGLETON`, optionally
+   `HIDE_FROM_TYPE_LIST` (set when the panel only makes sense
+   bound to specific config, like the validation-run renderers
+   that need a `runId`).
 2. Register in `panels/registry.js`:
    ```js
    import * as MyPanel from "./my-panel.js";
    register(MyPanel);
    ```
 
-The panel-picker modal automatically lists it. No other file
-changes needed.
+The panel-picker modal automatically lists it under *Panel types*.
+For panels that render a specific `state.validationRuns` entry,
+also extend `panelTypeForRun(run)` in `modals/panel-picker.js` so
+the picker's *Validation runs* section knows which renderer
+matches each run type.
 
 ---
 

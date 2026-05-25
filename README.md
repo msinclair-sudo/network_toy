@@ -238,6 +238,34 @@ inside Optimise via the "Cluster richness" / "Cluster
 reproducibility" scorers and via the target-range sweep's "Rank by
 reproducibility" toggle.
 
+### Validation runs (saved sweeps + saved validations)
+
+Some sweeps are expensive (a full HDBSCAN × parameter grid on
+BFS-5000 can take ten minutes). Each result is per-dataset — you
+need to revalidate when the corpus changes. To avoid throwing away
+that work, the Optimise tab has a **Save this run** button that
+appears after a sweep completes. It persists the swept table as a
+**validation run** that:
+
+- survives a project save/load,
+- shows up in the `+ Add panel` picker under a **Validation runs**
+  section,
+- opens into a dedicated panel rendering the same sortable table,
+  with per-row **Apply** still working,
+- carries an inputs snapshot (the data fixture + layerParams active
+  at the time of the sweep) so future-you (or a collaborator
+  opening the project) sees the conditions the run was produced
+  under.
+
+The use case is *"resource without recalculating"*: come back next
+week, open the saved sweep, try a different row from the rank,
+re-cluster — without re-running the whole 10-minute sweep.
+
+The same mechanism will host other validations as they come online
+(dim-sweep, bootstrap stability per applied config, fusion comparison
+deltas, etc.). The user-facing pattern is always: run → Save this
+run → re-open from the picker. Doc: `doc/plan.md` §6.19.
+
 ### Bridge analysis (Layer 2.5)
 
 When ≥ 2 clustering levels exist, the toy automatically computes,
@@ -340,9 +368,18 @@ the cascade — so all in-flight feedback lives in this bar.
 ### Multi-tab panels
 
 Every slot — primary, secondary, bottom — has tabs. Click `+` to
-add a new panel via a picker modal listing all registered panel
-types. `×` on a tab closes it. The 3D viewer, 2D viewer are
-singletons (one each). Other types can have multiple instances.
+add a new panel via a picker modal. The picker has two sections:
+
+- **Panel types** — every registered panel: 3D viewer, 2D viewer
+  (both singletons — one each), node table, etc.
+- **Validation runs** — every saved run from
+  `state.validationRuns` (newest first). Picking one instantiates
+  the appropriate renderer bound to that specific run; the same
+  saved run can be pinned in multiple panels for side-by-side
+  comparison.
+
+`×` on a tab closes it. Singletons are filtered out of the picker
+when already mounted somewhere.
 
 ## Architecture
 
@@ -403,8 +440,10 @@ Doc highlights:
 - `doc/workers.md` — DAG-orchestrated module workers: runDAG, lane shape, cancellation, transferables
 - `doc/eval.md` — Optimise tab: bootstrap-Jaccard, scorers, the three sweep modes (resolution / full / target-range with LHS), known limitations + audit cross-refs
 - `doc/scaling.md` — toy-vs-real-data scaling analysis (`n ≈ 400` toy, `n = 810 k` real)
+- `doc/dim-sweep-results.md` — empirical evidence for the locked compression default (UMAP-100); also confirms UMAP-after-PCA is not redundant. Re-run via `validation/dim_sweep_validation.py` when fixtures or algorithms change.
 - `doc/clustering-research.md` — research record, per-family pros/cons, locked picks, stability metrics
 - `doc/plan.md` — convergence plan with status flags
+- `validation/README.md` — convention for research-validation scripts (tracked, real-data fixtures) vs `scratch/` (gitignored, toy fixtures only)
 
 ## File layout
 
@@ -455,12 +494,13 @@ app/                              static page + ES modules
       align.js                    L5a: alignByComponent + alignGlobal (Procrustes)
       blend.js                    L5b: per-frame nested lerp (blend × fusionBlend)
     eval/                         bootstrap-Jaccard + sweep strategies
-      jaccard.js                  jaccardSimilarity + bestMatchJaccard (with subsample mask)
+      jaccard.js                  jaccardSimilarity + bipartiteMatchJaccard (Hungarian)
       bootstrap.js                bootstrapStability — parallel B-iter via workers (deterministic)
       scorers.js                  ari / stability / numClusters / richness
       sweep.js                    sweepAcrossAlgorithms + runTargetRangeSweep
       lhs.js                      Latin-hypercube sampler (drives the target-range probe)
       run-infer-remote.js         worker-backed algo.infer helper (single-job dispatch)
+      bayes-ari.js                Bayes-optimal ARI ceiling for the toy mixture (§6.18.10 B5)
       ari.js, kmeans.js           legacy eval helpers
       layout-sweep.js             legacy citation-layout sweep
     contracts/
@@ -477,7 +517,7 @@ app/                              static page + ES modules
       layout-worker.js            FR / MDS / UMAP-on-graph
     ui/                           new shell
       main.js                     boot
-      state.js                    state container + actions
+      state.js                    state container + actions (incl. validationRuns slot, §6.19)
       engine.js                   pipeline orchestrator (async; lanes are DAGs over workers)
       workflow-chart.js
       panel-system.js
@@ -494,6 +534,7 @@ app/                              static page + ES modules
         viewer-3d.js              3d-force-graph
         viewer-2d.js              force-graph (canvas-based)
         node-table.js
+        validation-run-optimise.js   renders a saved Optimise run (§6.19)
         placeholder.js
       modals/
         modal.js
@@ -502,9 +543,10 @@ app/                              static page + ES modules
         clustering-tabs/
           configure-tab.js
           optimise-tab.js
+          optimise-results-renderer.js  shared table renderer (modal + saved-run panel)
         dimred-modal.js           five-stage (noise / fusion / compression / viz / viz2d)
         data-source-modal.js
-        panel-picker.js
+        panel-picker.js           panel types + saved validation runs (§6.19)
         layer-descriptors.js
     main.js                       legacy boot + UI glue (drives legacy.html)
 literture-network/                real-data pipeline (Python)
@@ -525,6 +567,10 @@ literture-network/                real-data pipeline (Python)
     make_dev_subset.py            carve random embedding subset (+ paper_years.json)
     make_dev_subset_bfs.py        carve BFS connectivity-aware subset (+ paper_years.json)
     make_subset_citation_edges.py carve induced citation-edge subgraph for a subset
+validation/                       research scripts that produce shipped evidence (tracked)
+  README.md                       convention + script index (distinct from scratch/)
+  dim_sweep_validation.py         §6.9 — is UMAP-50 enough compression?
+  compression_redundancy_check.py §6.9 follow-up — is UMAP-after-PCA redundant?
 doc/
   dynamics.md                     layer index
   dimred.md                       Layer 1.5 — five sub-stages + slot-aware defaults
@@ -538,6 +584,7 @@ doc/
   workers.md                      DAG-orchestrated worker port + cancellation
   eval.md                         Optimise tab: bootstrap, scorers, sweep modes
   scaling.md                      toy-vs-real-data scaling
+  dim-sweep-results.md            empirical evidence backing locked compression default
   clustering-research.md
   plan.md
 ```
