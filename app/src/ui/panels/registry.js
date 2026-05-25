@@ -6,10 +6,11 @@
 // New panel types slot in here as one entry — same pattern as
 // clustering / citation-layout registries on the engine side.
 
-import * as Placeholder from "./placeholder.js";
-import * as Viewer3D    from "./viewer-3d.js";
-import * as Viewer2D    from "./viewer-2d.js";
-import * as NodeTable   from "./node-table.js";
+import * as Placeholder            from "./placeholder.js";
+import * as Viewer3D               from "./viewer-3d.js";
+import * as Viewer2D               from "./viewer-2d.js";
+import * as NodeTable              from "./node-table.js";
+import * as ValidationRunOptimise  from "./validation-run-optimise.js";
 
 const entries = new Map();
 
@@ -20,6 +21,12 @@ function register(mod) {
     description: mod.DESCRIPTION || "",
     mount:       mod.mount,
     singleton:   !!mod.SINGLETON,    // panel-picker filters singletons already mounted
+    // §6.19.2 — panels that render a specific saved run aren't useful
+    // as "add a blank one" choices in the picker; they're meant to be
+    // instantiated bound to a runId. The picker filters these out of
+    // its main type list and surfaces saved runs in a separate
+    // "Validation runs" section instead.
+    hideFromTypeList: !!mod.HIDE_FROM_TYPE_LIST,
   });
 }
 
@@ -27,6 +34,7 @@ register(Placeholder);
 register(Viewer3D);
 register(Viewer2D);
 register(NodeTable);
+register(ValidationRunOptimise);
 
 // Future entries (mounted as their modules come online):
 // register(await import("./cluster-tree.js"));

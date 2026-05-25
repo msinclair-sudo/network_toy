@@ -11,7 +11,7 @@
 // After Apply, the parent modal switches to the Validate tab so the
 // user can confirm the new config is stable.
 
-import { getState, update, subscribe, setOptimiseResult } from "../../state.js";
+import { getState, update, subscribe, setOptimiseResult, saveValidationRun } from "../../state.js";
 import * as engine from "../../engine.js";
 import { listAlgorithms } from "../../../clustering-registry.js";
 import { sweepAcrossAlgorithms, runTargetRangeSweep } from "../../../eval/sweep.js";
@@ -20,6 +20,7 @@ import {
   numClustersScorer, clusterRichnessScorer,
 } from "../../../eval/scorers.js";
 import { SCORE_VERSION } from "../../../eval/bootstrap.js";
+import { renderResults, formatScalar } from "./optimise-results-renderer.js";
 
 export function buildOptimiseTab(host, opts = {}) {
   const onApplyRow = opts.onApplyRow || (() => {});
@@ -629,6 +630,22 @@ export function buildOptimiseTab(host, opts = {}) {
       status.textContent = signal.aborted
         ? `cancelled · ${outcome.completed} / ${outcome.totalConfigs} configs · ${dt}s${phaseSuffix}${distSuffix}`
         : `${outcome.totalConfigs} configs in ${dt}s · ranked by ${effectiveScorer.label}${phaseSuffix}${distSuffix}`;
+
+      // §6.19.2 — Save-this-run button. Lets the user persist this
+      // outcome as a ValidationRun that survives project save/load
+      // and can be re-opened later from a panel without re-running
+      // the sweep. Stashed on the run row (.cm-tab-runrow), shown
+      // only after a successful sweep (not on cancellation or error).
+      if (!signal.aborted && outcome.ranked && outcome.ranked.length > 0) {
+        showSaveRunButton(runRow, outcome, persistedRanked, effectiveScorer,
+                          algos, B, scorerId, sweepMode, noiseHandling,
+                          sweepMode === "target"
+                            ? { targetMin, targetMax, phase1Count, refineStep,
+                                runBootstrap: targetBoot,
+                                sweepAgainst: outcome._sweepAgainst || sweepAgainst }
+                            : {},
+                          parseFloat(dt));
+      }
     }
 
     runBtn.disabled = false;
@@ -678,322 +695,96 @@ function extractGroundTruth(state) {
   return gt;
 }
 
-// Render the full ranked list of configs (not just top-N) with
-// sortable columns. Columns shown depend on which scorer ran:
-//   - always: rank, algorithm, params, clusters, apply
-//   - ARI:     + match (ARI score)
-//   - richness:    + reproducibility (meanJaccard), richness
-//   - stability:   + stable %, reproducibility (meanJaccard)
-//   - numClusters: (no extra column — primary already shown as clusters)
-//
-// The `#` column reflects the ORIGINAL primary-ranked position and
-// stays fixed when the user sorts by other columns — it's the "what
-// did the chosen scorer think?" anchor.
-function renderResults(host, outcome, scorer, onApplyRow, getLevels = null) {
-  host.innerHTML = "";
-  const head = document.createElement("h4");
-  head.className = "cm-tab-section-title";
-  head.textContent = "Results";
-  host.appendChild(head);
-
-  // Tag rows with their primary-rank position; never re-numbered on sort.
-  const rows = outcome.ranked.map((r, idx) => ({ ...r, primaryRank: idx + 1 }));
-
-  // Build column definitions per scorer. Each column declares:
-  //   key      — used for sort + cell lookup
-  //   label    — header text
-  //   align    — left / right
-  //   sortable — clickable header
-  //   value(r) — extracts the sortable value from a row
-  //   render(r)— returns HTML/string for the cell
-  // When the target-range sweep ran in "both" mode, each row carries a
-  // `source` tag indicating which dim-reduction it came from. Show a
-  // Source column so the user can compare post-fusion vs pre-fusion
-  // params side-by-side. Auto-hides when all rows share the same source
-  // (or none at all — e.g. resolution/full grid sweeps).
-  const sources = new Set(rows.map(r => r.source).filter(Boolean));
-  const showSourceCol = sources.size > 1;
-
-  const baseCols = [
-    {
-      key: "rank", label: "#", align: "right", sortable: true,
-      value: r => r.primaryRank,
-      render: r => String(r.primaryRank),
-    },
-    {
-      key: "algo", label: "Algorithm", align: "left", sortable: true,
-      value: r => r.algoLabel,
-      render: r => r.algoLabel,
-    },
-    ...(showSourceCol ? [{
-      key: "source", label: "Source", align: "left", sortable: true,
-      value: r => r.source || "",
-      render: r => r.source === "pre" ? "pre-fusion" : r.source === "post" ? "post-fusion" : "—",
-    }] : []),
-    {
-      key: "params", label: "Params", align: "left", sortable: false,
-      value: r => 0,
-      render: r => `<code class="cm-tab-params">${formatParams(r.params)}</code>`,
-    },
-    {
-      key: "clusters", label: "Clusters", align: "right", sortable: true,
-      value: r => r.numClusters,
-      render: r => String(r.numClusters),
-    },
-  ];
-
-  const scorerCols = scorerSpecificCols(scorer);
-  // Existing levels (lazy: fresh on every render in case the cluster
-  // config changed under us). When getLevels is null we fall back to a
-  // single "Apply" button per row (legacy behaviour).
-  const levels = getLevels ? getLevels() : null;
-  const applyCol = {
-    key: "apply", label: "", align: "right", sortable: false,
-    value: r => 0,
-    render: () => {
-      if (!levels || levels.length === 0) {
-        return `<button type="button" class="cm-tab-apply">Apply</button>`;
-      }
-      // Per-row dropdown listing existing levels + "+ New". The
-      // selected index is read at click time so users can pick a row,
-      // pick a level, then click Apply.
-      const optsHtml = levels.map((l, i) =>
-        `<option value="${i}">L${i}${l.scope === "within-parent" ? " (within parent)" : ""}</option>`
-      ).join("");
-      const newIdx = levels.length;
-      return `
-        <select class="cm-tab-apply-level" title="Which clustering level should this config land on?">
-          ${optsHtml}
-          <option value="${newIdx}">+ New level</option>
-        </select>
-        <button type="button" class="cm-tab-apply">Apply</button>
-      `;
-    },
-  };
-  const cols = [...baseCols, ...scorerCols, applyCol];
-
-  // Default sort = primary scorer's value (= rank ascending).
-  let sortKey = "rank";
-  let sortDir = "asc";
-
-  const table = document.createElement("table");
-  table.className = "cm-tab-table cm-tab-table-wide cm-tab-table-sortable";
-  host.appendChild(table);
-
-  function rebuild() {
-    table.innerHTML = "";
-
-    const thead = document.createElement("thead");
-    const trh = document.createElement("tr");
-    for (const col of cols) {
-      const th = document.createElement("th");
-      th.textContent = col.label;
-      th.style.textAlign = col.align;
-      if (col.sortable) {
-        th.classList.add("sortable");
-        if (col.key === sortKey) th.classList.add("sorted-" + sortDir);
-        th.addEventListener("click", () => {
-          if (sortKey === col.key) {
-            sortDir = sortDir === "asc" ? "desc" : "asc";
-          } else {
-            sortKey = col.key;
-            // Numeric columns default to descending (biggest first).
-            const sample = col.value(rows[0]);
-            sortDir = typeof sample === "number" ? "desc" : "asc";
-          }
-          rebuild();
-        });
-      }
-      trh.appendChild(th);
-    }
-    thead.appendChild(trh);
-    table.appendChild(thead);
-
-    const sortedRows = rows.slice().sort((a, b) => {
-      const col = cols.find(c => c.key === sortKey);
-      if (!col) return 0;
-      const av = col.value(a), bv = col.value(b);
-      if (av === bv) return 0;
-      if (av < bv) return sortDir === "asc" ? -1 : 1;
-      return sortDir === "asc" ? 1 : -1;
-    });
-
-    const tbody = document.createElement("tbody");
-    for (const r of sortedRows) {
-      const tr = document.createElement("tr");
-      tr.className = "cm-tab-row";
-      for (const col of cols) {
-        const td = document.createElement("td");
-        td.style.textAlign = col.align;
-        td.innerHTML = col.render(r);
-        tr.appendChild(td);
-      }
-      tr.querySelector(".cm-tab-apply").addEventListener("click", () => {
-        // If the per-row dropdown is present, read its selected index;
-        // otherwise default to L0 (legacy "replace whole config").
-        const sel = tr.querySelector(".cm-tab-apply-level");
-        const levelIdx = sel ? parseInt(sel.value, 10) : 0;
-        onApplyRow(r, Number.isFinite(levelIdx) ? levelIdx : 0);
-      });
-      tbody.appendChild(tr);
-    }
-    table.appendChild(tbody);
-  }
-
-  rebuild();
-}
-
-// Columns specific to the active scorer.
-function scorerSpecificCols(scorer) {
-  if (scorer.id === "ari") {
-    return [{
-      // §6.18.10 B5 — show ARI alongside the % of Bayes-optimal ceiling
-      // when the toy datasource populated genResult.bayesOptimalAri.
-      // Reads "0.85 (92%)" rather than the naked "0.85" which leaves
-      // the user wondering whether that's good. Ceiling itself is the
-      // same for every row in a sweep (same data + generative model),
-      // so it's pulled from row.extra.ariCeiling which the scorer
-      // stamped from genResult.bayesOptimalAri.
-      key: "match", label: "Match", align: "right", sortable: true,
-      value: r => Number.isFinite(r.primary) ? r.primary : -Infinity,
-      render: r => {
-        const ari = r.primary;
-        const ceiling = r.extra && r.extra.ariCeiling;
-        if (!Number.isFinite(ari)) return "—";
-        if (Number.isFinite(ceiling) && ceiling > 0) {
-          const pct = Math.round((ari / ceiling) * 100);
-          return `${formatScalar(ari)} <span class="cm-cell-aux">(${pct}% of ${formatScalar(ceiling)})</span>`;
-        }
-        return formatScalar(ari);
-      },
-    }];
-  }
-  if (scorer.id === "richness") {
-    return [
-      {
-        key: "macro", label: "Reprod. (macro)", align: "right", sortable: true,
-        value: r => Number.isFinite(r.secondary) ? r.secondary : -Infinity,
-        render: r => formatScalar(r.secondary),
-      },
-      {
-        key: "unweighted", label: "Reprod. (per-cluster)", align: "right", sortable: true,
-        value: r => readUnweighted(r),
-        render: r => formatScalar(readUnweighted(r)),
-      },
-      {
-        key: "breakdown", label: "Stability", align: "left", sortable: false,
-        value: r => 0,
-        render: r => renderHennigBar(r),
-      },
-      {
-        key: "richness", label: "Richness", align: "right", sortable: true,
-        value: r => Number.isFinite(r.primary) ? r.primary : -Infinity,
-        render: r => formatScalar(r.primary),
-      },
-    ];
-  }
-  if (scorer.id === "stability") {
-    return [
-      {
-        key: "macro", label: "Reprod. (macro)", align: "right", sortable: true,
-        value: r => Number.isFinite(r.primary) ? r.primary : -Infinity,
-        render: r => formatScalar(r.primary),
-      },
-      {
-        key: "unweighted", label: "Reprod. (per-cluster)", align: "right", sortable: true,
-        value: r => Number.isFinite(r.secondary) ? r.secondary : -Infinity,
-        render: r => formatScalar(r.secondary),
-      },
-      {
-        key: "breakdown", label: "Stability", align: "left", sortable: false,
-        value: r => 0,
-        render: r => renderHennigBar(r),
-      },
-    ];
-  }
-  // Target-range modes: primary is either proximity-to-mid (1/(1+d))
-  // or mean Jaccard (when bootstrap was enabled). Show the right
-  // label so the column header isn't confusing.
-  if (scorer.id === "target") {
-    return [{
-      key: "proximity", label: "Proximity", align: "right", sortable: true,
-      value: r => Number.isFinite(r.primary) ? r.primary : -Infinity,
-      render: r => formatScalar(r.primary),
-    }];
-  }
-  if (scorer.id === "target+bootstrap") {
-    return [{
-      key: "meanJ", label: "Reproducibility", align: "right", sortable: true,
-      value: r => Number.isFinite(r.primary) ? r.primary : -Infinity,
-      render: r => formatScalar(r.primary),
-    }];
-  }
-  // numClusters scorer: clusters column already shows the primary.
-  return [];
-}
-
-function formatScalar(v) {
-  if (!Number.isFinite(v)) return "—";
-  if (Math.abs(v) >= 100) return v.toFixed(0);
-  if (Math.abs(v) >= 10)  return v.toFixed(2);
-  return v.toFixed(3);
-}
-function formatPct(v) {
-  if (!Number.isFinite(v)) return "—";
-  return `${(v * 100).toFixed(0)}%`;
-}
-function formatParams(p) {
-  return Object.entries(p).map(([k, v]) => `${k}=${formatVal(v)}`).join(" ");
-}
-function formatVal(v) {
-  if (typeof v === "number") return Number.isInteger(v) ? String(v) : v.toFixed(2);
-  return String(v);
-}
-
-// Pull the cluster-count-weighted "per-cluster" Jaccard out of a row.
-// stabilityScorer puts it directly on row.secondary; richnessScorer
-// uses row.secondary for the macro Jaccard but stashes the unweighted
-// reading inside row.extra.aggregate.meanJaccard_unweighted. We try
-// the explicit field first and fall back to the extras path.
-function readUnweighted(r) {
-  if (r.extra && r.extra.aggregate && Number.isFinite(r.extra.aggregate.meanJaccard_unweighted)) {
-    return r.extra.aggregate.meanJaccard_unweighted;
-  }
-  return NaN;
-}
-
-// Inline Hennig stability breakdown bar — coloured segments for stable
-// / doubtful / unstable proportions per the bootstrap aggregate, with
-// a hover title that lists the raw counts. Replaces the previous
-// "Stable %" headline number (§6.18.7 B4) which compressed the same
-// information into one figure and lost the trade-off.
-function renderHennigBar(r) {
-  const agg = r.extra && r.extra.aggregate;
-  if (!agg || !Number.isFinite(agg.nClusters) || agg.nClusters <= 0) return "—";
-  const total = agg.nStable + agg.nDoubtful + agg.nUnstable;
-  if (total <= 0) return "—";
-  const sPct = (agg.nStable   / total) * 100;
-  const dPct = (agg.nDoubtful / total) * 100;
-  const uPct = (agg.nUnstable / total) * 100;
-  const title = `${agg.nStable} stable · ${agg.nDoubtful} doubtful · ${agg.nUnstable} unstable (Hennig: stable ≥ 0.85, doubtful 0.60–0.85, unstable < 0.60)`;
-  return `
-    <span class="cm-hennig-bar" title="${escapeAttr(title)}">
-      <span class="cm-hennig-seg cm-hennig-stable"   style="width:${sPct.toFixed(2)}%"></span>
-      <span class="cm-hennig-seg cm-hennig-doubtful" style="width:${dPct.toFixed(2)}%"></span>
-      <span class="cm-hennig-seg cm-hennig-unstable" style="width:${uPct.toFixed(2)}%"></span>
-    </span>
-  `;
-}
-
-function escapeAttr(s) {
-  return String(s).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
+// renderResults + scorer column logic + cell formatters now live in
+// optimise-results-renderer.js so the §6.19 validation-run-optimise
+// panel can share them without coupling the panel to the modal.
+// Kept locally below: formatDistributionStats (status-line-only).
 
 // §6.18.10 B6 — distribution stats for the sweep's primary scores.
 // Reads "  ·  best 0.78 · median 0.42 · sd 0.18 · n 27" (or empty
 // when fewer than 2 finite values — stats wouldn't be meaningful).
 // The aim is honest disclosure: "best of N" cherry-picks, and the
 // user should see the variance to read the headline appropriately.
+// §6.19.2 — render a "Save this run" button into the run row after
+// a sweep completes. Click prompts for a label (auto-suggested);
+// confirm calls saveValidationRun() with a typed entry that travels
+// with the project archive.
+//
+// The persisted run stores the same `persistedRanked` rows that
+// setOptimiseResult took (i.e. with `_cr` already stripped per
+// §6.18.3) — so v1 saves are compact but per-row Apply on a reload
+// will re-infer, not skip-infer. cr persistence is a follow-up.
+function showSaveRunButton(runRow, outcome, persistedRanked, scorer,
+                            algos, B, scorerId, sweepMode, noiseHandling,
+                            extraSettings, runtimeSec) {
+  // Remove any previous save button (e.g. from an earlier sweep this
+  // session — we re-create after every run so it tracks the latest).
+  const existing = runRow.querySelector(".cm-tab-save-run");
+  if (existing) existing.remove();
+
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "cm-tab-save-run";
+  btn.textContent = "Save this run";
+  btn.title = "Save this sweep as a Validation run — it survives a project reload and is openable later from the panel picker.";
+
+  btn.addEventListener("click", () => {
+    const state = getState();
+    const ds    = state.dataSource;
+    const mode  = (ds && ds.mode) || "toy";
+    const cfg   = (ds && ds.configs && ds.configs[mode]) || {};
+
+    // Auto-suggest a label from sweep shape + data fixture. The user
+    // can edit before confirming.
+    const subsetTag = mode === "real" ? (cfg.subset || "real") : `toy n=${state.genResult ? state.genResult.nodes.length : "?"}`;
+    const algoTag   = algos.length === 1 ? algos[0].id : `${algos.length} algos`;
+    const dateTag   = new Date().toISOString().slice(0, 10);
+    const auto      = `${algoTag} · ${sweepMode} · ${subsetTag} · ${dateTag}`;
+
+    const label = window.prompt("Label for this validation run:", auto);
+    if (label === null) return;   // user cancelled
+
+    try {
+      const id = saveValidationRun({
+        type: "optimise",
+        label: label.trim() || auto,
+        inputs: {
+          dataSourceId:        mode,
+          dataSourceConfig:    cfg,
+          layerParamsSnapshot: state.layerParams,
+        },
+        settings: {
+          B, scorerId, sweepMode, noiseHandling,
+          algorithms: algos.map(a => a.id),
+          ...extraSettings,
+        },
+        results: {
+          ranked:       persistedRanked,
+          totalConfigs: outcome.totalConfigs,
+          completed:    outcome.completed,
+          scorerId:     scorer.id,
+          scorerLabel:  scorer.label,
+          hitCount:     outcome.hitCount,
+          usedFallback: outcome.usedFallback,
+          phase2CacheHits: outcome.phase2CacheHits,
+        },
+        scoreVersion: SCORE_VERSION,
+        runtimeSec,
+      });
+      btn.textContent = "Saved ✓";
+      btn.disabled = true;
+      // Reset after a moment so re-saves are visible.
+      setTimeout(() => { btn.textContent = "Save again"; btn.disabled = false; }, 1500);
+      console.log("[optimise] saved validation run:", id);
+    } catch (e) {
+      console.error("[optimise] saveValidationRun failed:", e);
+      btn.textContent = "Save failed — see console";
+    }
+  });
+
+  runRow.appendChild(btn);
+}
+
 function formatDistributionStats(ranked) {
   if (!ranked || ranked.length < 2) return "";
   const vals = ranked

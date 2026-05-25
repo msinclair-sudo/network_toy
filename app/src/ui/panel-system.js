@@ -97,8 +97,12 @@ function renderTabs(slot, slotEl) {
   addBtn.title = "Add panel…";
   addBtn.textContent = "+";
   addBtn.addEventListener("click", () => {
-    openPanelPickerModal(slot, (typeId) => {
-      addTab(slot, typeId, defaultConfigFor(typeId));
+    // §6.19.2 — the picker may pass a `config` for validation-run
+    // panels (carrying runId) so the new panel is bound to a
+    // specific saved run. Merge over the default config so
+    // type-level defaults still apply.
+    openPanelPickerModal(slot, (typeId, config) => {
+      addTab(slot, typeId, { ...defaultConfigFor(typeId), ...(config || {}) });
     });
   });
   tabsEl.appendChild(addBtn);

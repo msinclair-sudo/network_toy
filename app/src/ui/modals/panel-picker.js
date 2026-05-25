@@ -1,9 +1,14 @@
 // Panel-picker modal: shown when the user clicks the "+" tab in any
-// slot. Lists every registered panel type (except the placeholder)
-// as a clickable card; on pick, calls `onPick(typeId)` and closes.
+// slot. Lists two sections:
+//   1. Panel types — every registered panel type that isn't a singleton
+//      already mounted somewhere AND isn't hidden via HIDE_FROM_TYPE_LIST.
+//   2. Validation runs (§6.19) — every saved run in
+//      state.validationRuns, opened via the panel type appropriate to
+//      its `type` field (e.g. "optimise" → validation-run-optimise).
 //
-// Pattern is generic — any slot uses the same modal; the slot label
-// just shows in the title.
+// Picking either calls `onPick(typeId, config)` and closes. The
+// caller (panel-system) uses config to bind the new panel (e.g.
+// runId for validation-run-* panels).
 
 import { openModal }        from "./modal.js";
 import { listPanelTypes }   from "../panels/registry.js";
@@ -20,45 +25,66 @@ function isSingletonAlreadyMounted(typeId) {
   return false;
 }
 
+// Map a ValidationRun.type to the panel-type id that renders it.
+// Extend as new run renderers come online (dim-sweep, bootstrap, etc.).
+function panelTypeForRun(run) {
+  if (run.type === "optimise")     return "validation-run-optimise";
+  if (run.type === "targetRange")  return "validation-run-optimise";  // same renderer
+  // future: dimSweep, bootstrapStability, etc.
+  return null;
+}
+
 export function openPanelPickerModal(slot, onPick) {
   const body = document.createElement("div");
   body.className = "panel-picker-list";
 
   let modal = null;
 
+  // ── Section 1: panel types. ──
   const types = listPanelTypes()
     .filter(t => t.id !== "placeholder")
+    .filter(t => !t.hideFromTypeList)
     .filter(t => !(t.singleton && isSingletonAlreadyMounted(t.id)));
-  if (types.length === 0) {
+  if (types.length > 0) {
+    const heading = document.createElement("div");
+    heading.className = "panel-picker-section-heading";
+    heading.textContent = "Panel types";
+    body.appendChild(heading);
+    for (const t of types) {
+      body.appendChild(makeCard(t.label, t.description, () => {
+        onPick(t.id);
+        if (modal) modal.close();
+      }));
+    }
+  }
+
+  // ── Section 2: validation runs. ──
+  const runs = (getState().validationRuns || [])
+    .map(r => ({ run: r, typeId: panelTypeForRun(r) }))
+    .filter(x => x.typeId);   // skip runs whose renderer isn't registered yet
+  if (runs.length > 0) {
+    const heading = document.createElement("div");
+    heading.className = "panel-picker-section-heading";
+    heading.textContent = "Validation runs";
+    body.appendChild(heading);
+    // Newest first feels more useful than insertion order.
+    runs.sort((a, b) => (b.run.timestamp || "").localeCompare(a.run.timestamp || ""));
+    for (const { run, typeId } of runs) {
+      const label = run.label || `(unlabelled ${run.type})`;
+      const dt    = run.timestamp ? new Date(run.timestamp).toLocaleString() : "";
+      const desc  = `${run.type} · saved ${dt}`;
+      body.appendChild(makeCard(label, desc, () => {
+        onPick(typeId, { runId: run.id });
+        if (modal) modal.close();
+      }));
+    }
+  }
+
+  if (types.length === 0 && runs.length === 0) {
     const empty = document.createElement("div");
     empty.className = "panel-picker-empty";
-    empty.textContent = "No panel types registered.";
+    empty.textContent = "No panel types or saved runs available.";
     body.appendChild(empty);
-  } else {
-    for (const t of types) {
-      const item = document.createElement("button");
-      item.type = "button";
-      item.className = "panel-picker-item";
-
-      const label = document.createElement("div");
-      label.className = "panel-picker-item-label";
-      label.textContent = t.label;
-      item.appendChild(label);
-
-      if (t.description) {
-        const desc = document.createElement("div");
-        desc.className = "panel-picker-item-desc";
-        desc.textContent = t.description;
-        item.appendChild(desc);
-      }
-
-      item.addEventListener("click", () => {
-        try { onPick(t.id); }
-        catch (e) { console.error("[panel-picker] onPick failed:", e); }
-        if (modal) modal.close();
-      });
-      body.appendChild(item);
-    }
   }
 
   modal = openModal({
@@ -70,4 +96,29 @@ export function openPanelPickerModal(slot, onPick) {
   });
 
   return modal;
+}
+
+function makeCard(labelText, descText, onClick) {
+  const item = document.createElement("button");
+  item.type = "button";
+  item.className = "panel-picker-item";
+
+  const label = document.createElement("div");
+  label.className = "panel-picker-item-label";
+  label.textContent = labelText;
+  item.appendChild(label);
+
+  if (descText) {
+    const desc = document.createElement("div");
+    desc.className = "panel-picker-item-desc";
+    desc.textContent = descText;
+    item.appendChild(desc);
+  }
+
+  item.addEventListener("click", () => {
+    try { onClick(); }
+    catch (e) { console.error("[panel-picker] onClick failed:", e); }
+  });
+
+  return item;
 }

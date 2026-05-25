@@ -2202,9 +2202,56 @@ whether to keep, drop, or upgrade. Same migration pattern as
    verifies the default, all three typed actions, bad-input
    rejection, full round-trip with an Int32Array buried in
    `results.partition`, and the legacy-save case.
-2. **Save-this-run + panel-picker integration** — the UX entry
-   and exit points. Pick one type to wire first; Optimise is the
-   obvious one (existing renderer already lifted).
+2. **Save-this-run + panel-picker integration ✓ — shipped 2026-05-25.**
+   First end-to-end use of `validationRuns`. Wired Optimise as
+   the proof-of-concept; the same pattern extends to dim-sweep /
+   bootstrap-stability / etc. once their renderers register.
+
+   - **Renderer extraction.** Moved `renderResults` + scorer column
+     logic + cell formatters from `optimise-tab.js` into a new
+     `optimise-results-renderer.js` so the saved-run panel can
+     share the renderer without coupling to the modal. ~280 LoC
+     extracted; modal still uses the same code path.
+   - **Save-this-run button.** Appears in the Optimise run-row
+     after a successful sweep. Click → `window.prompt` for a label
+     (auto-suggested from sweep settings + data fixture + date) →
+     `saveValidationRun({ type: "optimise", ... })`. Persists the
+     same `persistedRanked` rows that `setOptimiseResult` already
+     uses, so saves are compact (no per-row `_cr` Int32Arrays in
+     v1). Per-row Apply on a reload re-infers (cheap relative to
+     the original sweep).
+   - **Panel picker.** Now lists two sections — *Panel types*
+     (the previous list, minus singletons-already-mounted) and
+     *Validation runs* (every saved run, sorted newest-first).
+     Picking a saved run injects `config = { runId }` so the
+     new panel binds to that specific run.
+   - **`validation-run-optimise` panel.** New panel in
+     `app/src/ui/panels/`. Reads its run by `config.runId` from
+     `state.validationRuns`; renders the saved table via
+     `renderResults`. Per-row Apply routes through the clustering
+     descriptor (same path as the modal Apply). Header shows
+     label + meta (config count, scorer, fixture, save time);
+     warns if the current `dataSource.mode` differs from the
+     saved run's. Panel is marked `HIDE_FROM_TYPE_LIST` so it
+     never appears as a "blank" panel choice — only as a
+     bound-to-a-runId entry under "Validation runs".
+   - **panel-system.js** — `openPanelPickerModal` callback
+     extended to accept `(typeId, config)`; merged over the
+     default-config-for-type so type-level defaults still apply.
+
+   Smoke (`scratch/save_run_and_panel_smoke.py`, toy n=400):
+   sweep → Save → state.validationRuns grows → picker lists the
+   run under "Validation runs" → panel mounts bound to runId →
+   29 sortable rows with Apply buttons → clicking Apply on a row
+   re-clusters with the chosen config (mutualK=5 → k=20 verified).
+   Zero console errors. All five pre-existing smokes still pass.
+
+   **Known limitation (carried to step 5+):** v1 strips `_cr`
+   from saved rows because the in-modal Optimise tab also strips
+   before persisting via `setOptimiseResult` (and we reuse that
+   `persistedRanked` shape for parity). Per-row Apply on a saved
+   run re-infers; the sweep itself doesn't re-run. "Persist with
+   cr" is the §6.19 follow-up that makes Apply instant.
 3. **Optimise results panel** — biggest immediate user win; uses
    the §6.18.3 cr cache for instant reapply on saved rows.
 4. **Dim-sweep results panel** — depends on §6.9 promoting from
