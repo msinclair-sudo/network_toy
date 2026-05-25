@@ -440,44 +440,59 @@ function condenseDendrogram(dendro, n, minClusterSize) {
   //                       Determines the λ_falls_out for any leaf that exits
   //                       at this point.
   // Returns nothing; mutates condensed.
-  function visit(cdId, dnodeId) {
-    const cnode = dendro[dnodeId];
-    if (cnode.isLeaf) {
-      // A single point. It "falls out" of the condensed cluster the moment
-      // we recurse into it. Caller handles the leafEvents push.
-      return;
-    }
-    const left = cnode.left, right = cnode.right;
-    const leftN = leaves[left].length;
-    const rightN = leaves[right].length;
-    const dieLambda = cnode.weight > 0 ? (1 / cnode.weight) : Infinity;
+  // Iterative tree walk. The original recursive version blew the JS
+  // call stack at n=5000 on degenerate trees (long chains of
+  // single-sided splits — which is exactly what density-unfriendly
+  // input geometry like raw PCA produces; see §6.9 follow-up).
+  // Worklist for the true-split case (spawns two new condensed
+  // clusters). The dominant degenerate case — single-side-persists —
+  // is handled by the inner `while (true)` loop with manual tail-
+  // call elision, so the worklist itself stays O(tree-branching),
+  // not O(tree-depth).
+  function visit(rootCdId, rootDnodeId) {
+    const worklist = [[rootCdId, rootDnodeId]];
+    while (worklist.length > 0) {
+      let [cdId, dnodeId] = worklist.pop();
+      while (true) {
+        const cnode = dendro[dnodeId];
+        if (cnode.isLeaf) break;
+        const left = cnode.left, right = cnode.right;
+        const leftN = leaves[left].length;
+        const rightN = leaves[right].length;
+        const dieLambda = cnode.weight > 0 ? (1 / cnode.weight) : Infinity;
 
-    const leftBig = leftN >= minClusterSize;
-    const rightBig = rightN >= minClusterSize;
+        const leftBig = leftN >= minClusterSize;
+        const rightBig = rightN >= minClusterSize;
 
-    if (leftBig && rightBig) {
-      // True split. Spawn two new condensed clusters and recurse into
-      // each side. makeCondensedNode wires childIds on the parent.
-      const leftCd = makeCondensedNode(condensed, cdId, left, dieLambda);
-      const rightCd = makeCondensedNode(condensed, cdId, right, dieLambda);
-      visit(leftCd, left);
-      visit(rightCd, right);
-    } else if (!leftBig && !rightBig) {
-      // Both small — entire branch dies. Every leaf under this dendro node
-      // falls out of the parent condensed cluster at dieLambda.
-      for (const leafId of leaves[dnodeId]) {
-        condensed[cdId].leafEvents.push({ leafId, fallsOutLambda: dieLambda });
+        if (leftBig && rightBig) {
+          // True split. Spawn two new condensed clusters; defer the
+          // right side to the worklist, continue inline on the left.
+          const leftCd = makeCondensedNode(condensed, cdId, left, dieLambda);
+          const rightCd = makeCondensedNode(condensed, cdId, right, dieLambda);
+          worklist.push([rightCd, right]);
+          cdId = leftCd;
+          dnodeId = left;
+          continue;
+        } else if (!leftBig && !rightBig) {
+          // Both small — entire branch dies. Every leaf under this
+          // dendro node falls out of the parent condensed cluster at
+          // dieLambda.
+          for (const leafId of leaves[dnodeId]) {
+            condensed[cdId].leafEvents.push({ leafId, fallsOutLambda: dieLambda });
+          }
+          break;
+        } else {
+          // One side persists. The small side's leaves fall out at
+          // dieLambda. The big side continues belonging to this
+          // condensed cluster; loop instead of recursing.
+          const big   = leftBig ? left : right;
+          const small = leftBig ? right : left;
+          for (const leafId of leaves[small]) {
+            condensed[cdId].leafEvents.push({ leafId, fallsOutLambda: dieLambda });
+          }
+          dnodeId = big;
+        }
       }
-    } else {
-      // One side persists. The small side's leaves fall out at dieLambda.
-      // The big side's leaves continue belonging to this condensed cluster;
-      // we recurse into the big side without spawning new clusters.
-      const big   = leftBig ? left : right;
-      const small = leftBig ? right : left;
-      for (const leafId of leaves[small]) {
-        condensed[cdId].leafEvents.push({ leafId, fallsOutLambda: dieLambda });
-      }
-      visit(cdId, big);
     }
   }
 

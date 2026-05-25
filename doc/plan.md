@@ -2365,7 +2365,7 @@ check `ARI(50, 100) > 0.9` for 50-d defensibility.
 - `doc/dim-sweep-results.md` — new file; full results table +
   protocol + limitations.
 
-**Script:** `scratch/dim_sweep_validation.py`. ~17 minutes wall
+**Script:** `validation/dim_sweep_validation.py`. ~17 minutes wall
 on this fixture. Re-run when a new real-data fixture (or a new
 clustering algorithm) lands — the verdict may not transfer.
 
@@ -2377,6 +2377,55 @@ clustering algorithm) lands — the verdict may not transfer.
   may show different ARI patterns.
 - ARI compares labels only; cluster *shape* could drift inside the
   ARI tolerance.
+
+**§6.9 follow-up — is UMAP after PCA redundant?** ✓ resolved 2026-05-25.
+User observation: PCA-100 noise stage already takes us to 100-d;
+if UMAP compression then outputs 100-d too, is it redundant?
+Tested via `validation/compression_redundancy_check.py`:
+
+- `identity (PCA-100 → HDBSCAN)` produced **2 clusters** —
+  pathological mega-cluster collapse. HDBSCAN couldn't find density
+  structure in the PCA-only geometry.
+- `UMAP-100 → HDBSCAN` produced **54-59 clusters** across seeds.
+- `mean ARI(identity, UMAP-100) = 0.002 ± 0.000` — essentially
+  zero. The two partitions are independent of each other; the
+  UMAP manifold reshape is doing 100% of the cluster-discovery
+  work that HDBSCAN then operates on.
+
+**Verdict:** UMAP-after-PCA is **not redundant** — it's load-
+bearing. PCA-100 is a denoiser that strips noise variance in the
+input space; UMAP-100 then rearranges the manifold so Euclidean
+distance becomes a useful similarity measure for density-based
+clustering. Both stages do essential, distinct work. This matches
+the literature in `doc/clustering-research.md` §2.2: "PCA alone
+fails for HDBSCAN on transformer embeddings (GDELT result)."
+
+**Bonus methodological finding** (worth flagging for future tests):
+`ARI(UMAP_seed_i, UMAP_seed_j) ≈ 0.68–0.81` — UMAP-100 has ~30%
+seed variance across independent runs at the same target dim.
+This wasn't measured in the original dim-sweep (which compared
+same-seed across dims) but is real and significant. Implications:
+- The compression default is well-defined (UMAP-100), but the
+  *resulting partition* will vary across re-runs even at fixed
+  params unless `random_state` is also fixed.
+- Optimise / Validate runs that quote a single ARI to ground
+  truth should consider averaging across UMAP seeds, not just
+  across bootstrap iterations.
+- §6.18's bootstrap evaluates clustering stability under data
+  subsampling; it does NOT capture UMAP-induced partition
+  variance. A "UMAP-seed stability" check (orthogonal to bootstrap)
+  would be a useful addition under §6.19's validation-runs scheme.
+
+**HDBSCAN bug fix discovered + shipped during this follow-up.**
+The pilot identity-mode run blew the JS call stack at n=5000
+because `clustering-hdbscan.js`'s recursive `visit()` walked a
+degenerate (long-chain) condensed tree — the kind density-
+unfriendly inputs like raw PCA produce. Converted to iterative
+with an explicit worklist + manual tail-call elision for the
+single-side-persists case. Unblocks HDBSCAN on any input that
+produces a degenerate tree, not just this test.
+
+Append in `doc/dim-sweep-results.md` documents the full result.
 
 ### 6.10 `doc/method-manual.md` ☐
 Was item 9. Still too early.

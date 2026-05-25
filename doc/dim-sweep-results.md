@@ -87,7 +87,75 @@ matches 200-d.
 - ARI compares partition labels only; cluster *shape* could
   still drift inside the ARI tolerance.
 
-Re-run via `python scratch/dim_sweep_validation.py` (needs
+Re-run via `python validation/dim_sweep_validation.py` (needs
 the dev server on :8000). ~17 minutes wall time on this fixture
 (actual; 9 minutes was the pre-run estimate before UMAP at
 d=100 / 200 turned out to be slower than expected at n=5000).
+
+---
+
+# Compression redundancy check (§6.9 follow-up)
+
+Question: if PCA-100 is already producing 100-d output,
+is the UMAP-100 compression stage redundant — or is the
+manifold reshape it does actually load-bearing for clustering?
+
+Per `doc/clustering-research.md` §2.2, prior literature
+(GDELT) found that PCA alone fails for HDBSCAN on
+transformer embeddings. This is the same check on our
+specific BFS-5000 fixture.
+
+## Protocol
+
+- Same setup as the main dim-sweep above (BFS-5000, PCA-100
+  noise, HDBSCAN at `min_cluster_size=15, min_samples=5,`
+  `selection=eom, noiseMode=absorb`).
+- Two compression configs:
+  - **A**: `compression = identity` (HDBSCAN runs on PCA-100 output direct)
+  - **B**: `compression = UMAP-100`, seeds ∈ {42, 43, 44}
+- Pairwise ARI: ARI(identity, UMAP_seed_i).
+
+## Cluster counts
+
+| Setup | Clusters |
+|-------|---------:|
+| identity (PCA-100 → HDBSCAN) | 2 |
+| UMAP-100 seed=42 | 58 |
+| UMAP-100 seed=43 | 54 |
+| UMAP-100 seed=44 | 59 |
+
+## ARI vs identity setup
+
+| Compared to | ARI |
+|-------------|----:|
+| UMAP-100 seed=42 | 0.002 |
+| UMAP-100 seed=43 | 0.002 |
+| UMAP-100 seed=44 | 0.002 |
+| **mean ± SD** | **0.002 ± 0.000** |
+
+## UMAP-to-UMAP context (seed-to-seed variance)
+
+Confirms UMAP-100 is stable across seeds; the divergence
+above can't be explained by UMAP non-determinism.
+
+| Seed pair | ARI |
+|-----------|----:|
+| (42, 43) | 0.681 |
+| (42, 44) | 0.806 |
+| (43, 44) | 0.700 |
+
+## Verdict
+
+`mean ARI(identity, UMAP-100) = 0.002 ± 0.000`
+
+**NOT REDUNDANT** — UMAP at 100→100 produces a meaningfully
+different partition from clustering on PCA-100 directly.
+The manifold reshape is load-bearing: even at the same
+output dimension, UMAP is rearranging points so that
+Euclidean distance becomes a useful similarity measure for
+density-based clustering. PCA alone preserves variance but
+not cluster boundaries on transformer embeddings, as the
+literature predicted (`doc/clustering-research.md` §2.2).
+Recommendation: keep `compression = UMAP-100` as the default.
+
+Re-run via `python validation/compression_redundancy_check.py`.
