@@ -216,7 +216,14 @@ const state = {
   // Cleared by recluster() — stale results don't survive a
   // clustering config change.
   evalResults: {
-    validate: null,   // {perCluster, aggregate, bootstrapsRun, settings, timestamp}
+    // DEPRECATED 2026-05-24 — Validate tab removed (§6.18.1). Slot
+    // preserved on the read side so old project archives still
+    // deserialise cleanly; no UI writes to it any more. The
+    // bootstrap surface lives entirely inside Optimise now (via
+    // the richness / stability scorers and target-range
+    // runBootstrap). Will be dropped from the schema on the next
+    // intentional bump.
+    validate: null,
     optimise: null,   // {ranked, top, totalConfigs, completed, settings, scorerLabel, timestamp, runtime}
   },
 
@@ -380,6 +387,9 @@ export function setProjectName(name) {
   update({ projectName: name || null });
 }
 
+// DEPRECATED 2026-05-24 — Validate tab removed (§6.18.1). Kept as a
+// no-op export so any external caller in the wild doesn't crash; safe
+// to delete once we're sure nothing references it.
 export function setValidateResult(result) {
   update({ evalResults: { ...state.evalResults, validate: result || null } });
 }

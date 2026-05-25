@@ -10,9 +10,12 @@
 //   * abortSignal.aborted = true breaks out of the loop early; the
 //     function resolves with whatever was scored so far.
 //
-// Yields between configs so the main thread repaints during a long
-// sweep — and yields again inside the bootstrap (when the stability
-// scorer is active) so the UI never freezes for more than ~1 config.
+// algo.infer calls run in clustering-worker.js via runInferRemote so
+// the main thread stays responsive across long sweeps (A1 in §6.18).
+// Configs are still iterated sequentially today; per-config parallelism
+// is a future cheap win on top.
+
+import { runInferRemote } from "./run-infer-remote.js";
 
 export async function sweepAcrossAlgorithms({
   algorithms,        // array of clustering registry entries
@@ -59,8 +62,8 @@ export async function sweepAcrossAlgorithms({
 
     let scored = null;
     try {
-      const cr = algo.infer(genResult, params, dimredResult);
-      const ctx = { abortSignal, onIterProgress: null };   // bootstrap loop yields internally
+      const cr = await runInferRemote(algo, genResult, params, dimredResult, { signal: abortSignal });
+      const ctx = { abortSignal, onIterProgress: null };   // bootstrap parallelises internally
       const s  = scorer.isAsync
         ? await scorer.score(genResult, dimredResult, cr, algo, params, ctx)
         : scorer.score(genResult, dimredResult, cr, algo, params);
@@ -72,8 +75,16 @@ export async function sweepAcrossAlgorithms({
         secondary:   s.secondary,
         numClusters: s.numClusters,
         extra:       s.extra,
+        // A3: cache the cr so per-row Apply can skip re-infer in the
+        // engine cascade. Runtime-only — stripped before save.
+        _cr:         cr,
       };
     } catch (e) {
+      // AbortError is expected when the user cancels; let the outer
+      // loop's abortSignal check pick it up naturally without logging
+      // noise. The break exits the for loop immediately, so the
+      // results.push below doesn't run with a null scored.
+      if (e && e.name === "AbortError") break;
       console.error(`[sweep] config ${i+1}/${total} (${label}) threw:`, e);
       scored = {
         algoId:      algo.id,
@@ -87,10 +98,9 @@ export async function sweepAcrossAlgorithms({
     }
     results.push(scored);
     if (onProgress) onProgress(i + 1, total, label);
-
-    // Yield so the main thread can repaint between configs even when
-    // the active scorer is synchronous (ARI).
-    await new Promise(r => setTimeout(r, 0));
+    // No explicit yield needed: `await runInferRemote(...)` above is a
+    // real async boundary (worker spawn + postMessage round-trip) so
+    // the main thread already gets repaint chances between configs.
   }
 
   results.sort((a, b) => {
@@ -183,7 +193,11 @@ export async function runTargetRangeSweep({
   refineStep    = 3,
   refineFields  = null,       // null = use resolution-tagged fields
   runBootstrap  = false,
-  bootstrapOpts = { B: 25, subsampleFrac: 0.8 },
+  // bootstrapOpts is passed through to bootstrapStability when
+  // runBootstrap is on. Empty defaults so bootstrap.js's own defaults
+  // (B=25, subsampleFrac=0.5, minMembers=3, noiseHandling="exclude")
+  // flow through unless the caller overrides.
+  bootstrapOpts = {},
   seed          = 42,
   onProgress    = null,       // (phase, idx, total, label) => void
   abortSignal   = null,
@@ -208,26 +222,58 @@ export async function runTargetRangeSweep({
       const label = `${algo.id} [phase 1] ${formatParams(params)}`;
       const entry = { algoId: algo.id, algoLabel: algo.label || algo.id, params, numClusters: 0, inRange: false };
       try {
-        const cr = algo.infer(genResult, params, dimredResult);
+        const cr = await runInferRemote(algo, genResult, params, dimredResult, { signal: abortSignal });
         entry.numClusters = cr.clusters.length;
         entry.inRange     = (entry.numClusters >= targetMin && entry.numClusters <= targetMax);
         // Cache the clusterResult so Phase 2 doesn't have to re-run
         // the same config when expanding neighbours that happen to
-        // collide with a Phase-1 hit. (Not used yet, but cheap.)
+        // collide with a Phase-1 hit. A2 in §6.18 audit.
         entry._cr = cr;
       } catch (e) {
+        if (e && e.name === "AbortError") break;
         entry.error = String(e.message || e);
       }
       phase1.push(entry);
       phase1Idx++;
       if (onProgress) onProgress("phase1", phase1Idx, phase1Total, label);
-      await yieldTick();
+      // No explicit yield: `await runInferRemote(...)` above is a real
+      // async boundary so the main thread already gets repaint chances.
     }
     if (abortSignal && abortSignal.aborted) break;
   }
 
   // Phase-1 hits = configs that produced cluster counts in the band.
-  const hits = phase1.filter(e => e.inRange);
+  // B12 (§6.18.8): when nothing hit the band, fall back to the K
+  // closest-to-band Phase-1 configs and refine those so the user
+  // gets something to look at rather than an empty results table.
+  // "Closest" = smallest distance from numClusters to [min, max]
+  // (zero inside the band, positive outside). Skipping errored
+  // entries (no numClusters available).
+  const FALLBACK_K = 3;
+  const inRangeHits = phase1.filter(e => e.inRange);
+  let hits;
+  let usedFallback = false;
+  if (inRangeHits.length > 0) {
+    hits = inRangeHits;
+  } else {
+    const scorable = phase1.filter(e => !e.error && Number.isFinite(e.numClusters));
+    const distance = (e) => Math.max(0, targetMin - e.numClusters, e.numClusters - targetMax);
+    scorable.sort((a, b) => distance(a) - distance(b));
+    hits = scorable.slice(0, FALLBACK_K);
+    usedFallback = hits.length > 0;
+  }
+
+  // Cache every Phase-1 cr keyed by (algoId, stableStringify(params))
+  // so Phase 2's neighbour expansion can skip re-inferring base
+  // configs that already ran. expandNeighbours always includes the
+  // base config in its output, so without this cache every hit was
+  // re-inferred. A2 in §6.18 audit.
+  const phase1CrByKey = new Map();
+  for (const e of phase1) {
+    if (e._cr) {
+      phase1CrByKey.set(`${e.algoId}|${stableStringify(e.params)}`, e._cr);
+    }
+  }
 
   // ── Phase 2: refine neighbourhoods. ────────────────────────────
   // For each hit, perturb its int/range resolution fields by ±refineStep
@@ -247,14 +293,15 @@ export async function runTargetRangeSweep({
       const k = `${algo.id}|${stableStringify(p)}`;
       if (seenKeys.has(k)) continue;
       seenKeys.add(k);
-      phase2Configs.push({ algo, params: p });
+      phase2Configs.push({ algo, params: p, cacheKey: k });
     }
   }
 
   const phase2 = [];
+  let phase2CacheHits = 0;
   for (let i = 0; i < phase2Configs.length; i++) {
     if (abortSignal && abortSignal.aborted) break;
-    const { algo, params } = phase2Configs[i];
+    const { algo, params, cacheKey } = phase2Configs[i];
     const label = `${algo.id} [phase 2] ${formatParams(params)}`;
     const entry = {
       algoId:      algo.id,
@@ -265,29 +312,58 @@ export async function runTargetRangeSweep({
       secondary:   0,
       extra:       {},
     };
+    let didAwait = false;
     try {
-      const cr = algo.infer(genResult, params, dimredResult);
+      // A2: reuse the Phase-1 cr when its (algo, params) match this
+      // Phase-2 candidate — base configs always do, plus the occasional
+      // ±step neighbour that happened to coincide with a different
+      // Phase-1 sample.
+      const cachedCr = phase1CrByKey.get(cacheKey);
+      let cr;
+      if (cachedCr) {
+        cr = cachedCr;
+        phase2CacheHits++;
+      } else {
+        cr = await runInferRemote(algo, genResult, params, dimredResult, { signal: abortSignal });
+        didAwait = true;
+      }
+      // Cache this cr too, so downstream (per-row Apply / future
+      // re-runs in the same sweep) can pick it up.
+      entry._cr = cr;
       entry.numClusters = cr.clusters.length;
       entry.inRange     = (entry.numClusters >= targetMin && entry.numClusters <= targetMax);
       if (runBootstrap) {
         // Bootstrap-Jaccard against the same algo + params on
-        // subsamples; primary = mean meanJaccard across clusters.
+        // subsamples. primary = aggregate.meanJaccard_macro (size-
+        // weighted) — same metric the stability scorer uses.
+        //
+        // B10 (§6.18.8): seed is derived from (seed, algoId, params)
+        // not the Phase-2 array index, so identical configs across
+        // runs (or under cache-driven reordering) get identical
+        // subsample sequences. Without this fix, the same (algo,
+        // params) could score differently depending on what order
+        // Phase 2 happened to walk the candidates in.
         const boot = await bootstrapStability({
-          algo, params, refResult: cr,
+          algo, params,
+          refClusterResult: cr,        // bootstrapStability's param name
           genResult, dimredResult,
-          B: bootstrapOpts.B,
-          subsampleFrac: bootstrapOpts.subsampleFrac,
-          seed: (seed ^ 0xBEEF) + i,
+          // Spread caller's bootstrapOpts (B, subsampleFrac,
+          // noiseHandling, minMembers) so bootstrap.js's per-arg
+          // defaults flow through when the caller omits.
+          ...bootstrapOpts,
+          seed:          configSeed(seed, algo.id, params),
           abortSignal,
         });
-        // Aggregate mean across all reference clusters' meanJaccard.
-        const perCluster = boot.perCluster || [];
-        const mean = perCluster.length > 0
-          ? perCluster.reduce((acc, c) => acc + (Number.isFinite(c.meanJaccard) ? c.meanJaccard : 0), 0) / perCluster.length
-          : NaN;
-        entry.primary    = Number.isFinite(mean) ? mean : 0;
-        entry.secondary  = entry.numClusters;
-        entry.extra      = { meanJaccard: mean, perCluster };
+        didAwait = true;
+        const meanJ = boot.aggregate ? boot.aggregate.meanJaccard : NaN;
+        entry.primary   = Number.isFinite(meanJ) ? meanJ : 0;
+        entry.secondary = entry.numClusters;
+        entry.extra     = {
+          meanJaccard:   meanJ,
+          fractionStable: boot.aggregate ? boot.aggregate.fractionStable : NaN,
+          perCluster:    boot.perCluster || [],
+          bootstrapsRun: boot.bootstrapsRun || 0,
+        };
       } else {
         // No bootstrap: primary = proximity to target-band midpoint
         // (1 / (1 + distance)), normalised so 1.0 is the midpoint
@@ -299,11 +375,16 @@ export async function runTargetRangeSweep({
         entry.secondary = entry.numClusters;
       }
     } catch (e) {
+      if (e && e.name === "AbortError") break;
       entry.error = String(e.message || e);
     }
     phase2.push(entry);
     if (onProgress) onProgress("phase2", i + 1, phase2Configs.length, label);
-    await yieldTick();
+    // Only yield when the iter did no real awaiting — happens on the
+    // cache-hit + no-bootstrap path, which is otherwise a tight loop
+    // through pure JS that would block repaints. When we did await
+    // (worker infer or bootstrap), the event loop already got its turn.
+    if (!didAwait) await yieldTick();
   }
 
   // Rank Phase-2 results: in-range configs first (descending primary),
@@ -319,10 +400,15 @@ export async function runTargetRangeSweep({
 
   return {
     phase1, phase2, ranked,
-    hitCount:     hits.length,
-    totalConfigs: phase1.length + phase2.length,
-    completed:    phase1.length + phase2.length,
-    settings:     { targetMin, targetMax, phase1Count, refineStep, runBootstrap, seed },
+    // hitCount is the count of *in-band* Phase-1 hits seeded into
+    // Phase 2 — stays 0 when the fallback fires (no real hits found),
+    // even though Phase 2 ran. usedFallback distinguishes the cases.
+    hitCount:        inRangeHits.length,
+    usedFallback,    // true when Phase 2 ran on the K closest-to-band Phase-1 configs (B12)
+    totalConfigs:    phase1.length + phase2.length,
+    completed:       phase1.length + phase2.length,
+    phase2CacheHits, // how many Phase-2 candidates were served from Phase-1's cache
+    settings:        { targetMin, targetMax, phase1Count, refineStep, runBootstrap, seed },
   };
 }
 
@@ -361,6 +447,13 @@ function hashStr(s) {
   let h = 5381;
   for (let i = 0; i < s.length; i++) h = ((h << 5) + h) ^ s.charCodeAt(i);
   return h >>> 0;
+}
+
+// Deterministic seed derived from (sweep seed, algoId, stable params).
+// Identical (algoId, params) gives the identical bootstrap subsample
+// sequence regardless of Phase-2 iteration order. Used by §6.18.8 B10.
+function configSeed(baseSeed, algoId, params) {
+  return ((baseSeed >>> 0) ^ hashStr(`${algoId}|${stableStringify(params)}`)) >>> 0;
 }
 
 function stableStringify(obj) {

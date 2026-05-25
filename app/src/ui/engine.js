@@ -29,7 +29,7 @@ import { computeBridgeAnalysis }                                 from "./bridge-
 import { update, getState, setLayerState }                       from "./state.js";
 import { runDAG }                                                from "../workers/dag.js";
 import { slimNodesForClustering }                                from "../clustering-cascade.js";
-import { setBusyLabel }                                          from "./busy.js";
+import { setBusyPhase }                                          from "./busy.js";
 
 // Worker URLs resolved relative to this module so the runtime path
 // matches the project's served file layout regardless of which page
@@ -158,7 +158,7 @@ function makeUid() {
 // real datasets are mutually exclusive, never co-resident.
 export async function reingest() {
   ensureLayerParams();
-  setBusyLabel("Loading data…");
+  setBusyPhase("Loading data…");
   const s = getState();
 
   const sourceId = s.activeAlgorithm.dataSource || "toy";
@@ -303,7 +303,7 @@ export async function redimred() {
   // there's no visible progress signal outside the modal's Running…
   // button.
   setLayerState("dimred", "running");
-  setBusyLabel("Dim-reduction…");
+  setBusyPhase("Dim-reduction…");
 
   // Snapshot what we need from `s` up front. After the await we'll
   // re-read state for the freshest version of any slot that other
@@ -589,7 +589,16 @@ function pickStage0Input(s) {
 // no parent). Backward-compat: state.clusterResult is set to the
 // finest (last) level's ClusterResult so panels not yet level-aware
 // keep working.
-export async function recluster() {
+export async function recluster(opts = {}) {
+  // opts.precomputedCr: { algoId, params, cr } — when present AND the
+  //   first level's (algoId, params) matches, the cascade skips L0's
+  //   algo.infer and uses cr verbatim. Plumbed in by the Optimise tab's
+  //   per-row Apply path so the sweep's already-paid infer doesn't get
+  //   redone (A3, §6.18.3). Only L0 is eligible today; deeper levels
+  //   are either within-parent (not cacheable) or could be later if a
+  //   use case appears.
+  const { precomputedCr = null } = opts;
+
   const s = getState();
   if (!s.genResult) return;
   const algo = activeClusterAlgorithm();
@@ -603,13 +612,24 @@ export async function recluster() {
   // orange while the worker crunches (HDBSCAN at BFS-5000 is ~18 s).
   // The matching "fresh" set at the end swaps it back to green.
   setLayerState("clustering", "running");
-  setBusyLabel("Clustering…");
+  setBusyPhase("Clustering…");
 
   // The clustering algorithms only read .id + .basePos off each node,
   // so we ship a slim view to the worker. Saves ~10× on postMessage
   // copy at real-data scale (genResult.nodes carries embedding,
   // origin, t, cite lists, …).
   const nodesSlim = slimNodesForClustering(s.genResult.nodes);
+
+  // Build the precomputedLevels array (sparse cr cache by level index).
+  // Only L0 is currently eligible — and only when the precomputedCr
+  // option matches both the algorithm and L0's params verbatim.
+  const precomputedLevels = [];
+  if (precomputedCr
+      && precomputedCr.algoId === algo.id
+      && cfg.levels[0]
+      && stableParamMatch(cfg.levels[0].params, precomputedCr.params)) {
+    precomputedLevels[0] = precomputedCr.cr;
+  }
 
   // ── Compute graph for this lane. ─────────────────────────────────
   //
@@ -625,17 +645,23 @@ export async function recluster() {
   // (within-parent reads the previous level's clusterResult) — so we
   // send one worker job per pass, not one per level. The worker
   // imports clustering-cascade.js and runs the full chain.
+  //
+  // precomputedLevels is only sent on the `post` pass — the pre-fusion
+  // pass runs on a different dimred input (dimredResultPreFusion) so a
+  // cr derived from the post-fusion input would be wrong there.
   const dag = {
     post: {
       workerUrl: CLUSTERING_WORKER_URL,
       deps: [],
       buildPayload: () => ({
+        mode:         "cascade",
         algoId:       algo.id,
         nodesSlim,
         dimredResult: s.dimredResult,
         levelCfgs:    cfg.levels,
         allowNoise,
         n,
+        precomputedLevels,
       }),
     },
   };
@@ -644,6 +670,7 @@ export async function recluster() {
       workerUrl: CLUSTERING_WORKER_URL,
       deps: [],
       buildPayload: () => ({
+        mode:         "cascade",
         algoId:       algo.id,
         nodesSlim,
         dimredResult: s.dimredResultPreFusion,
@@ -678,8 +705,10 @@ export async function recluster() {
     bridgeAnalysis,
     bridgeConfig: cfgBridge,
     // Stale eval results → previous clustering. Drop them so the
-    // Validate / Optimise tabs don't show outdated scores. The user
-    // can re-run; we'd rather an empty tab body than misleading data.
+    // Optimise tab doesn't show outdated scores. The user can re-run;
+    // we'd rather an empty tab body than misleading data. `validate`
+    // slot kept on the structure for backward-compat with old saves
+    // (§6.18.1 removed the Validate tab; the slot reads as null).
     evalResults: { validate: null, optimise: null },
     // Bump engineRevision so panels rebuild — the colour-by dropdown
     // depends on this signal to refresh its options when cluster
@@ -740,7 +769,7 @@ export function reneighbour() {
   const s = getState();
   if (!s.genResult || !s.clusterResult) return;
 
-  setBusyLabel("Citations…");
+  setBusyPhase("Citations…");
   const citAlgo = activeCitationAlgorithm();
 
   // Import-style algorithms: short-circuit straight to a dedicated
@@ -859,7 +888,7 @@ export async function relayoutCitations() {
   // worker-bound stage); alignment + blend stay stale until the
   // worker's result lands and we kick off the main-thread alignment.
   setLayerState("layout", "running");
-  setBusyLabel("Citation layout…");
+  setBusyPhase("Citation layout…");
 
   const layoutAlgo = getCitationLayoutAlgorithm(s.layerParams.layout.method);
   const edges = s.citationResult.citations.map(c => [c.source, c.target]);
@@ -925,4 +954,21 @@ export async function relayoutCitations() {
   setLayerState("layout", "fresh");
   setLayerState("alignment", "fresh");
   setLayerState("blend", "fresh");
+}
+
+// Stable comparison of two algorithm-param objects. Used by recluster()
+// to decide whether a precomputedCr is safe to substitute for L0's
+// algo.infer. Sorted-key JSON keeps the order-of-insertion difference
+// from causing spurious mismatches when one side was hand-built and the
+// other came back from the worker.
+function stableParamMatch(a, b) {
+  if (!a || !b) return false;
+  const ka = Object.keys(a).sort();
+  const kb = Object.keys(b).sort();
+  if (ka.length !== kb.length) return false;
+  for (let i = 0; i < ka.length; i++) {
+    if (ka[i] !== kb[i]) return false;
+    if (a[ka[i]] !== b[kb[i]]) return false;
+  }
+  return true;
 }

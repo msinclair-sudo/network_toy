@@ -35,24 +35,45 @@ app/
     ui/
       main.js               — bootstrap; mounts each subsystem into its DOM slot
       state.js              — single state container + actions
-      engine.js             — pipeline orchestrator (regenerate / recluster / …)
+      engine.js             — pipeline orchestrator (regenerate / recluster / …); each
+                              heavy lane builds a DAG and awaits runDAG (see workers.md)
       bridge-analysis.js    — multi-scale boundary derivation (Layer 2.5)
       gradients.js          — shared colour-stop arrays + interp + linear-gradient CSS
+      busy.js               — global FIFO busy queue (enqueueBusy + setBusyLabel)
+      busy-bar.js           — bottom status bar; renders state.busy (see §12)
       topbar.js             — Data / Workflow / Validate / Help menus
       data-panel.js         — top-left data info / toy params
       workflow-chart.js     — SVG DAG of the pipeline; click → modals
       panel-system.js       — manages primary / secondary / bottom slots; tabs + ± buttons
+      viewer-shared/
+        colour-modes.js     — shared colour resolver used by both viewer-3d and viewer-2d
       panels/
         registry.js         — panel-type registry
-        viewer-3d.js        — live blend visualisation; colour-mode dropdown + camera settings
+        viewer-3d.js        — live blend (3d-force-graph); colour-mode dropdown + camera settings
+        viewer-2d.js        — 2D scatter (force-graph canvas); same colour-mode dropdown
         node-table.js       — mode-aware legend table (the right-side panel)
         placeholder.js      — empty-slot hint
       modals/
         modal.js            — generic dialog (header / body / footer / Esc / backdrop close)
         algorithm-modal.js  — single-level algorithm picker + params editor
-        clustering-modal.js — multi-level clustering modal (used for Layer 2)
+        clustering-modal.js — tabbed clustering modal (Configure / Optimise)
+        clustering-tabs/
+          configure-tab.js  — multi-level config editor
+          optimise-tab.js   — sweep modes (Resolution / Full grid / Target range) + results
+        dimred-modal.js     — five-stage (noise / fusion / compression / viz / viz2d)
+        data-source-modal.js — data-source registry picker + per-source params
         panel-picker.js     — "Add panel" modal listing registered panel types
-        layer-descriptors.js — per-workflow-node binding {label, openModal()}
+        layer-descriptors.js — per-workflow-node binding {label, openModal(), applyChange}
+    workers/                — module workers driven by runDAG (see doc/workers.md)
+      worker-runner.js
+      dag.js
+      dimred-worker.js
+      clustering-worker.js
+      layout-worker.js
+    clustering-cascade.js   — multi-level cascade extracted from engine.js so the
+                              clustering worker can call the same code
+    persistence/
+      manifest.js, serialise.js, deserialise.js — .zip project save/load
     (engine modules unchanged: generation.js, blend/, clustering*, citations/, etc.)
 ```
 
@@ -187,24 +208,60 @@ last-seen reference to a slice it cares about — `if (s.clusterResult
 Same lane structure as legacy `main.js`:
 
 ```
-regenerate()    Layer 1 → generates basePos     → recluster()
+reingest()      Layer 1 (data-source produce)    → redimred()
     ↓
-recluster()     Layer 2 (multi-level cascade)   → reneighbour()
+redimred()      Layer 1.5 (five sub-stages)      → recluster()
     ↓
-reneighbour()   taste-network stage 1            → retaste()
+recluster()     Layer 2 (multi-level cascade)    → reneighbour()
     ↓
-retaste()       taste-network stages 2 + 3       → resample()
+reneighbour()   taste-network stage 1             → retaste()
     ↓
-resample()      Layer 3 final stage              → relayoutCitations()
+retaste()       taste-network stages 2 + 3        → resample() / resampleViaImport()
     ↓
-relayoutCitations()  Layer 4 + Layer 5a         (writes alignedCitationLayout +
-                                                  alignmentCorrelation)
+resample()      Layer 3 final stage               → markCitationLayoutStale()
+                                                  (cascade STOPS here; citation layout
+                                                   is opt-in — see doc/plan.md §6.16)
+
+relayoutCitations()  Layer 4 + Layer 5a          (writes alignedCitationLayout +
+                                                  alignmentCorrelation); fires only on
+                                                  explicit user Apply in the Citation
+                                                  Layout modal
 ```
 
-Each lane is its own exported function; calling a deeper lane
-without re-running upstream is the granular re-run mechanism
-(e.g., changing the layout algorithm calls `relayoutCitations()`
-only, not the full `regenerate()`).
+Each lane is its own exported (async) function; calling a deeper
+lane without re-running upstream is the granular re-run mechanism
+(e.g. changing the layout algorithm calls `relayoutCitations()`
+only, not the full cascade).
+
+### Lanes are DAGs over module workers
+
+The three heavy lanes (`redimred`, `recluster`,
+`relayoutCitations`) build a small **DAG** of work and await
+`runDAG(...)` over module Web Workers in `app/src/workers/`.
+Sibling sub-stages (compression / viz / viz2d, optionally doubled
+when fusion is active) execute in parallel; cancellation cascades
+through the DAG via `AbortSignal`; `clustering-cascade.js`'s pure
+helpers are shared between the engine and the clustering worker so
+there's one source of truth either side of the worker boundary.
+
+Full spec: `doc/workers.md`.
+
+### Lane discipline
+
+Two requirements every async lane must satisfy — both were the
+showstopper bugs documented in `RESUMING.md`:
+
+1. **`setLayerState("X", "running")` at the start of the lane**, so
+   the workflow chart's status dot reads as in-flight (orange,
+   pulsing) until the lane completes.
+2. **`engineRevision` bump in the terminal `update({...})`**, so
+   the 3D viewer's `update(s)` sees `dataChanged === true` and
+   rebuilds graphData. Without this the clustering DID change but
+   the viewer keeps painting the old result.
+
+The lane also calls `setBusyLabel("Dim-reduction…" / "Clustering…"
+/ …)` so the bottom busy bar (§12) updates as the cascade walks
+each phase.
 
 `recluster()` is multi-level and runs an extra step:
 1. For each level in `layerParams.clustering.levels`, infer either
@@ -235,6 +292,8 @@ Each node shows a small dot whose colour reads from
 
 - ✓ green — `"fresh"` (computed, cached)
 - ⚠ yellow — `"stale"` (upstream changed, awaiting recompute)
+- ⏳ orange (pulsing) — `"running"` (engine lane in flight; set by
+  each async lane at start, swapped to `"fresh"` on completion)
 - ⛔ red — `"error"`
 - ◯ grey — `"not-run"`
 
@@ -310,8 +369,9 @@ changes; otherwise its `update()` runs every state tick.
 | ID | Panel | Notes |
 |----|-------|-------|
 | `placeholder` | shows "No panel — click + to add" | used for empty slots |
-| `viewer-3d` | live blend; colour-mode + camera-speed overlays | **singleton** (one WebGL ctx max) |
-| `node-table` | mode-aware legend (cluster / origin / inDeg / t / bridge / boundaryScore) | see "Node table" below |
+| `viewer-3d` | live blend (3d-force-graph); colour-mode + camera-speed overlays | **singleton** (one WebGL ctx max). Reads `state._basePos`. |
+| `viewer-2d` | 2D scatter (force-graph canvas); same colour-mode dropdown | **singleton**. Reads `state._basePos2d` (populated by Layer 1.5's viz2d sub-stage); empty-state hint until then. Shares colour resolution with viewer-3d via `viewer-shared/colour-modes.js`. |
+| `node-table` | mode-aware legend (cluster / cluster-pre-fusion / origin / inDeg / t / bridge / boundaryScore) | see "Node table" below |
 
 ### Adding a new panel type
 
@@ -361,11 +421,28 @@ layout). Renders:
 - Params editor built from the algorithm's `modalSchema`
 - Cancel / Apply
 
-### `clustering-modal.js` — multi-level
+### `clustering-modal.js` — tabbed
 
-Same as algorithm-modal but with N levels stacked, each with its
-own params + (for L1+) a scope toggle and × close button. `+ Add
-level` appends a new level. See `doc/multi-level.md`.
+Two tabs sharing one modal frame: **Configure / Optimise**. Each
+tab is its own module in `modals/clustering-tabs/`:
+
+- `configure-tab.js` — multi-level config editor. N levels stacked,
+  each with its own params + (for L1+) a scope toggle + × close
+  button; `+ Add level` appends. Spec: `doc/multi-level.md`.
+- `optimise-tab.js` — three sweep modes (Resolution only / Full
+  grid / Target range) + per-row Apply with level picker. Spec:
+  `doc/eval.md` §7.2.
+
+Both share the `.cm-tab-*` CSS rhythm. Apply / Run buttons hand
+off to the global busy queue (§12); the modal closes immediately
+and the cascade runs in the background with the bottom bar
+carrying the label.
+
+> A third **Validate** tab existed until 2026-05-24 (§6.18.1) —
+> bootstrap-Jaccard on the currently-applied clustering. Removed
+> because the same engine (`eval/bootstrap.js`) is reachable from
+> Optimise via the richness / stability scorers and the
+> target-range sweep's `runBootstrap` flag.
 
 ### `panel-picker.js`
 
@@ -488,12 +565,13 @@ its label. The node-table's `cluster:N` source still works.
 
 ### A new colour mode
 
-1. Add an entry to `getColourModeOptions(state)` in `viewer-3d.js`.
-2. Add a branch in `baseColourFor(n, state, mode)` returning the
-   colour string.
-3. (Optional) Add a matching node-table source via `sourceOptionsFor`
+1. Add the entry to `getColourModeOptions(state)` and `baseColourFor`
+   / `nodeColourFor` in `viewer-shared/colour-modes.js` — both
+   viewer-3d and viewer-2d delegate to the shared resolver, so one
+   edit covers both panels.
+2. (Optional) Add a matching node-table source via `sourceOptionsFor`
    so the legend tracks the viewer.
-4. (Optional) If continuous-gradient, return a `gradient` descriptor
+3. (Optional) If continuous-gradient, return a `gradient` descriptor
    from the source builder.
 
 ### A new panel type
@@ -530,3 +608,90 @@ Documentation conventions:
   function names just for the doc).
 - Patterns ("how to add X") belong in this file or the relevant
   layer doc; specs belong in their own files.
+
+---
+
+## 12. Busy queue + bottom status bar (`ui/busy.js`, `ui/busy-bar.js`)
+
+A single-threaded **FIFO queue** drives the bottom status bar.
+Async actions (modal Apply, topbar Save / Load, the engine cascade
+itself) enqueue a job; the queue runs them one at a time; the bar
+shows the head's label + an elapsed timer + a `+N queued` count
+when more are waiting.
+
+### Why a queue, not a slot
+
+Once workers (`doc/workers.md`) moved heavy compute off the main
+thread, users can fire multiple async actions back to back — open
+the dim-reduction modal, Apply, then open the clustering modal and
+Apply before the first finishes. A single-slot indicator would
+miss the second; a queue covers both. Modal Apply closes
+immediately and all in-flight feedback lives in the bar.
+
+### State shape
+
+```js
+state.busy = null | {
+  current: { id, label, since },
+  queue:   [{ id, label }, ...]   // jobs waiting behind the head
+};
+```
+
+### API (`ui/busy.js`)
+
+```js
+import { enqueueBusy, setBusyLabel } from "./busy.js";
+
+// Enqueue an async job. Returns a Promise that resolves with fn's
+// return value once THIS specific job completes (jobs ahead of it
+// in the queue still run first).
+const result = await enqueueBusy("Saving \"foo\"…", async () => {
+  return await saveProject();
+});
+
+// Update the visible label of the currently-running job without
+// dequeuing it. Used by the engine cascade as it walks each phase:
+//   reingest sets "Loading data…", then redimred sets
+//   "Dim-reduction…", then recluster sets "Clustering…", all
+//   within the same enqueueBusy slot.
+setBusyLabel("Clustering…");
+```
+
+### Failure semantics
+
+If a job throws, the error propagates out of `enqueueBusy`'s
+returned promise but does NOT poison the queue — the next job
+still runs. Callers handle errors via try/catch (or existing
+`console.error` patterns in modal `applyChange` paths).
+
+### Wired into
+
+- **Engine lanes** (`engine.js`): each lane calls `setBusyLabel`
+  on entry so the bar tracks the cascade. The top-level
+  `applyChange` (which the modals call) wraps the cascade in a
+  single `enqueueBusy`.
+- **Topbar Save / Load** (`topbar.js`): `withBusy("Saving…", …)`
+  / `withBusy("Loading…", …)`.
+- **Modal Apply paths** — dim-reduction, clustering, algorithm,
+  data-source modals all enqueue and close immediately rather
+  than blocking on the cascade.
+
+### What we deliberately didn't build
+
+- No progress bar with %. UMAP is the worst offender; no per-step
+  timing model yet. Per-epoch progress reporting is a §6.11 Slice 4
+  follow-up.
+- No toast notifications. Success is self-evident; failure already
+  pops `window.alert`.
+- No `pointer-events: none` lockout — workers + the queue handle
+  back-to-back actions gracefully.
+
+### Display rules (`ui/busy-bar.js`)
+
+- Bar is `hidden` when `state.busy === null`.
+- Label renders `state.busy.current.label`.
+- `+N queued` renders when `state.busy.queue.length > 0`.
+- Elapsed timer ticks every 500 ms while a job is running. Format:
+  `""` for < 1 s, `Ns` for 1–59 s, `M:SS` for ≥ 60 s.
+- CSS shimmer animation reuses the modal Apply button's
+  `@keyframes modal-action-running` so visual rhythm matches.

@@ -31,25 +31,39 @@ export function ariScorer(groundTruth) {
     isAsync: false,
     score(genResult, dimredResult, clusterResult, _algo, _params) {
       const ari = adjustedRandIndex(clusterResult.nodeCluster, groundTruth);
+      // §6.18.10 B5 — surface the Bayes-optimal ARI ceiling (set on
+      // genResult by the toy datasource) so the user can read the
+      // achieved ARI as a fraction of optimal. The bayesOptimalAri
+      // is constant across the sweep — same data, same generative
+      // model — so this is essentially a free annotation per row.
+      const ceiling = (genResult && Number.isFinite(genResult.bayesOptimalAri))
+        ? genResult.bayesOptimalAri
+        : NaN;
       return {
         primary:     Number.isFinite(ari) ? ari : -Infinity,
         secondary:   clusterResult.clusters.length,
         numClusters: clusterResult.clusters.length,
-        extra:       null,
+        extra:       { ariCeiling: ceiling },
       };
     },
   };
 }
 
-// Real-data-friendly scorer. Runs B bootstrap iterations and ranks
-// by `fractionStable` (Hennig). meanJaccard surfaces as the
-// secondary tiebreaker.
+// Real-data-friendly scorer. Runs B bootstrap iterations and ranks by
+// the cluster-size-weighted mean Jaccard (meanJaccard_macro) per
+// §6.18.7 B4. The Hennig fractionStable is exposed in `extra` for the
+// UI's breakdown bar but is no longer the headline primary.
 //
-// Failure mode (documented): coarse clusterings (1–3 clusters) score
-// near-perfect because the bootstrap trivially reproduces them. The
-// stability scorer alone over-rewards meaningless partitions. Use
-// `clusterRichnessScorer` when count matters too.
-export function stabilityScorer({ B = 10, subsampleFrac = 0.8, seed = 12345 } = {}) {
+// Failure mode (still documented): coarse clusterings (1–3 clusters)
+// can score high because the bootstrap trivially reproduces them.
+// Use `clusterRichnessScorer` when count matters too.
+export function stabilityScorer({
+  B = 10,
+  subsampleFrac = 0.5,
+  seed = 12345,
+  noiseHandling = "exclude",    // §6.18.9 B8
+  minMembers,                    // §6.18.9 B9 — undefined → bootstrap default (3)
+} = {}) {
   return {
     id:    "stability",
     label: "reproducibility score",
@@ -64,12 +78,14 @@ export function stabilityScorer({ B = 10, subsampleFrac = 0.8, seed = 12345 } = 
         B,
         subsampleFrac,
         seed,
+        noiseHandling,
+        ...(minMembers !== undefined ? { minMembers } : {}),
         onProgress: ctx.onIterProgress || null,
         abortSignal: ctx.abortSignal     || null,
       });
       return {
-        primary:     result.aggregate.fractionStable,
-        secondary:   result.aggregate.meanJaccard,
+        primary:     result.aggregate.meanJaccard_macro,
+        secondary:   result.aggregate.meanJaccard_unweighted,
         numClusters: result.aggregate.nClusters,
         extra:       result,
       };
@@ -99,13 +115,22 @@ export function numClustersScorer() {
   };
 }
 
-// Balanced scorer — cluster count weighted by bootstrap stability.
+// Balanced scorer — cluster count × cluster-size-weighted reproducibility.
 // Penalises both ends: a single mega-cluster scores 1 × 1.0 = 1; 100
 // noise-fine clusters score 100 × 0.01 = 1; the sweet spot of e.g.
-// 24 medium clusters at 0.55 mean Jaccard scores 24 × 0.55 = 13.2.
-// This is the default scorer for real data when the user picks
-// "Automatic".
-export function clusterRichnessScorer({ B = 10, subsampleFrac = 0.8, seed = 12345 } = {}) {
+// 24 medium clusters at meanJaccard_macro = 0.55 scores 24 × 0.55 = 13.2.
+//
+// Under §6.18.7 we no longer auto-pick this in real mode (the audit
+// argued the "balanced" framing was a fix-for-a-fix that hides the
+// trade-off; user picks explicitly now per B11). The scorer remains
+// available as a defensible choice when the user wants one number.
+export function clusterRichnessScorer({
+  B = 10,
+  subsampleFrac = 0.5,
+  seed = 12345,
+  noiseHandling = "exclude",   // §6.18.9 B8
+  minMembers,                   // §6.18.9 B9 — undefined → bootstrap default (3)
+} = {}) {
   return {
     id:    "richness",
     label: "cluster richness",
@@ -120,15 +145,17 @@ export function clusterRichnessScorer({ B = 10, subsampleFrac = 0.8, seed = 1234
         B,
         subsampleFrac,
         seed,
+        noiseHandling,
+        ...(minMembers !== undefined ? { minMembers } : {}),
         onProgress: ctx.onIterProgress || null,
         abortSignal: ctx.abortSignal     || null,
       });
       const nC      = result.aggregate.nClusters;
-      const meanJ   = result.aggregate.meanJaccard;
-      const richness = nC * meanJ;
+      const macro   = result.aggregate.meanJaccard_macro;
+      const richness = nC * macro;
       return {
         primary:     richness,
-        secondary:   meanJ,
+        secondary:   macro,
         numClusters: nC,
         extra:       result,
       };

@@ -107,7 +107,10 @@ level's `ClusterResult`.
 
 ## 3. Engine cascade
 
-`recluster()` in `app/src/ui/engine.js` runs all levels in order:
+The cascade logic lives in `app/src/clustering-cascade.js`
+(`runClusterLevels`) — a pure module imported by both the engine
+on the main thread AND by `app/src/workers/clustering-worker.js`,
+so one source of truth covers both sides of the worker boundary.
 
 ```
 for (i = 0; i < cfg.levels.length; i++):
@@ -124,9 +127,18 @@ bridgeAnalysis = computeBridgeAnalysis(levels)   // null when levels.length < 2
 update({ clusterLevels: levels, clusterResult: levels[finest].clusterResult, bridgeAnalysis })
 ```
 
+`engine.js`'s `recluster()` lane wraps this in a small DAG: a
+`post` clustering-worker job runs the cascade on
+`state.dimredResult`; when fusion is active, a parallel `pre` job
+runs it on `state.dimredResultPreFusion` and the result lands in
+`state.clusterLevelsPreFusion`. Bridge analysis runs on the main
+thread after both jobs return.
+
 The full cascade re-runs whenever Apply is hit in the clustering
 modal. Granular re-runs (only L1 changed) are not yet implemented
 — a small future optimisation; not load-bearing at toy scale.
+
+Worker / DAG architecture: see `doc/workers.md`.
 
 ### Within-parent stitching (`clusterWithinParents`)
 

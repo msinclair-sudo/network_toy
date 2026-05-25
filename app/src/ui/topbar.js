@@ -47,7 +47,11 @@ const MENUS = [
     id: "validate",
     label: "Validate",
     items: [
-      { label: "Bootstrap-Jaccard stability…",     action: stub("validate:bootstrap"), disabled: true },
+      // Bootstrap-Jaccard lives inside the Clustering modal's Optimise
+      // tab now (richness / stability scorers + target-range
+      // runBootstrap). The remaining two items are legitimate future
+      // work: ARI dim-sweep = §6.9; cluster-vs-cluster disagreement
+      // is the §7 open question on a quantitative disagreement metric.
       { label: "ARI dim-sweep…",                    action: stub("validate:ari-sweep"), disabled: true },
       { label: "Cluster-vs-cluster disagreement…",  action: stub("validate:disagreement"), disabled: true },
     ],

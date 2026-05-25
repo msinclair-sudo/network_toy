@@ -499,19 +499,34 @@ unchanged regardless of which algorithm produces it.
 
 ## 5. Pipeline rerun semantics
 
-The clustering layer sits between generation and neighbourhoods. Any
-change to `state.clusterParams.method` OR to a clustering-modal slider
-triggers `recluster()`, which:
+The clustering layer sits between dim-reduction and neighbourhoods.
+Any change to `state.layerParams.clustering` (method, level
+configs, or any param) triggers `recluster()`, which:
 
-1. Calls the active algorithm's `infer(genResult, params)`.
-2. Validates the result against the contract.
-3. Updates `state.clusterResult` and the cluster legend.
-4. Cascades downstream: `reneighbour() → retaste() → resample()`.
-5. Reheats the simulation so the new pair table takes visible effect.
+1. Builds a small DAG: a `post` clustering-worker job consuming
+   `dimredResult`, plus a `pre` job consuming
+   `dimredResultPreFusion` when fusion is active.
+2. Each worker runs the **multi-level cascade** via
+   `clustering-cascade.js`'s shared `runClusterLevels` (the same
+   pure module the main thread imports — one source of truth either
+   side of the worker boundary).
+3. Validates each level's `ClusterResult` against the contract.
+4. Updates `state.clusterLevels` (+ `clusterLevelsPreFusion` when
+   the pre-fusion side ran), aliases the finest level into
+   `state.clusterResult`, computes `bridgeAnalysis` when ≥ 2 levels
+   exist, and clears `state.evalResults` so stale Validate /
+   Optimise scores don't survive a config change.
+5. Cascades downstream: `reneighbour() → retaste() →
+   resample() / resampleViaImport()`. The cascade stops at Layer 3
+   (citation layout is opt-in; see `doc/blend.md` §3).
 
-Switching algorithms re-runs the full clustering chain but **does not**
-reset live node positions or the citation seed. The user can compare
-algorithms on the same dataset by toggling the Cluster ▾ menu.
+Switching algorithms re-runs the full clustering chain but **does
+not** reset live node positions or the citation seed. The user can
+compare algorithms on the same dataset by toggling the modal's
+algorithm dropdown.
+
+Worker architecture: see `doc/workers.md`. Multi-level cascade
+spec: `doc/multi-level.md`.
 
 ---
 

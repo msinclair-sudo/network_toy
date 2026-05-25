@@ -5,7 +5,7 @@ sequencing in §6 has been substantially revised to reflect what's
 actually been built. Pairs with `doc/clustering-research.md` for
 the research that justifies the picks.
 
-**Current state (2026-05-20):** the toy has been substantially
+**Current state (2026-05-24):** the toy has been substantially
 re-shelled with a new UI architecture (workflow chart + multi-tab
 panels + modal infrastructure) that wasn't itemised in the
 original plan but turned out to be the prerequisite for almost
@@ -14,7 +14,10 @@ scope is live. Mode-aware "node table" legend follows whatever's
 colouring the 3D viewer. Selection is generalised across cluster /
 origin / node types. `connected-components` is the first new
 algorithm registered. Validate + Optimise (cluster modal tabs) are
-**beta** — interface and scorer set will change.
+**beta** — interface and scorer set will change. The Optimise tab
+has since grown a **target-range** sweep mode (§6.17) that hunts
+for stable params producing a user-specified cluster-count band,
+much cheaper than full grid at real-data scale.
 
 Layer 1.5 has since grown to **five stages** (noise → fusion →
 compression → viz / viz2d) with `graph-diffusion` registered as
@@ -1094,13 +1097,51 @@ data in tests)
   loaded via the picker. Same n, same edge count as a normal
   `real` reingest.
 
-### 6.13 Global busy indicator for non-modal actions ☐
+### 6.13 Global busy indicator + queue ✓ ↻ — shipped 2026-05-24
 
-Save and Load currently freeze the page silently for a few
-seconds at n=5000 (zip / unzip + state apply). The existing
-modal-button `Running…` pattern doesn't cover them because they
-fire from the `File ▾` menu — there's no Apply button to host a
-spinner. Same gap will apply to the planned §6.12 import flows.
+**Shipped as a bottom status bar + FIFO queue**, not a topbar pill
+as originally sketched. The visual surface lives at the viewport
+bottom (`#busy-bar` in `app/index.html`); the queue + label control
+live in `app/src/ui/busy.js` (`enqueueBusy` + `setBusyLabel`).
+
+Why a queue instead of a single slot: once workers (§6.11) made the
+heavy lanes truly async, users can fire multiple actions back to
+back — open the dim-reduction modal + Apply, then open the
+clustering modal + Apply before the first finishes. The modal Apply
+closes immediately and the bottom bar carries all in-flight
+feedback, showing `+N queued` when more are waiting. The
+cascade-aware `setBusyLabel("Loading data…" → "Dim-reduction…" →
+"Clustering…" → "Citations…")` updates the head label as the
+engine walks each step, so the bar reads "the current step" rather
+than a generic "Running…".
+
+**Failure semantics**: if a job throws, the error propagates out of
+the `enqueueBusy` promise but does NOT poison the queue — the next
+job still runs. Callers handle errors via existing try/catch
+patterns in modal applyChange paths.
+
+**Wired into**:
+- Engine cascade (`engine.js`): every async lane sets a fresh label
+  at each phase (`reingest` → `redimred` → `recluster` →
+  `reneighbour` → `relayoutCitations`).
+- Topbar Save / Load (`topbar.js`): wraps `saveProject` / `loadProject`.
+- Modal Apply paths (dim-reduction, clustering, algorithm,
+  data-source modals): each enqueues, modal Apply closes immediately.
+
+**What we deliberately didn't build**:
+- No progress bar with %. UMAP is the worst offender; no per-step
+  timing model yet. Per-epoch progress reporting is a §6.11 Slice 4
+  follow-up.
+- No toast notifications. Success is self-evident; failure already
+  pops `window.alert` in the existing handlers.
+- No `pointer-events: none` lockout — workers + the queue handle
+  back-to-back actions gracefully now, the lockout would be more
+  annoying than useful.
+
+**See `doc/ui-architecture.md` §12** for the queue mechanics +
+state shape; **previous spec preserved below for reference.**
+
+#### Previous spec (preserved for context)
 
 **Prior art (reuse, don't reinvent)**
 - CSS animation: `@keyframes modal-action-running` in
@@ -1346,7 +1387,96 @@ until alignment has run — blend hook bails when
 Subsumes the layout-cache optimisation that was deferred as a
 §6.15 follow-up.
 
-**Still pending (follow-ups):**
+### 6.17 Target-range sweep (Optimise tab strategy 3) ✓ — shipped 2026-05-24
+
+Third sweep mode in the Optimise tab, alongside Resolution only
+and Full grid. Shipped on branch `feat/target-range-sweep` (commit
+3b1716f). Implementation: `app/src/eval/sweep.js`
+(`runTargetRangeSweep`) + `app/src/eval/lhs.js` (Latin hypercube
+sampler) + the Target range radio + settings panel in
+`app/src/ui/modals/clustering-tabs/optimise-tab.js`.
+
+**Motivation.** Full-grid sweeps explode at real-data scale; even
+resolution-only enumerates every value the algorithm registry
+declares on the resolution-tagged axes. When the user already
+knows *roughly how many clusters they want* (typical research
+workflow — "I want ~30 topical groups, find me the most stable
+params that land there"), neither cartesian sweep is well-targeted.
+Target-range turns the search into a **directed hunt** for a
+cluster-count band.
+
+**Algorithm (two-phase).** For each enabled clustering algorithm:
+
+1. **Phase 1 — Latin hypercube probe.** Sample `phase1Count`
+   configs across the resolution-tagged fields. Each numeric field
+   is divided into `phase1Count` equal-probability bins; one value
+   is drawn from each bin, then per-field sequences are
+   independently Fisher-Yates shuffled so the joint distribution is
+   space-filling (no two samples share a bin on any axis). Per-
+   field scale honours `field.scale === "log"` for orders-of-
+   magnitude coverage (e.g. HDBSCAN `min_cluster_size`); integer
+   fields round + clamp + dedupe; select fields cycle options.
+   Run each config's `algo.infer(...)`, record cluster count, mark
+   `inRange` iff `targetMin ≤ nClusters ≤ targetMax`.
+
+2. **Phase 2 — neighbourhood refine.** For each Phase-1 hit,
+   generate neighbour configs by perturbing each int/range
+   resolution field by `±refineStep` clamped to its field range.
+   Dedupe across overlapping hit neighbourhoods (stable-stringified
+   params as the cache key). Re-run `algo.infer(...)` on each
+   neighbour.
+
+**Scoring (Phase 2).** Two modes:
+- **Proximity (default)** — `primary = 1 / (1 + |nClusters − midpoint|)`
+  where midpoint = `(targetMin + targetMax) / 2`. Configs that land
+  in the centre of the band rank highest; overshooters fall off.
+- **Reproducibility (`runBootstrap=true`)** — bootstrap-Jaccard each
+  Phase-2 candidate (`eval/bootstrap.js`), `primary = aggregate.meanJaccard`.
+  Slower but reveals which target-range configs are most stable
+  under resampling.
+
+Ranking: in-range first (descending primary), out-of-range second
+(refineStep can walk a hit just outside the band; those rows stay
+visible but rank below the hits).
+
+**Fusion-aware "Sweep against" toggle.** When `state._basePosPreFusion`
+exists (fusion is active), an extra radio appears: **Post-fusion** /
+**Pre-fusion** / **Both**. "Both" runs the whole two-phase sweep
+twice — once on `dimredResult`, once on `dimredResultPreFusion`,
+each pass tagged with its source. The merged ranked list shows a
+**Source** column so the user can compare which params win on each
+representation side-by-side. The auto-collapse to "Post-fusion" when
+no pre-fusion buffer exists keeps the UI clean in toy mode.
+Distinct LHS seeds per pass (42, 42+1009, …) so the two passes
+don't collide on identical samples.
+
+**State + caching.** Same `state.evalResults.optimise` slot as the
+other sweep modes; persistence via the existing serialise path.
+`scorerId` records `"target"` or `"target+bootstrap"`; settings carry
+`{ targetMin, targetMax, phase1Count, refineStep, runBootstrap,
+sweepAgainst }`. Cached results re-render on tab hop + project load.
+
+**Smoke tests** (under `scratch/`):
+- `lhs_unit_smoke.py` — sampler determinism + bin coverage + log
+  scale + Fisher-Yates shuffle stratification.
+- `target_range_smoke.py` — end-to-end target-range run at toy
+  scale; asserts hit-count > 0 in a sensible band.
+- `target_range_bootstrap_smoke.py` — same, with reproducibility
+  scoring enabled.
+- `target_range_ui_smoke.py` — UI surface (Target range radio,
+  range inputs, source toggle visibility).
+- `sweep_against_smoke.py` — Pre / Post / Both source toggle.
+
+**Pending follow-ups:**
+- LHS sampling could also drive the resolution-only and full-grid
+  modes for cheaper coverage at high config counts — currently they
+  enumerate cartesian. Decide when one of those modes becomes the
+  bottleneck.
+- Phase-1 vs Phase-2 progress reporting in the status line is
+  per-config; aggregate ETA across both phases would be friendlier
+  for long runs at BFS-5000.
+
+**Still pending (follow-ups carried over from §6.15):**
 - ~~Layout-cache (skip UMAP-on-graph recompute when citation edges haven't changed but fusion params have)~~ — subsumed by §6.16's opt-in design.
 - Asymmetric adjacency toggle.
 - Two-pass toy mode (taste-network feeds fusion on a second pass).
@@ -1499,18 +1629,30 @@ they don't have today:
   consume.
 
 ### 6.5 Stability + Optimisation (Validate + Optimise) ✓ ↻ — **beta**
+
+**Decision (2026-05-24): Validate tab to be removed.** Bootstrap-
+Jaccard is now reachable from inside Optimise via the
+`clusterRichnessScorer` / `stabilityScorer` paths AND via the
+target-range sweep's `runBootstrap` flag, all on the
+currently-selectable configs. The standalone Validate tab on the
+single applied config is redundant — same engine
+(`eval/bootstrap.js`), same Hennig thresholds, just one config
+instead of a swept grid. Removal scoped under §6.18 below.
+
 **Shipped as a tabbed cluster modal** — not a standalone `Validate ▾`
 button. The Cluster modal opened from the workflow chart's
-Clustering node now has three tabs: **Configure / Optimise /
-Validate**. Same modal frame, same Cancel/Apply footer, same
-visual rhythm across tabs (notice → settings → run → results).
+Clustering node currently has three tabs: **Configure / Optimise /
+Validate** (Validate removal pending). Same modal frame, same
+Cancel/Apply footer, same visual rhythm across tabs (notice →
+settings → run → results).
 
-**Beta status.** The Validate + Optimise surface is live and
-load-bearing for current development but the interface, the
-scorer set, and the result-table column choices are expected to
-change. Treat it as a working prototype: file shapes
-(`eval/{jaccard,bootstrap,scorers,sweep}.js`) and `state.evalResults`
-slots may both be rewritten before this is considered stable.
+**Beta status.** The Optimise surface is live and load-bearing
+for current development but the interface, the scorer set, and the
+result-table column choices are expected to change. Treat it as a
+working prototype: file shapes (`eval/{jaccard,bootstrap,scorers,sweep}.js`)
+and `state.evalResults` slots may both be rewritten before this is
+considered stable. Specifically: §6.18 audit (in flight) is
+expected to surface both computational and scientific changes.
 
 Engine pieces (in `app/src/eval/`):
 - `jaccard.js` — `jaccardSimilarity(setA, setB)` and
@@ -1563,9 +1705,9 @@ UI pieces (in `app/src/ui/modals/clustering-tabs/`):
   selects that cluster in the viewer (re-uses the existing
   selection plumbing).
 - `optimise-tab.js` — same vertical rhythm. Algorithm
-  checkboxes, **sweep depth radio (Resolution only / Full grid)**,
-  Bootstraps slider, scorer dropdown (Automatic / Match to
-  known groups / Cluster richness / Number of clusters /
+  checkboxes, **sweep mode radio (Resolution only / Full grid /
+  Target range)**, Bootstraps slider, scorer dropdown (Automatic /
+  Match to known groups / Cluster richness / Number of clusters /
   Cluster reproducibility — Auto picks ARI for toy, richness
   for real). Results table **shows every config the sweep
   produced** with **sortable columns** (click any header to
@@ -1573,9 +1715,12 @@ UI pieces (in `app/src/ui/modals/clustering-tabs/`):
   scorer rank). Columns adapt to the scorer: `Match` (ARI),
   `Reproducibility + Richness` (richness), `Stable %  +
   Reproducibility` (stability), or just `Clusters` (numClusters).
-  Per-row Apply commits the chosen config and **hops to the
-  Validate tab** so the natural workflow is Configure →
-  Optimise → Validate.
+  Per-row Apply has a **level picker** (`L0 / L1 / … / + New
+  level`) that lands the chosen config into the named slot, then
+  **hops to the Validate tab** so the natural workflow is Configure
+  → Optimise → Validate. Target-range adds a **Source** column when
+  the sweep ran against both pre- and post-fusion dim-reductions
+  (see §6.17).
 
 Shared CSS (`.cm-tab-*`) so tabs read consistent. `Running…`
 animation reused from the dim-reduction modal slice. Scrollable
@@ -1593,6 +1738,289 @@ Smoke-tested at toy scale (n=400):
 - Number-of-clusters scorer ranks CC k=1 (201 clusters) first;
   richness scorer correctly penalises that (richness =
   201 × 0.005 ≈ 1) and finds the balanced sweet spot.
+
+### 6.18 Optimise hardening pass ☐ — in flight 2026-05-24
+
+The Optimise tab is the load-bearing surface for choosing a
+clustering. Clustering choice drives every downstream conclusion
+the toy makes, so the limitations of *how Optimise picks* compound
+into limitations of *what the toy claims*. This slice audits the
+surface, then fixes things in three passes.
+
+**Order (locked):**
+1. **Remove the redundant Validate tab.** ✓ — done 2026-05-24.
+   `clustering-tabs/validate-tab.js` deleted; clustering modal
+   reduced to **Configure / Optimise**; `setValidateResult` left as
+   a deprecated no-op export and `state.evalResults.validate` slot
+   preserved on the read side so old saves deserialise cleanly;
+   topbar `Validate ▾` menu trimmed (Bootstrap-Jaccard entry
+   removed; ARI dim-sweep + cluster-vs-cluster disagreement stubs
+   retained as legitimate future work). Doc fix-ups in `doc/eval.md`,
+   `doc/ui-architecture.md`, and `README.md`.
+2. **Computational fixes — ✓ complete 2026-05-24.** Sub-items:
+   - **§6.18.2 (A1 + A4) ✓ — shipped 2026-05-24.** `algo.infer`
+     calls in `eval/sweep.js` (three sites: cartesian sweep, Phase 1,
+     Phase 2) and `eval/bootstrap.js` (per-iter) now run inside
+     `clustering-worker.js` via a new `mode: "infer"` dispatch path.
+     Helper at `app/src/eval/run-infer-remote.js` centralises the
+     payload shape. Bootstrap iterations fire concurrently via
+     `Promise.all` — subsample sets are pre-generated up front so the
+     deterministic mulberry32 walk matches the pre-parallel
+     implementation byte-for-byte at the same seed (verified by
+     `scratch/eval_workers_smoke.py`). Mid-flight cancellation under
+     the polling `{aborted: bool}` convention is honoured pre-flight
+     and during scoring; mid-flight termination of in-progress workers
+     needs a real `AbortController` pass (queued under §6.18 follow-up).
+   - **§6.18.3 (A2 + A3) ✓ — shipped 2026-05-24.**
+     **A2:** target-range Phase 2 now consults a `phase1CrByKey` map
+     (keyed by `(algoId, stableStringify(params))`) before firing each
+     worker call. Phase-1 hits whose base config recurs as a Phase-2
+     candidate (always — `expandNeighbours` includes the base) skip the
+     infer entirely. Smoke shows ~9 of 17 Phase-2 configs reused from
+     Phase-1 at toy n=400 / refineStep=2 (53% cache hit rate); at
+     BFS+HDBSCAN scale each cache hit saves ~15 s of `algo.infer`.
+     `phase2CacheHits` exposed on the sweep result for visibility.
+     **A3:** per-row Apply now threads the swept cr through as
+     `precomputedCr`. New plumbing: `runClusterLevels` accepts
+     `opts.precomputedLevels[i]` (only L0 eligible — within-parent
+     siblings can't be lifted from a sweep's cr); `clustering-worker.js`
+     cascade mode passes it through; `engine.recluster({precomputedCr})`
+     matches it against the active L0 config via a sorted-key params
+     comparison and skips L0's infer when matched; `layer-descriptors.js`
+     clustering descriptor's `applyChange(algoId, levels, opts)` forwards
+     the option; `clustering-modal.js`'s `onApplyRow` reads `row._cr`
+     and passes it. `_cr` is a runtime-only field, stripped before
+     `setOptimiseResult` so persisted projects stay clean (cache loss
+     across reloads is accepted — the in-session cache is what matters).
+     Smoke verifies warm recluster reproduces the cached cr byte-for-byte
+     and is no slower than a cold run. Tests:
+     `scratch/cache_wins_smoke.py`.
+   - **§6.18.4 (A6) ✓ — shipped 2026-05-24.** `optimise-tab.js`
+     constructs a fresh `AbortController` per run; passes
+     `controller.signal` everywhere the old polling object went.
+     Downstream consumers (`sweep.js`, `bootstrap.js`,
+     `runInferRemote`) didn't need API changes — `AbortSignal` is
+     `.aborted`-compatible for the old polling checks and exposes
+     `.addEventListener("abort", ...)` so `worker-runner.js`
+     actively terminates in-flight workers when the user clicks
+     Cancel (or switches tabs). Cancel + tab-hide both call
+     `controller.abort()`. AbortError is filtered from
+     `console.error` in both `sweep.js` and `bootstrap.js` so a
+     cancel doesn't spam B log lines. Smoke: at toy n=400 + HDBSCAN
+     B=20, cancellation 50 ms into the run returns in ~120 ms with
+     0 iters scored (vs ~1.5–2 s under the old polling-only
+     pattern). Test: `scratch/abort_cancellation_smoke.py`.
+   - **§6.18.5 (A5) ✓ — shipped 2026-05-24.** Dropped the
+     unconditional `setTimeout(0)` yields from
+     `sweepAcrossAlgorithms`'s outer loop and `runTargetRangeSweep`'s
+     Phase-1 loop — `await runInferRemote(...)` is itself a real async
+     boundary so the main thread gets repaint chances naturally.
+     Phase 2 keeps a yield, but conditioned on `!didAwait` — the only
+     loop path with no implicit await is the cache-hit + no-bootstrap
+     branch (everything's served from `phase1CrByKey` without going to
+     a worker), which would otherwise tight-loop through pure JS and
+     block repaints. Modest wall-time win at toy scale (~4% on a
+     22-config sweep) that scales with config count. **(A7 dropped
+     from scope.)** Per-iter sub-buffer reuse is structurally
+     incompatible with `transferDimred: true` (transfer detaches the
+     main-thread reference). The alternatives — drop transfer and
+     pool one buffer (slower postMessage via structured clone), or
+     move to SharedArrayBuffer (needs CORS COOP/COEP headers the
+     static dev server doesn't ship) — are net negative or beyond
+     scope. The current per-iter allocation + transfer is the best
+     trade-off available. **(A8 deferred.)** Adaptive Phase-1 budget
+     allocation across enabled algorithms is a redesign, not a
+     cleanup — interleaving the Phase-1 loop changes determinism
+     (sample sequence depends on early-iter outcomes). Revisit if
+     real-data scale shows skewed hit distributions.
+   - **§6.18.6 Busy-label lifecycle bug ✓ — fixed 2026-05-25 as part of §6.18.10.**
+     When the user clicks Apply in the data-source modal, the bar
+     enqueues `"Loading data…"` correctly, but `reingest()` immediately
+     cascades through `redimred()` → `recluster()` → `reneighbour()`,
+     each calling `setBusyLabel("Dim-reduction…" / "Clustering…" /
+     "Citations…")` in turn. At toy scale the phases complete in tens
+     of ms, so the user sees only the *last* label set — typically
+     "Clustering…" — for the brief moment before the bar hides. The
+     dim-reduction modal Apply path and the clustering modal Apply path
+     each show their correct phase label because no upstream cascade
+     overrides it. Likely fixes (pick one, not pre-committed):
+     (a) introduce a minimum visible duration per label
+     (~150–300 ms) so each phase reads;
+     (b) keep the headline label set by `enqueueBusy(label, ...)` and
+     show cascade phases as a *secondary* status line below the
+     headline, not by overwriting;
+     (c) drop the per-phase `setBusyLabel` calls inside lanes and let
+     the modal own the label end-to-end. Recommend (b) since it
+     preserves the headline-action contract and surfaces the per-phase
+     detail. Track here; address after §6.18.5.
+3. **Scientific fixes — ✓ complete 2026-05-25.** Sub-items broken
+   out below (§6.18.7 → §6.18.10). Order discussed + locked with
+   the user 2026-05-24: bootstrap-protocol overhaul first (touches
+   every saved result; one migration); target-range refinements
+   next (depends on .7 protocol); noise + edge cases;
+   surface-honesty UI changes last.
+   - **§6.18.7 (B1 + B2 + B3 + B4) ✓ — shipped 2026-05-24.**
+     Bootstrap protocol + scoring overhaul. One coherent migration
+     (`scoreVersion: 2`) covering:
+     - **B1** — bootstrap protocol locked as subsampling *without*
+       replacement (per Hennig 2008 §3.2). User decision: keep the
+       subsampling form rather than switch to with-replacement; the
+       Hennig thresholds (0.85 / 0.60) are kept as a coarse colour
+       code only, not the headline number, since they were
+       calibrated against with-replacement.
+     - **B2** — `subsampleFrac` default 0.8 → 0.5 (Hennig 2008's
+       m = n/2 recommendation; 0.8 was inflating reproducibility
+       across the board because subsamples were too similar to the
+       full data). Defaults updated in `bootstrap.js`, `scorers.js`
+       (`stabilityScorer` + `clusterRichnessScorer`).
+     - **B3** — `bestMatchJaccard` greedy → `bipartiteMatchJaccard`
+       (Hungarian / Munkres). New helper `maxWeightMatch` in
+       `eval/jaccard.js` (~80 LoC, classic O(n³) implementation,
+       handles rectangular cases via padding). Smoke verifies
+       double-counting refusal: greedy gives 2 refs both 0.5
+       against a coarsened mega-candidate; bipartite forces 1 ref
+       to 0.5 + the other to 0. Legacy `bestMatchJaccard` kept
+       exported (marked DEPRECATED) for any external caller.
+     - **B4** — `meanJaccard` split into `meanJaccard_macro`
+       (size-weighted; primary) and `meanJaccard_unweighted`
+       (one-cluster-one-vote). Both surfaced as columns in the
+       Optimise table. `fractionStable` kept but no longer a
+       primary metric — feeds a coloured Hennig breakdown bar
+       (`.cm-hennig-bar` in `main.css`) so the user sees the
+       stable/doubtful/unstable distribution honestly instead of a
+       single number that compresses it. Backward-compat alias
+       `aggregate.meanJaccard` kept (== macro) so cached results +
+       the richness scorer don't break.
+     - **Migration:** `setOptimiseResult` stamps `scoreVersion: 2`
+       on every save. On Optimise-tab boot, caches without
+       `scoreVersion === 2` are silently discarded and the user
+       sees a banner: *"Older optimise scores discarded — re-run
+       to see scores under the current method (§6.18.7)."*
+       Discard chosen over upgrade-in-place per user call — old
+       numbers and new ones genuinely mean different things.
+     - Test: `scratch/scoring_v2_smoke.py` covers all three.
+   - **§6.18.8 (B7 + B10 + B12) ✓ — shipped 2026-05-25.** Target-
+     range refinements:
+     - **B7** — hint tightened (toggle kept per user call). Off mode
+       reframed in the help text as "Quick exploration — not a
+       quality measure; treats every in-band config as equally good
+       and just picks the one nearest the centre." On mode noted as
+       the metric for "choosing a final config to commit to."
+     - **B10** — bootstrap seed in `runTargetRangeSweep` derived
+       from `(seed, algoId, stableStringify(params))` via the new
+       `configSeed` helper. Old form `(seed ^ 0xBEEF) + i` depended
+       on Phase-2 array index, so identical configs could score
+       differently across runs whenever cache dedup reordered the
+       walk. Smoke confirms: 18 common configs across two runs
+       (different `phase1Count`, same outer seed) all scored
+       identical `meanJaccard` after the fix.
+     - **B12** — when `phase1.filter(inRange).length === 0`, fall
+       back to the K=3 closest-to-band Phase-1 configs (distance =
+       `max(0, targetMin - n, n - targetMax)`) and refine those.
+       Outcome carries `usedFallback: true`; merge logic propagates
+       the flag across multi-pass "Both" runs; status banner in
+       optimise-tab reads "no hits in [min, max] — refined the
+       closest Phase-1 configs". Smoke confirms an impossible band
+       (10k–99k clusters on toy n=400) refines 3 fallback configs
+       with the flag set.
+     - **Bonus cleanup.** Discovered during the merge edit that
+       optimise-tab.js's "both passes" path hardcoded
+       `subsampleFrac: 0.8` overriding the new §6.18.7 default.
+       Replaced with `bootstrapOpts: { B }` so bootstrap.js's
+       0.5 default flows through.
+     - Test: `scratch/target_range_refinements_smoke.py`.
+   - **§6.18.9 (B8 + B9) ✓ — shipped 2026-05-25.** Noise + edge
+     cases. Bumps `SCORE_VERSION` 2 → 3 because B9 changes
+     per-cluster numbers (tiny clusters that previously scored 1.0
+     via trivial-singleton matches now score lower or 0). Old
+     caches discarded on load via the existing §6.18.7d mechanism.
+     - **B9** — `bipartiteMatchJaccard` gains `opts.minMembers`
+       (default 0, no filter). `bootstrap.js` passes `minMembers=3`
+       per Hennig 2007 §3.2 — ref clusters with fewer than 3
+       in-subsample members are dropped from that iter's scoring
+       (a 1-member-in-subsample cluster vs a singleton candidate
+       scored Jaccard=1.0 mechanically, which was meaningless).
+       Exposed as an arg on `bootstrapStability` for future tuning.
+       Smoke confirms a hand-crafted 3-cluster ref (sizes 1, 2, 7)
+       produces only the size-7 cluster in the match output.
+     - **B8** — `noiseHandling: "exclude" | "asCluster" |
+       "penalise"` parameter, default `"exclude"` (current
+       behaviour). `"asCluster"` remaps -1 in both reference and
+       per-iter candidate to a synthetic `NOISE_ID` so the
+       bipartite match treats noise-vs-noise as a real cluster
+       pairing. `"penalise"` keeps exclude-style matching but
+       scales aggregates by `(1 − noiseFraction)`; exposes
+       `meanJaccard_macro_raw` + `meanJaccard_unweighted_raw` so
+       the pre-penalty values stay inspectable. `aggregate.noiseFraction`
+       always reported (observational). Plumbed through scorer
+       factories + the Optimise settings dropdown ("Noise handling"
+       row with per-mode explanation in the hint). UI also records
+       the chosen mode in `settings.noiseHandling` so cached results
+       carry the assumption that produced them.
+     - Smoke (`scratch/noise_and_min_members_smoke.py`):
+       - 25%-noise reference → noiseFraction=0.250 reported
+       - asCluster mode adds the synthetic NOISE cluster (nClusters
+         grows by 1)
+       - penalise: `macro = raw × 0.75` exactly
+   - **§6.18.10 (B5 + B6 + B11 + §6.18.6) ✓ — shipped 2026-05-25.**
+     Surface honesty + busy-bar. All additive UI changes; no
+     migration.
+     - **B5** — `computeBayesOptimalAri` in `eval/bayes-ari.js`.
+       Computes the diagonal-Gaussian posterior `P(c|x)` per point,
+       takes argmax for the Bayes-optimal labelling, then
+       `adjustedRandIndex(bayesLabels, originIds)`. Uses empirical
+       priors (observed counts / N) so the ceiling reflects this
+       specific sample, not the limit. `datasource/toy.js` calls it
+       at generation time; `genResult.bayesOptimalAri` is the result.
+       `ariScorer` surfaces it on each row as `extra.ariCeiling`;
+       the Optimise table's ARI column renders "0.85 (92% of 0.92)"
+       so the user reads achieved ARI as a fraction of optimal.
+       Smoke confirms: ceiling=1.0 at well-separated defaults
+       (ARI=1 was achievable; the algorithm hit 0.93); ceiling=0.62
+       at widened spread=3.0 (overlap forced).
+     - **B6** — `formatDistributionStats(ranked)` in optimise-tab.js.
+       Appends `· best X · median Y · sd Z · n N` to the post-sweep
+       status line. Honest disclosure that the top score is
+       cherry-picked from a sweep; spread tells the user how big
+       the cherry-picking effect is. Skips when N < 2 (stats not
+       meaningful). Smoke verified: 22-config sweep shows
+       `best 0.992 · median 0.669 · sd 0.349 · n 29`.
+     - **B11** — scorer dropdown rebuilt dynamically per
+       `state.dataSource.mode`. Toy mode keeps Auto (defaults to
+       ARI since ground truth exists); real mode omits Auto
+       entirely. Hint reframed: "we don't auto-pick because each
+       scorer answers a different question; pick the one matching
+       your research aim." "Cluster richness" relabelled "Cluster
+       count × reproducibility" so the trade-off is in the label.
+       Optimise tab subscribes to state so toggling toy ↔ real
+       refreshes the dropdown without re-opening the modal.
+     - **§6.18.6** — `state.busy.current` grows a `phase` field.
+       New `setBusyPhase(phase)` action in `busy.js`; engine cascade
+       (5 lanes: reingest / redimred / recluster / reneighbour /
+       relayoutCitations) switched from `setBusyLabel` to
+       `setBusyPhase`. Busy bar renders `label` as headline +
+       `phase` as a subdued secondary line beneath
+       (`#busy-bar .busy-phase` CSS). Resolves the bug observed
+       2026-05-24: dataset load no longer shows just "Clustering…"
+       — user sees the headline they triggered ("Loading data…")
+       with current cascade phase as a faded subline.
+     - Test: `scratch/surface_honesty_smoke.py`.
+
+**Out of scope for this slice:**
+- Adding new clustering algorithms (separate work; algorithm
+  selection is upstream of the eval surface).
+- Rewriting the multi-level cascade for granular re-runs (§6.1
+  follow-up; would be nice but Optimise is single-level today).
+- Cross-algorithm disagreement metrics (open question in §7;
+  unlocks once §6.11 Slice 5 makes pairwise re-runs cheap).
+
+**Defensibility framing:** the user's concern is that clustering
+methods are very important to results, and small limitations stack.
+The endpoint of this slice is being able to point at the Optimise
+output and say *"this is the best config of those I considered,
+under metric M, with stability quantified by bootstrap protocol
+P, on data D; here are the assumptions M and P make and how they
+might fail."* — not "Optimise said this one was best."
 
 ### 6.6 Save / load project state ✓
 Project state persists to a `.zip` archive the user explicitly
@@ -1697,9 +2125,16 @@ pre-register `slotInstances` with the new tab id BEFORE calling
 desired.activeTabId` and skips remounting. Same fix protects
 viewer-3d from the same failure mode.
 
-### 6.8 Real-data pipeline ports ☐
-Was items 5–7 in the original plan. Pending until the toy work
-stabilises.
+### 6.8 Real-data pipeline ports — **deferred indefinitely**
+Was items 5–7 in the original plan. **Explicitly deferred (2026-05-24).**
+Per user call: the Python scoring-app integration is not critical
+to the toy's value — it's something to do *once the analysis is
+near perfect with minimal scientific limitations*, not part of the
+current focus. The toy keeps shipping as the load-bearing surface;
+ports are revisited only after §6.5 / §6.17 (optimisation) reach
+a defensible scientific footing.
+
+For posterity:
 - Layer 4 (citation layout) — pivot MDS per Leiden component, in
   Python.
 - Layer 5a (alignment) — `blend/align.js` ported to Python;

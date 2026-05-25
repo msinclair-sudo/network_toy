@@ -21,6 +21,18 @@ export function mountBusyBar() {
     return;
   }
 
+  // §6.18.6 secondary phase line. Inserted next to .busy-label.
+  // Reads from state.busy.current.phase; hidden when phase is null
+  // (e.g. job just started, before the cascade fires its first phase
+  // call). Lazy-create so we don't have to edit index.html.
+  let phaseEl = bar.querySelector(".busy-phase");
+  if (!phaseEl) {
+    phaseEl = document.createElement("span");
+    phaseEl.className = "busy-phase";
+    phaseEl.hidden = true;
+    label.after(phaseEl);
+  }
+
   // Timer that ticks while a job is running. Re-armed on every state
   // change so we don't leak intervals.
   let tickHandle = null;
@@ -48,6 +60,17 @@ export function mountBusyBar() {
     }
     bar.hidden = false;
     label.textContent = busy.current.label || "Running…";
+    // §6.18.6 — secondary phase line. The headline (`label`) stays as
+    // the action the user actually triggered; the phase reflects which
+    // cascade lane is currently running. Hidden until the engine sets
+    // a phase via setBusyPhase.
+    const ph = busy.current.phase;
+    if (ph) {
+      phaseEl.textContent = ph;
+      phaseEl.hidden = false;
+    } else {
+      phaseEl.hidden = true;
+    }
     const n = busy.queue ? busy.queue.length : 0;
     if (n > 0) {
       queueEl.textContent = `+${n} queued`;

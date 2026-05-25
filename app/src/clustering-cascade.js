@@ -17,13 +17,24 @@
 //   dimredResult  the full-n DimredResult (compression slot output)
 //   allowNoise    bool (read off algo.allowsNoise on the caller side)
 //   n             nodes.length, for contract validation
+//   precomputedLevels (optional) — sparse [cr | null] indexed by level.
+//                 If non-null at level i AND `i === 0` (only global level
+//                 0 is safely cacheable today — within-parent levels are
+//                 derived from the parent's clustering and can't be lifted
+//                 from a sibling sweep result), the cascade skips
+//                 `algo.infer` for that level and uses the supplied cr
+//                 directly. Caller responsibility to ensure the cr was
+//                 produced with the same (algo, params) the level cfg
+//                 carries. Used by A3 (§6.18.3) to avoid re-running the
+//                 sweep's infer on per-row Apply.
 //
 // Returns: levels[] in the same shape engine.js used to produce —
 // each entry { uid, scope: "global" | "within-parent", clusterResult }.
 
 import { validateClusterResult } from "./contracts/cluster.js";
 
-export function runClusterLevels(algo, nodesSlim, levelCfgs, dimredResult, allowNoise, n) {
+export function runClusterLevels(algo, nodesSlim, levelCfgs, dimredResult, allowNoise, n, opts = {}) {
+  const precomputedLevels = opts.precomputedLevels || [];
   const levels = [];
   let parent = null;
   // The clustering algorithms expect a genResult-shaped object — but
@@ -33,7 +44,13 @@ export function runClusterLevels(algo, nodesSlim, levelCfgs, dimredResult, allow
     const lvl = levelCfgs[i];
     const isGlobal = (i === 0) || lvl.scope === "global";
     let cr;
-    if (isGlobal) {
+    // Only L0 (always global) is safely cacheable from sweep results.
+    // Higher-level globals could be too, but the matching gets fragile
+    // and we don't have a use case yet.
+    const cached = (i === 0) ? precomputedLevels[i] : null;
+    if (cached) {
+      cr = cached;
+    } else if (isGlobal) {
       cr = algo.infer(genStub, lvl.params, dimredResult);
     } else {
       cr = clusterWithinParents(algo, genStub, parent, lvl.params, dimredResult);

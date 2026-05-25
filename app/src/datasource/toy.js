@@ -12,6 +12,7 @@
 // state shape matches what the panel writes.
 
 import { generate } from "../generation.js";
+import { computeBayesOptimalAri } from "../eval/bayes-ari.js";
 
 export const defaultToyParams = () => ({
   seed:      42,
@@ -32,6 +33,14 @@ export function produceToy(params = {}) {
     spreadScale:    merged.spread,
   });
 
+  // §6.18.10 B5 — compute the Bayes-optimal ARI ceiling for the
+  // generated mixture. Because the mixture components overlap at
+  // any reasonable spread, even an optimal classifier scores < 1.0
+  // against originId. Surfacing the ceiling alongside the achieved
+  // ARI lets users read "0.85 / 0.92 = 92% of optimal" rather than
+  // "0.85 — looks low". One-shot ~ms cost at toy n=400.
+  const bayesOptimalAri = computeBayesOptimalAri(gen.nodes, gen.origins);
+
   // generate() already returns nodes with id, originId, t, basePos +
   // origins; just relabel/forward into the data-source contract shape.
   return {
@@ -39,5 +48,6 @@ export function produceToy(params = {}) {
     params:  merged,
     nodes:   gen.nodes,
     origins: gen.origins,
+    bayesOptimalAri,
   };
 }

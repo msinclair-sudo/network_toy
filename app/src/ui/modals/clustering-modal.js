@@ -1,26 +1,27 @@
 // Multi-level clustering modal — tabbed surface for everything
-// cluster-related. Three tabs:
+// cluster-related. Two tabs:
 //
-//   Configure  — pick algorithm + edit per-level params (existing).
+//   Configure  — pick algorithm + edit per-level params.
 //   Optimise   — sweep configs, rank by stability or ARI, apply a row.
-//   Validate   — bootstrap-Jaccard the currently-applied clustering.
 //
 // The Configure / Apply pair is the "configuration commit" path —
 // Apply commits the working levels editor and triggers recluster.
-// Optimise's per-row Apply hops the user to the Validate tab so the
-// natural workflow is Configure → Optimise → Validate. Tabs can also
-// be visited freely; visit order is not enforced.
+// Optimise's per-row Apply commits the chosen config to the named
+// level and lets the bottom busy bar carry the cascade feedback.
+//
+// (Validate tab removed 2026-05-24 — bootstrap-Jaccard is reachable
+// from Optimise via the richness / stability scorers and via the
+// target-range sweep's `runBootstrap` flag, so a standalone
+// single-config Validate surface is redundant. Spec: doc/plan.md §6.18.1.)
 
 import { openModal } from "./modal.js";
 import { buildConfigureTab } from "./clustering-tabs/configure-tab.js";
 import { buildOptimiseTab }  from "./clustering-tabs/optimise-tab.js";
-import { buildValidateTab }  from "./clustering-tabs/validate-tab.js";
 import { enqueueBusy }       from "../busy.js";
 
 const TABS = [
   { id: "configure", label: "Configure" },
   { id: "optimise",  label: "Optimise"  },
-  { id: "validate",  label: "Validate"  },
 ];
 
 export function openClusteringModal(descriptor) {
@@ -82,29 +83,67 @@ export function openClusteringModal(descriptor) {
   function buildTab(tabId, host) {
     if (tabId === "configure") return buildConfigureTab(host, descriptor);
     if (tabId === "optimise") return buildOptimiseTab(host, {
-      onApplyRow: (row) => {
-        // Single-level commit. Optimise produced (algoId, params); we
-        // wrap as a one-level config so Configure's working state
-        // matches when the user hops back.
-        const levels = [{
+      // Expose the current levels so the Optimise tab's per-row
+      // dropdown can offer "Apply to L0", "Apply to L1", … "+ New".
+      // Read from the descriptor (canonical state), not Configure's
+      // working copy, since Optimise users may not have visited
+      // Configure since boot.
+      getLevels: () => {
+        const active = descriptor.getActive();
+        return active.levels.map((l, i) => ({
+          uid: l.uid, index: i, scope: l.scope, method: active.method,
+        }));
+      },
+      // levelIdx semantics:
+      //   0..existingLevels.length-1 → replace that level's params with
+      //                                row.params; other levels untouched.
+      //   existingLevels.length       → append a new level (within-parent
+      //                                if not the first; global otherwise).
+      // The whole levels array is rewritten and committed via applyChange
+      // because recluster reads cfg.levels wholesale.
+      onApplyRow: (row, levelIdx = 0) => {
+        const active = descriptor.getActive();
+        const existing = active.levels.map(l => ({
+          uid: l.uid, params: { ...l.params }, scope: l.scope,
+        }));
+        const isAppend = levelIdx >= existing.length;
+        const newLvl = {
           uid:    Math.random().toString(36).slice(2, 10),
           params: { ...row.params },
-          scope:  "global",
-        }];
-        // applyChange is async (descriptor → engine.recluster runs in
-        // workers). Reflect into Configure first, hop to Validate to
-        // park the user on a useful surface, then await the recluster
-        // so Validate reads fresh clusters — not stale ones from before
-        // the apply.
+          scope:  isAppend && existing.length > 0 ? "within-parent" : "global",
+        };
+        let levels;
+        if (isAppend) {
+          levels = [...existing, newLvl];
+        } else {
+          levels = existing.slice();
+          // Keep the slot's uid + scope; only swap params (and the
+          // algorithm if the optimise row picked a different one).
+          levels[levelIdx] = {
+            uid:    existing[levelIdx].uid,
+            params: { ...row.params },
+            scope:  existing[levelIdx].scope,
+          };
+        }
+        // Reflect into Configure so when the user hops back they
+        // see what landed. The cascade itself runs on the global
+        // busy queue; the bottom bar shows progress.
         if (tabHandles.configure && tabHandles.configure.overwrite) {
           tabHandles.configure.overwrite(row.algoId, levels);
         }
-        setActiveTab("validate");
-        enqueueBusy("Clustering…", () => descriptor.applyChange(row.algoId, levels))
+        // A3 (§6.18.3): pass the swept cr through so the engine cascade
+        // can skip the L0 re-infer when the user applies to L0 with a
+        // single level. Cache is ignored downstream when the levels
+        // shape doesn't match (e.g. appending as a within-parent
+        // sub-level). row._cr is the runtime-only cache stamped by
+        // sweep.js / runTargetRangeSweep.
+        const precomputedCr = row._cr
+          ? { algoId: row.algoId, params: row.params, cr: row._cr }
+          : null;
+        enqueueBusy("Clustering…", () => descriptor.applyChange(row.algoId, levels, { precomputedCr }))
           .catch(e => console.error("[clustering-modal] onApplyRow applyChange failed:", e));
       },
     });
-    if (tabId === "validate") return buildValidateTab(host);
     return null;
   }
 

@@ -128,7 +128,11 @@ function clusteringDescriptor() {
         ],
       };
     },
-    applyChange: async (algoId, levels) => {
+    // applyChange(algoId, levels, opts?)
+    // opts.precomputedCr — passed through to engine.recluster() so per-row
+    //   Apply from the Optimise tab can skip the L0 algo.infer when the
+    //   sweep already produced a matching cr (A3, §6.18.3).
+    applyChange: async (algoId, levels, opts = {}) => {
       const s = getState();
       update({
         layerParams: {
@@ -136,7 +140,7 @@ function clusteringDescriptor() {
           clustering: { method: algoId, levels },
         },
       });
-      try { await engine.recluster(); }
+      try { await engine.recluster({ precomputedCr: opts.precomputedCr || null }); }
       catch (e) { console.error("[clustering-descriptor] recluster failed:", e); }
     },
     openModal: () => openClusteringModal(desc),

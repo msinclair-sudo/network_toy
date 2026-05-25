@@ -25,7 +25,20 @@
 
 import { update } from "./state.js";
 
-// Each entry: { id, label, since, fn, resolve, reject }.
+// Each entry: { id, label, phase, since, fn, resolve, reject }.
+// label   — headline set by enqueueBusy; remains the headline for the
+//           whole job's lifetime. Never overwritten by the cascade.
+// phase   — secondary line, set by setBusyPhase as the engine lanes
+//           transition through their phases. Initially null. Rendered
+//           below the headline in the bottom bar.
+//
+// The split (§6.18.6) replaces a pre-2026-05-25 design where the
+// cascade overwrote `label` outright via `setBusyLabel`. That made a
+// dataset load briefly show "Loading data…" then immediately get
+// overwritten with "Dim-reduction…" → "Clustering…" → "Citations…",
+// and at toy scale the user only saw the final phase — typically
+// "Clustering…" — flashing past for what their click had triggered
+// as a "Load data" action.
 // Head (queue[0]) is the currently-running job; the rest are waiting.
 const queue = [];
 
@@ -40,14 +53,14 @@ function makeId() {
 }
 
 // Publish state.busy from the in-memory queue. Called whenever the
-// queue changes (push, head-pop, label update).
+// queue changes (push, head-pop, label / phase update).
 function publish() {
   if (queue.length === 0) {
     update({ busy: null });
     return;
   }
   const head = queue[0];
-  const current = { id: head.id, label: head.label, since: head.since };
+  const current = { id: head.id, label: head.label, phase: head.phase || null, since: head.since };
   const waiting = queue.slice(1).map(e => ({ id: e.id, label: e.label }));
   update({ busy: { current, queue: waiting } });
 }
@@ -99,6 +112,7 @@ export function enqueueBusy(label, fn) {
     queue.push({
       id:     makeId(),
       label,
+      phase:  null,
       since:  Date.now(),
       fn,
       resolve,
@@ -113,15 +127,34 @@ export function enqueueBusy(label, fn) {
 }
 
 /**
- * Update the visible label of the currently-running job without
- * dequeuing it. Useful for cascade transitions: reingest sets
- * "Loading data…", redimred sets "Dim-reduction…", recluster sets
- * "Clustering…" — all within the same enqueueBusy slot.
+ * Update the visible HEADLINE label of the currently-running job
+ * without dequeuing it. Rare — most callers want setBusyPhase
+ * instead. Reserved for cases where the action itself meaningfully
+ * changes mid-flight (e.g. "Saving…" → "Verifying save…").
  *
  * No-op if no job is currently running.
  */
 export function setBusyLabel(label) {
   if (queue.length === 0) return;
   queue[0].label = label;
+  publish();
+}
+
+/**
+ * Update the SECONDARY phase line of the currently-running job. Used
+ * by the engine cascade as it walks each lane:
+ *   reingest sets "Loading data…", redimred sets "Dim-reduction…",
+ *   recluster sets "Clustering…", reneighbour sets "Citations…".
+ * The headline (set by enqueueBusy at job start) stays unchanged so
+ * the user still sees what they actually triggered ("Loading dataset
+ * 'foo.zip'…") with the current cascade phase as a subdued
+ * secondary line beneath.
+ *
+ * Pass null to clear the phase.
+ * No-op if no job is currently running.
+ */
+export function setBusyPhase(phase) {
+  if (queue.length === 0) return;
+  queue[0].phase = phase || null;
   publish();
 }

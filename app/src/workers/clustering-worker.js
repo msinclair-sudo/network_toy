@@ -1,19 +1,36 @@
 // Clustering worker entry.
 //
-// One worker job = one full multi-level cluster cascade (either the
-// post-fusion run or the pre-fusion run; never both — those are
-// separate DAG nodes in recluster()).
+// Two job shapes share this worker (dispatched on payload.mode):
 //
-// We don't run individual levels in separate workers: the levels are
-// inherently sequential (each within-parent level reads the previous
-// level's clusterResult), so per-level workers would serialise
-// anyway. Sending one job per pass keeps postMessage traffic at one
-// round-trip per pass.
+//   mode: "cascade" (default if omitted) — multi-level cluster cascade.
+//     One job = one full pass (post-fusion OR pre-fusion; never both
+//     — those are separate DAG nodes in recluster()).
+//     We don't run individual levels in separate workers: levels are
+//     inherently sequential (each within-parent level reads the
+//     previous level's clusterResult), so per-level workers would
+//     serialise anyway. Sending one job per pass keeps postMessage
+//     traffic at one round-trip per pass.
 //
-// Protocol:
-//   in:  { algoId, nodesSlim, dimredResult, levelCfgs, allowNoise, n }
+//   mode: "infer" — single algo.infer call. Used by the eval surface
+//     (eval/sweep.js + eval/bootstrap.js) so a swept config or
+//     bootstrap iter runs off the main thread. Same algorithm
+//     registry resolves on both threads.
+//
+// Protocol (cascade):
+//   in:  { mode: "cascade", algoId, nodesSlim, dimredResult, levelCfgs,
+//          allowNoise, n, precomputedLevels?: [cr|null, ...] }
 //   out: { ok: true,  result: levels[] }
-//        { ok: false, error: { message, name, stack? } }
+//   precomputedLevels (optional) — sparse cr-by-level cache; when present
+//   at index 0 (only L0 is cacheable today) the worker skips that level's
+//   algo.infer and uses the supplied cr verbatim. Used by A3 (§6.18.3)
+//   so per-row Apply doesn't re-run the sweep's infer.
+//
+// Protocol (infer):
+//   in:  { mode: "infer",   algoId, nodesSlim, dimredResult, params, n }
+//   out: { ok: true,  result: ClusterResult }     // single-level
+//
+// Failure (either mode):
+//   out: { ok: false, error: { message, name, stack? } }
 //
 // All algorithm modules + the registry are pure (no DOM, no esm.sh
 // URLs in their import chain), so the worker can resolve `algoId` via
@@ -23,30 +40,57 @@ import { getAlgorithm as getClusteringAlgorithm } from "../clustering-registry.j
 import { runClusterLevels }                        from "../clustering-cascade.js";
 
 self.addEventListener("message", (ev) => {
-  const { algoId, nodesSlim, dimredResult, levelCfgs, allowNoise, n } = ev.data || {};
+  const data = ev.data || {};
+  const mode = data.mode || "cascade";
 
   try {
-    if (typeof algoId !== "string") {
-      throw new Error("clustering-worker: payload.algoId must be a string");
-    }
-    if (!Array.isArray(nodesSlim)) {
-      throw new Error("clustering-worker: payload.nodesSlim must be an array");
-    }
-    if (!Array.isArray(levelCfgs) || levelCfgs.length === 0) {
-      throw new Error("clustering-worker: payload.levelCfgs must be a non-empty array");
-    }
-    const algo = getClusteringAlgorithm(algoId);
-    const levels = runClusterLevels(algo, nodesSlim, levelCfgs, dimredResult, !!allowNoise, n | 0);
+    if (mode === "cascade") {
+      const { algoId, nodesSlim, dimredResult, levelCfgs, allowNoise, n, precomputedLevels } = data;
+      if (typeof algoId !== "string") {
+        throw new Error("clustering-worker: payload.algoId must be a string");
+      }
+      if (!Array.isArray(nodesSlim)) {
+        throw new Error("clustering-worker: payload.nodesSlim must be an array");
+      }
+      if (!Array.isArray(levelCfgs) || levelCfgs.length === 0) {
+        throw new Error("clustering-worker: payload.levelCfgs must be a non-empty array");
+      }
+      const algo   = getClusteringAlgorithm(algoId);
+      const levels = runClusterLevels(
+        algo, nodesSlim, levelCfgs, dimredResult, !!allowNoise, n | 0,
+        { precomputedLevels: Array.isArray(precomputedLevels) ? precomputedLevels : [] },
+      );
 
-    // Transfer every nodeCluster Int32Array back so the main thread
-    // can adopt them without copy. structureEdges arrays are small
-    // JS arrays; clustering hot-path is the Int32Array.
-    const transfer = [];
-    for (const lvl of levels) {
-      const buf = lvl.clusterResult.nodeCluster && lvl.clusterResult.nodeCluster.buffer;
-      if (buf) transfer.push(buf);
+      const transfer = [];
+      for (const lvl of levels) {
+        const buf = lvl.clusterResult.nodeCluster && lvl.clusterResult.nodeCluster.buffer;
+        if (buf) transfer.push(buf);
+      }
+      self.postMessage({ ok: true, result: levels }, transfer);
+      return;
     }
-    self.postMessage({ ok: true, result: levels }, transfer);
+
+    if (mode === "infer") {
+      const { algoId, nodesSlim, dimredResult, params } = data;
+      if (typeof algoId !== "string") {
+        throw new Error("clustering-worker: payload.algoId must be a string");
+      }
+      if (!Array.isArray(nodesSlim)) {
+        throw new Error("clustering-worker: payload.nodesSlim must be an array");
+      }
+      const algo   = getClusteringAlgorithm(algoId);
+      // The algorithms only read .nodes off genResult; stub it.
+      const genStub = { nodes: nodesSlim };
+      const cr = algo.infer(genStub, params || {}, dimredResult);
+
+      const transfer = [];
+      if (cr.nodeCluster && cr.nodeCluster.buffer) transfer.push(cr.nodeCluster.buffer);
+      if (cr.noiseFlags  && cr.noiseFlags.buffer)  transfer.push(cr.noiseFlags.buffer);
+      self.postMessage({ ok: true, result: cr }, transfer);
+      return;
+    }
+
+    throw new Error(`clustering-worker: unknown mode "${mode}"`);
   } catch (err) {
     self.postMessage({
       ok: false,

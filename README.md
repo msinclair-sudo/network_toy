@@ -80,7 +80,8 @@ configuration modal:
   modal, pick an algorithm, hit Apply. The status dot shows
   orange (stale) until you do.
 
-Status dots on each node colour-coded fresh / stale / not-run.
+Status dots on each node: green (fresh) / orange (stale) /
+orange-pulse (running) / grey (not-run) / red (error).
 
 ### Data sources
 
@@ -179,30 +180,63 @@ Same algorithm shared across all levels.
 
 Sweep `algorithms × parameters` and rank by a chosen scorer:
 
-- **Match to known groups** — ARI vs the toy generator's
-  ground-truth origins. Toy-only.
-- **Cluster richness** — `cluster count × bootstrap
-  reproducibility`. Balanced — penalises both noise-fragmented
-  and trivially-coarse partitions. Default for real data.
+- **Match to known groups (ARI)** — Adjusted Rand Index vs the toy
+  generator's ground-truth origins. Toy-only. Shown alongside the
+  Bayes-optimal ARI ceiling for the generated mixture (e.g.
+  "0.85 (92% of 0.92)") so you can read the achieved ARI as a
+  fraction of optimal rather than as a raw number.
+- **Cluster count × reproducibility** — `nClusters × meanJaccard`.
+  Penalises both extremes: one mega-cluster scores low, hundreds of
+  noise-fragments score low, the balanced middle wins.
 - **Number of clusters** — raw count. Use when you trust the
-  algorithm and want to push toward more clusters.
-- **Cluster reproducibility** — Hennig bootstrap-Jaccard
-  fraction-stable. Beware: over-rewards trivial partitions.
+  algorithm's geometry and want to push toward more clusters.
+- **Cluster reproducibility** — bootstrap-Jaccard mean (size-weighted).
+  Beware: a 1-cluster partition scores ~1.0 mechanically.
 
-Two sweep depths: **Resolution only** (just the parameters that
-control granularity — fast) or **Full grid** (every parameter,
-much slower).
+In toy mode, an **Automatic** option picks ARI for you (ground truth
+exists). In real mode there's no auto-pick — you choose explicitly,
+because each scorer answers a different question.
+
+**Noise handling** dropdown (affects bootstrap-based scorers):
+*Exclude* drops noise points from both ref and bootstrap;
+*Treat noise as a cluster* matches noise-vs-noise like any pair;
+*Penalise* scales aggregates by `(1 − noise fraction)` so noisier
+clusterings lose stability proportionally. Scores under different
+modes are not directly comparable — pick one and stick to it.
+
+Three sweep modes:
+
+- **Resolution only** — just the parameters that control granularity
+  (e.g. HDBSCAN's `min_cluster_size`, mutual k-NN's `mutualK`). Fast;
+  good default for cross-algorithm comparison.
+- **Full grid** — cartesian product of every parameter on every
+  enabled algorithm. Slow; use when you want to characterise an
+  algorithm's whole surface, not pick a winner.
+- **Target range** — looks for the most stable params that produce
+  a user-specified cluster-count band (e.g. "between 20 and 40
+  clusters"). Two-phase: Latin-hypercube probe per algorithm, then
+  ±step neighbourhood refine around any config that landed in the
+  band. Much cheaper than the cartesian sweeps when you already
+  know the cluster count you're aiming for. Optionally rank
+  Phase-2 candidates by bootstrap-Jaccard reproducibility instead
+  of by proximity to the band's midpoint.
+
+**Sweep against** (target-range only, fusion-active only):
+optimise against Post-fusion (citation-aware), Pre-fusion
+(semantic-only), or Both. Both runs the sweep twice and tags each
+result row with its source, so you can compare which params win on
+each representation side by side.
 
 Results table shows every config swept, **sortable columns**, with
-per-row **Apply** that commits the config and hops to the
-Validate tab.
+per-row **Apply** that drops the config into a level you pick
+(`L0 / L1 / … / + New level`). The cascade runs in the background;
+the bottom status bar carries the progress.
 
-### Validate tab
-
-Bootstrap-Jaccard on the currently-applied clustering. Per-
-cluster stability scores with Hennig thresholds (stable ≥ 0.85,
-doubtful 0.60–0.85, unstable < 0.60). Click a row to select that
-cluster in the viewers.
+The bootstrap-Jaccard stability check (Hennig 2007, thresholds
+stable ≥ 0.85 / doubtful 0.60–0.85 / unstable < 0.60) is reachable
+inside Optimise via the "Cluster richness" / "Cluster
+reproducibility" scorers and via the target-range sweep's "Rank by
+reproducibility" toggle.
 
 ### Bridge analysis (Layer 2.5)
 
@@ -216,9 +250,22 @@ fine / coarse level-pair selector + per-level share columns).
 ### 3D viewer (primary panel)
 
 Live blend visualisation. Top-left: **Colour by:** dropdown
-selects what drives node colour (cluster level, origin, time,
-in-degree, bridge, boundary score). Top-right: **⚙** opens
-camera-speed settings.
+selects what drives node colour:
+
+- Cluster (per level)
+- **Cluster — pre-fusion** (one entry per level; only present when
+  fusion is non-identity — paints nodes by their *pre-fusion* cluster
+  IDs so you can drag the fusion slider and watch which papers
+  reorganised)
+- Origin (toy generator's ground-truth groups)
+- Time (`t`-gradient: viridis)
+- In-degree (citation in-degree: viridis)
+- Bridge (binary: fine clusters whose members span ≥2 coarse parents)
+- Boundary score (gradient: `1 − dominantFraction` at the
+  chosen `(fineLevel, coarseLevel)` pair)
+
+Top-right: **⚙** opens camera-speed settings (0–1 sliders, no
+inertia by default).
 
 ### 2D viewer panel
 
@@ -254,6 +301,42 @@ blend hook. The four corners of `(fusion, α)`-space are:
 
 Round-trip is exact for each slider independently. 3D-only.
 
+### Edge-display controls (left rail, below blend)
+
+Per-edge-kind toggles + colour pickers + numeric sliders. State
+lives in `state.view` and persists across project save/load.
+
+- **Citation edges** — show / arrows / opacity slider (0.05–1.00) /
+  colour. Drawn from the `CitationResult.edges` list (Layer 3).
+- **Base edges** — show / density slider (0–0.2) / colour. Visual
+  scaffold drawn between basePos-near neighbours; purely visual —
+  does not affect the blend.
+- **Cluster skeleton** — show / colour. Renders the
+  `structureEdges` set the active clustering algorithm produced
+  (mutual-k-NN: reciprocal-k-NN edges; HDBSCAN: MST projection).
+
+### Bottom status bar
+
+A thin pulsing strip across the viewport bottom shows what the
+engine is currently doing. Two-tier text:
+
+- **Headline** — what the user actually triggered ("Loading
+  'foo.zip'…", "Clustering…", "Saving 'project.zip'…"). Stays the
+  same for the lifetime of the job.
+- **Phase** (italic, dimmer, next to the headline) — what the
+  engine is doing right now as the cascade walks each lane:
+  `Loading data…` → `Dim-reduction…` → `Clustering…` →
+  `Citations…`. Updates as each phase fires.
+
+When multiple actions are queued (e.g. you Apply in the
+dim-reduction modal then immediately Apply in the clustering
+modal), the bar shows `+N queued` next to the running label, and
+processes them FIFO. Each job displays an elapsed timer once it's
+been running for more than a second. The bar hides when idle.
+
+Modals close immediately on Apply — they don't block waiting for
+the cascade — so all in-flight feedback lives in this bar.
+
 ### Multi-tab panels
 
 Every slot — primary, secondary, bottom — has tabs. Click `+` to
@@ -268,7 +351,15 @@ previous layer's public contract and produces its own — adding
 a new algorithm is one new entry in the relevant registry, no
 other file changes needed.
 
-```
+The heavy lanes (dim-reduction, clustering, citation layout) each
+build a small **DAG** of work and run it via module Web Workers
+(`runDAG` in `app/src/workers/dag.js`). Sibling sub-stages
+(`compression` / `viz` / `viz2d`, optionally doubled when fusion is
+active) execute in parallel; cancellation cascades through the DAG
+via `AbortSignal`. The main thread stays responsive at BFS-5000 +
+HDBSCAN; the bottom status bar carries all in-flight feedback.
+
+```text
 datasource/registry.js        Layer 1    pluggable data source
                                           → {nodes, origins?, embedding?, basePos?, citationEdges?}
         ↓
@@ -300,6 +391,7 @@ Math reference for each layer is in `doc/`. Start with
 `doc/dynamics.md` for the index.
 
 Doc highlights:
+
 - `doc/dimred.md` — Layer 1.5 sub-stages, registry contract, engine orchestration, slot-aware defaults
 - `doc/fusion.md` — Layer 1.5 fusion sub-stage: graph-diffusion algorithm, fusion-comparison slider, pre-fusion cluster colour mode, A/B comparison semantics
 - `doc/clustering.md` — Layer 2 contract + algorithms
@@ -307,14 +399,16 @@ Doc highlights:
 - `doc/citation-layout.md` — Layer 4 algorithms (FR, MDS / SMACOF, UMAP-on-graph) + which to pick at which scale
 - `doc/blend.md` — Layer 5 alignment + per-frame blend; covers per-component vs whole-graph (alignGlobal) Procrustes, the nested-lerp formula, and the opt-in cascade policy
 - `doc/multi-level.md` — multi-level clustering + bridge analysis derivation
-- `doc/ui-architecture.md` — the new shell's state container, engine orchestrator, workflow chart, panel system, modals
+- `doc/ui-architecture.md` — the new shell's state container, engine orchestrator, workflow chart, panel system, modals, busy bar
+- `doc/workers.md` — DAG-orchestrated module workers: runDAG, lane shape, cancellation, transferables
+- `doc/eval.md` — Optimise tab: bootstrap-Jaccard, scorers, the three sweep modes (resolution / full / target-range with LHS), known limitations + audit cross-refs
 - `doc/scaling.md` — toy-vs-real-data scaling analysis (`n ≈ 400` toy, `n = 810 k` real)
 - `doc/clustering-research.md` — research record, per-family pros/cons, locked picks, stability metrics
 - `doc/plan.md` — convergence plan with status flags
 
 ## File layout
 
-```
+```text
 app/                              static page + ES modules
   index.html                      importmap + boot
   legacy.html                     v3-stage-X archive shell
@@ -338,6 +432,7 @@ app/                              static page + ES modules
     clustering.js                 L2: mutual k-NN
     clustering-hdbscan.js         L2: HDBSCAN
     clustering-cc.js              L2: connected components
+    clustering-cascade.js         shared multi-level cascade (used by engine + clustering-worker)
     citations/                    Layer 3
       registry.js
       contract.js
@@ -359,11 +454,13 @@ app/                              static page + ES modules
     blend/                        Layer 5
       align.js                    L5a: alignByComponent + alignGlobal (Procrustes)
       blend.js                    L5b: per-frame nested lerp (blend × fusionBlend)
-    eval/                         bootstrap-Jaccard + cross-algo sweep
-      jaccard.js
-      bootstrap.js
+    eval/                         bootstrap-Jaccard + sweep strategies
+      jaccard.js                  jaccardSimilarity + bestMatchJaccard (with subsample mask)
+      bootstrap.js                bootstrapStability — parallel B-iter via workers (deterministic)
       scorers.js                  ari / stability / numClusters / richness
-      sweep.js                    sweepAcrossAlgorithms
+      sweep.js                    sweepAcrossAlgorithms + runTargetRangeSweep
+      lhs.js                      Latin-hypercube sampler (drives the target-range probe)
+      run-infer-remote.js         worker-backed algo.infer helper (single-job dispatch)
       ari.js, kmeans.js           legacy eval helpers
       layout-sweep.js             legacy citation-layout sweep
     contracts/
@@ -372,14 +469,22 @@ app/                              static page + ES modules
       manifest.js                 SCHEMA_VERSION
       serialise.js
       deserialise.js
+    workers/                      DAG-orchestrated module workers
+      worker-runner.js            generic runInWorker(workerUrl, payload, {signal, transferList})
+      dag.js                      runDAG — topo-sort + parallel-batch + AbortSignal
+      dimred-worker.js            dispatches on algo (identity/pca/umap/graph-diffusion)
+      clustering-worker.js        runs the full multi-level cascade per job
+      layout-worker.js            FR / MDS / UMAP-on-graph
     ui/                           new shell
       main.js                     boot
       state.js                    state container + actions
-      engine.js                   pipeline orchestrator (async reingest)
+      engine.js                   pipeline orchestrator (async; lanes are DAGs over workers)
       workflow-chart.js
       panel-system.js
       data-panel.js
       topbar.js                   File / Data / Workflow / Validate / Help menus
+      busy.js                     global FIFO busy queue (enqueueBusy + setBusyLabel)
+      busy-bar.js                 bottom status bar — renders state.busy
       bridge-analysis.js
       gradients.js
       viewer-shared/
@@ -393,11 +498,10 @@ app/                              static page + ES modules
       modals/
         modal.js
         algorithm-modal.js
-        clustering-modal.js       tabbed Configure / Optimise / Validate
+        clustering-modal.js       tabbed Configure / Optimise
         clustering-tabs/
           configure-tab.js
           optimise-tab.js
-          validate-tab.js
         dimred-modal.js           five-stage (noise / fusion / compression / viz / viz2d)
         data-source-modal.js
         panel-picker.js
@@ -423,10 +527,17 @@ literture-network/                real-data pipeline (Python)
     make_subset_citation_edges.py carve induced citation-edge subgraph for a subset
 doc/
   dynamics.md                     layer index
-  clustering.md, citations.md, citation-layout.md, blend.md
+  dimred.md                       Layer 1.5 — five sub-stages + slot-aware defaults
+  fusion.md                       Layer 1.5 fusion sub-stage + comparison slider
+  clustering.md                   Layer 2 contract + algorithms
+  citations.md                    Layer 3 contract + taste-network + imported-edges
+  citation-layout.md              Layer 4 algorithms (FR / MDS / UMAP-on-graph)
+  blend.md                        Layer 5 alignment + per-frame blend
   multi-level.md                  multi-level clustering + bridge analysis
-  ui-architecture.md
-  scaling.md
+  ui-architecture.md              shell architecture (incl. workers + busy bar)
+  workers.md                      DAG-orchestrated worker port + cancellation
+  eval.md                         Optimise tab: bootstrap, scorers, sweep modes
+  scaling.md                      toy-vs-real-data scaling
   clustering-research.md
   plan.md
 ```

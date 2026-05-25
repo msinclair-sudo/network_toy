@@ -2,14 +2,31 @@
 
 This document describes the math that is actually running in `network-dynamics.html` today (the version that "mostly works"). It is meant as the reference for the clean rebuild — anything not described here should not appear in the rebuilt version, and anything described here should appear once and only once.
 
-The pipeline has four stages, each with its own math:
+The pipeline has six layers, each with its own math:
 
-1. **Generation** — sampling node positions and timestamps.
-2. **Cluster inference** — recovering cluster IDs from positions.
-3. **Citation generation** — choosing which directed edges exist.
-4. **Layout dynamics** — the spring force that moves nodes each tick.
+1. **Layer 1 — Generation / data source** — sampling node positions
+   and timestamps (toy) or loading real SPECTER2 embeddings.
+2. **Layer 1.5 — Dim-reduction** — five sub-stages (noise / fusion /
+   compression / viz / viz2d). See `doc/dimred.md`, `doc/fusion.md`.
+3. **Layer 2 — Cluster inference** — recovering cluster IDs from
+   positions or dim-reduced features.
+4. **Layer 3 — Citation generation** — choosing which directed edges
+   exist (toy: taste-network; real: imported edges).
+5. **Layer 4 — Citation-driven layout** — FR / MDS / UMAP-on-graph
+   (opt-in; cascade STOPS at Layer 3).
+6. **Layer 5 — Alignment + per-frame blend** — Procrustes alignment
+   + nested lerp between basePos endpoints + aligned citation
+   layout.
 
 Section 5 lists the controls and what each one actually drives.
+
+**Engine architecture and execution model:**
+- `doc/ui-architecture.md` — shell, state container, engine
+  orchestrator, panel system, modals, busy queue + bottom bar.
+- `doc/workers.md` — module workers + the DAG that runs heavy
+  lanes in parallel with cancellation.
+- `doc/eval.md` — Validate + Optimise (bootstrap-Jaccard,
+  scorers, three sweep modes including target-range LHS).
 
 **For the real-data port (n = 810 k base, 1.82 M filtered hybrid
 edges):** see `doc/scaling.md` for which layers scale unchanged,
