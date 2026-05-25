@@ -2026,85 +2026,194 @@ under metric M, with stability quantified by bootstrap protocol
 P, on data D; here are the assumptions M and P make and how they
 might fail."* — not "Optimise said this one was best."
 
-### 6.19 Expose pipeline results as openable panels ☐ — added 2026-05-25
+### 6.19 Validation runs as first-class entities ☐ — added 2026-05-25, expanded 2026-05-25
 
-Many of the analytical results the pipeline produces — Optimise sweep
-tables, bootstrap-Jaccard per-cluster scores, bridge analysis at any
-chosen `(fine, coarse)` pair, the planned §6.9 dim-sweep results,
-alignment correlation per layout-algorithm choice, fusion-comparison
-deltas — currently live either:
-- inside a modal (Optimise table is buried in `clustering-modal.js`
-  → Optimise tab; user has to re-open the modal to inspect it), OR
-- as a single number in a status line or status dot (alignment
-  correlation, Bayes-optimal ARI ceiling, fusion identity-flag), OR
-- as a colour mode on the viewers (bridge / boundaryScore), with no
-  side-by-side numerical view.
+Validation, sweeping, and other analytical results currently live in
+three awkward places:
+- **Inside a modal** (Optimise sweep table is buried in
+  `clustering-modal.js → Optimise tab`; closing the modal hides it).
+- **In a single-slot state field** (`state.evalResults.optimise` —
+  one slot, overwritten on the next sweep, no history).
+- **In a static doc file** (§6.9 dim-sweep results live in
+  `doc/dim-sweep-results.md`, produced by a scratch script; not part
+  of any specific project's state at all).
 
-Surface every analytical result as a **first-class panel type** that
-the user can pin into any slot via the `+ Add panel` picker:
+The reframe (user call 2026-05-25): treat every sweep / validation /
+analytical run as a **first-class persistent entity** the user can
+save, browse, and re-open. Each dataset is unique enough that
+validation has to be re-done per fixture; building up a history of
+"what was checked on this project, when, with what conclusion" is
+genuinely useful — both for the user reviewing their own work and
+for handing the project to a collaborator.
 
-- **Optimise results panel** — the sortable sweep table currently
-  inside the Optimise tab; same renderer, lifted into a panel. Lets
-  the user keep the table open in the bottom slot while they re-run
-  sweeps, hop to Validate, etc. Reads from `state.evalResults.optimise`.
-- **Bootstrap stability panel** — per-cluster Jaccard bars for the
-  currently-applied clustering. Reads the same bootstrap engine the
-  Optimise tab uses; runs on demand. (Replaces what the removed
-  Validate tab used to do, but as a panel anyone can pin.)
-- **Dim-sweep results panel** — the §6.9 ARI matrix, once the script
-  promotes to a UI surface. ARI heatmap + cluster-count table.
-- **Method receipt panel** — single read-only panel that assembles
-  the defensibility paragraph (§6.18 endpoint): "this clustering
-  was scored under bipartite-matched Jaccard at frac=0.5, B=10,
-  minMembers=3, noiseHandling=exclude; the Bayes-optimal ARI ceiling
-  is 0.92." Pulls from `aggregate.*` fields + `genResult.bayesOptimalAri`
-  + active layerParams. Lets the user export a screenshot or copy
-  the paragraph straight into a paper.
-- **Bridge analysis panel** — `bridgeAnalysis.perCluster` rendered
-  as a sortable table with per-coarser-level share columns. Currently
-  reachable only via the node-table source dropdown; lifting to its
-  own panel makes the bridge story easier to read alongside the
-  viewers.
+#### The core data shape
+
+```ts
+state.validationRuns: ValidationRun[]
+
+type ValidationRun = {
+  id:           string,              // uid for panel binding
+  type:         "optimise" | "dimSweep" | "bootstrapStability" |
+                "targetRange" | "alignmentSweep" | ...
+  label:        string,              // user-set or auto-generated
+                                      // e.g. "HDBSCAN dim-sweep — BFS-5000"
+  timestamp:    string,              // ISO datetime saved
+  inputs: {                           // snapshot at time-of-run
+    dataSourceId: string,             // "real" / "toy"
+    dataSourceConfig: object,         // subset, seed, etc.
+    layerParamsSnapshot: object,      // what dim/fusion/etc. were active
+  },
+  settings:     object,              // type-specific knobs (B, frac, dims, etc.)
+  results:      object,              // type-specific results (see below)
+  scoreVersion: int,                 // SCORE_VERSION at time of run
+  runtimeSec:   number,              // wall time it took
+}
+```
+
+Per-type `results` shapes (sketches; finalise as each runner moves
+into this scheme):
+- `"optimise"`: the `ranked` rows + `aggregate.*` + scorer id. Same
+  shape as today's `state.evalResults.optimise`.
+- `"dimSweep"`: ARI matrix + cluster counts + verdict, as written
+  to `doc/dim-sweep-results.md` today.
+- `"bootstrapStability"`: per-cluster Jaccard bars + Hennig
+  breakdown for a single applied config.
+- `"targetRange"`: phase1 + phase2 + ranked + fallback flag.
+- `"alignmentSweep"` (future): citation-layout algorithm vs
+  alignment correlation, per `relayoutCitations()` algo choice.
+
+#### The UX flow
+
+1. **Save-this-run button.** Each surface that produces a sweep
+   result gets a "Save this run" affordance after the run completes
+   (Optimise tab footer, eventual Dim-sweep modal footer, eventual
+   Bootstrap-stability panel). Opt-in — not every exploration needs
+   archiving. Asks for an optional label; auto-generates one if blank.
+   Stamps the run into `state.validationRuns` with current timestamp.
+2. **Panel-picker integration.** The `+ Add panel` modal grows a
+   "Validation runs" category. Each stored run lists as a panel
+   option ("HDBSCAN dim-sweep — BFS-5000 — 2026-05-25"). Picking one
+   opens the appropriate renderer panel (table for tabular, heatmap
+   for matrix-like, etc.) bound to that run's id. Same run can be
+   pinned in multiple panels (compare side-by-side) and survives
+   tab hops.
+3. **Persisted with the project.** `validationRuns` rides along in
+   the `.zip` save (existing `persistence/serialise.js` patterns +
+   the existing schema-version mechanism handles it). Loading a
+   project reads the runs straight back; their panels can re-pin
+   themselves.
+4. **Resource without recalculating** (the big-payoff use case). A
+   saved Optimise sweep carries every row's params. Picking a
+   non-top row from the saved sweep + clicking "Apply" re-applies
+   that single config — at worst a single `algo.infer` call, vs the
+   original N-config sweep (could be 10 minutes of HDBSCAN at
+   BFS-5000). Open question: do we also persist the per-row `_cr`
+   (Int32Arrays) so even the single infer is skipped (the §6.18.3
+   `precomputedCr` path works)? Trade-off: faster reapply vs larger
+   save files (~20 KB per row × N rows). Lean: persist cr for
+   sweeps that took > 30 s to run; skip for the rest. Decide at
+   implementation time.
+
+#### Panel-type renderers (the original §6.19 list, reframed)
+
+Each is a *renderer for a ValidationRun of type X*, not a one-off
+panel hooked to a one-off state slot:
+
+- **Optimise results panel** — renders a `type: "optimise"` run.
+  Same sortable table the Optimise tab uses. Per-row Apply still
+  works (with cr cache when available).
+- **Dim-sweep results panel** — renders a `type: "dimSweep"` run.
+  ARI matrix as a heatmap + cluster-count bar plot + verdict
+  banner. Heatmap uses the existing `gradients.js` for colour
+  bars; no chart library dependency.
+- **Bootstrap stability panel** — renders a
+  `type: "bootstrapStability"` run. Per-cluster Jaccard bars +
+  coloured Hennig breakdown + aggregate macro / unweighted /
+  noiseFraction.
+- **Target-range panel** — renders `type: "targetRange"`. Same
+  table the Optimise tab uses for target-range mode, plus the
+  hits-in-band callout.
+- **Method receipt panel** — derived view, not a saved run.
+  Assembles the §6.18 defensibility paragraph from the *currently
+  active* state. Could also bind to a specific saved run to show
+  "the recipe that produced this run".
+- **Bridge analysis panel** — `bridgeAnalysis.perCluster` table.
+  Not a ValidationRun (bridge is always-on derived state); just a
+  panel renderer for the existing data.
 - **Fusion comparison panel** — when fusion is non-identity:
-  ARI(preFusion, postFusion) + count of papers that switched
-  cluster + a small table of the biggest shifts (papers in the
-  largest pre-fusion cluster that landed elsewhere post-fusion).
-- **Charts / graphs**, not just tables. Some results are easier to
-  read graphically (a heatmap for the dim-sweep ARI matrix; a
-  histogram for cluster-size distribution; a scatter of meanJaccard
-  vs cluster size to spot small-cluster instability). Worth picking
-  one chart library — probably tiny SVG-from-scratch helpers (we
-  already have `gradients.js` for colour bars) rather than a full
-  dep.
+  ARI(preFusion, postFusion), cluster-switch count, biggest
+  movers. Currently derivable from existing state; eventually a
+  `type: "fusionComparison"` run that records the snapshot.
 
-**Design questions to resolve when this slice lands:**
-- How do panels subscribe to results that change? Most use the
-  existing `subscribe` pattern; some (Method receipt) need to
-  re-render on every layerParams change.
-- Should panels be lazy-rendered (only when active tab) or always-
-  rendered (so colour-by-N kept in sync)? Today's panels are lazy;
-  the analytical ones probably should stay lazy.
-- Does the Optimise tab keep its table, or is the panel the only
-  surface? Likely keep both for the in-flight feedback during a
-  sweep, but the panel becomes the post-sweep inspection surface.
-- Persistence: should panel layouts (which results are pinned where)
-  survive a project save/load? Already does via `state.panels`;
-  every new panel type just needs its `config` shape defined.
+#### Charts / plots — pick a strategy, not a library
 
-**Order to land in:**
-1. Optimise results panel — biggest user-visible win; lift existing
-   renderer.
-2. Method receipt panel — small; once §6.18 is done it's just
-   assembling the paragraph.
-3. Bridge analysis panel — lift existing node-table renderer.
-4. Bootstrap stability panel — needs a "Run" button + progress
-   surface inside the panel (different from the live engine cascade).
-5. Dim-sweep results panel — depends on §6.9 promoting to UI.
-6. Fusion comparison panel — depends on better cross-view metrics
-   (currently fusion changes are qualitative only).
+Two visualisations land in the first batch:
+- **Heatmap** for the dim-sweep ARI matrix (and any other
+  pairwise matrix that emerges).
+- **Histogram / bar plot** for cluster-size distributions and
+  swept-score distributions.
 
-Not before §6.9 (which exists as a script first), but a natural
-follow-up once we have results worth surfacing.
+Lean **tiny SVG-from-scratch helpers** rather than a chart library:
+- Dependency size matters (the toy is a static page); avoid
+  adding a 200 KB d3 / Plotly dep.
+- The shapes we need are simple (rectangles for heatmap cells,
+  bars, lines). Code is ~100 LoC per chart type.
+- We already have `gradients.js` for colour scales; extend it
+  with `heatmapCell(value, palette)` + axis-tick helpers.
+
+#### Schema migration
+
+Adding `state.validationRuns` is additive; old saves without the
+field load fine (empty list). When per-type `results` shapes evolve
+(or `scoreVersion` for bootstrap-type runs bumps), the
+`scoreVersion` field on each run lets the loader decide per-run
+whether to keep, drop, or upgrade. Same migration pattern as
+§6.18.7d.
+
+#### Open design questions
+
+- **Save-with-cr vs strip-cr.** For Optimise + target-range runs,
+  whether to persist the per-row `cr` Int32Arrays. Touched above;
+  decide per-type at implementation time.
+- **Project-portability vs project-specific.** A run carries an
+  inputs snapshot. If the user loads a saved project then loads
+  another project that has saved runs, do they import? Lean: runs
+  belong to the project they were saved in; loading another
+  project loads only its runs. No cross-project import yet.
+- **Run cap.** Should we cap `validationRuns.length` to prevent
+  saves growing unbounded? Lean: no cap, but show a "manage runs"
+  surface in the Validation-history panel so the user can delete
+  individual runs.
+
+#### Order to land in
+
+1. **State shape + persistence** — `validationRuns` slot, schema
+   migration, save/load round-trip. Smallest first step; nothing
+   visible yet but unblocks everything below.
+2. **Save-this-run + panel-picker integration** — the UX entry
+   and exit points. Pick one type to wire first; Optimise is the
+   obvious one (existing renderer already lifted).
+3. **Optimise results panel** — biggest immediate user win; uses
+   the §6.18.3 cr cache for instant reapply on saved rows.
+4. **Dim-sweep results panel** — depends on §6.9 promoting from
+   scratch script to in-app surface. ARI heatmap renderer.
+5. **Bootstrap stability panel** — needs a "Run" button + progress
+   surface inside the panel (separate from the engine cascade).
+6. **Method receipt panel** — small; once §6.18 is done it's just
+   assembling the paragraph from active state or a bound run.
+7. **Bridge analysis panel** — lift existing node-table renderer
+   into a standalone panel.
+8. **Fusion comparison panel** — depends on better cross-view
+   metrics (currently fusion changes are qualitative).
+
+The two highest-payoff use cases (per user 2026-05-25):
+- **Saved Optimise sweep**: 10-minute HDBSCAN × full-grid sweep on
+  BFS-5000 becomes a permanent artifact. User can revisit the
+  table next week and try a different config from the same sweep
+  without re-running.
+- **Saved dim-sweep**: per-project ARI validation that travels
+  with the project archive — anyone opening it sees the empirical
+  evidence behind the chosen compression dim.
 
 ### 6.6 Save / load project state ✓
 Project state persists to a `.zip` archive the user explicitly
