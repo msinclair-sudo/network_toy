@@ -52,7 +52,10 @@ app/
         viewer-3d.js        — live blend (3d-force-graph); colour-mode dropdown + camera settings
         viewer-2d.js        — 2D scatter (force-graph canvas); same colour-mode dropdown
         node-table.js       — mode-aware legend table (the right-side panel)
-        validation-run-optimise.js — renders a saved Optimise run from state.validationRuns (§6.19)
+        validation-run-optimise.js — Optimise results panel; dual-mode (live state.evalResults.optimise OR config.runId → state.validationRuns) (§6.19.3)
+        method-receipt.js   — auto-generated defensibility paragraph (singleton) (§6.19.6)
+        bootstrap-stability.js — bootstrap-Jaccard runner + per-cluster results; dual-mode (§6.19.5)
+        bridge-analysis.js  — bridge clusters with (fine, coarse) level-pair selector (singleton) (§6.19.7)
         placeholder.js      — empty-slot hint
       modals/
         modal.js            — generic dialog (header / body / footer / Esc / backdrop close)
@@ -374,7 +377,10 @@ changes; otherwise its `update()` runs every state tick.
 | `viewer-3d` | live blend (3d-force-graph); colour-mode + camera-speed overlays | **singleton** (one WebGL ctx max). Reads `state._basePos`. |
 | `viewer-2d` | 2D scatter (force-graph canvas); same colour-mode dropdown | **singleton**. Reads `state._basePos2d` (populated by Layer 1.5's viz2d sub-stage); empty-state hint until then. Shares colour resolution with viewer-3d via `viewer-shared/colour-modes.js`. |
 | `node-table` | mode-aware legend (cluster / cluster-pre-fusion / origin / inDeg / t / bridge / boundaryScore) | see "Node table" below |
-| `validation-run-optimise` | renders a saved Optimise run (§6.19) | `HIDE_FROM_TYPE_LIST` — only appears in the picker via the *Validation runs* section, bound to a specific `config.runId`. Uses the shared `optimise-results-renderer.js`; per-row Apply routes through the clustering descriptor like the modal Apply. |
+| `validation-run-optimise` | Optimise results (live or saved) | **Dual-mode** — no `config.runId` → reads `state.evalResults.optimise` (live; auto-updates after each sweep). `config.runId` set → renders matching `state.validationRuns` entry. Uses the shared `optimise-results-renderer.js`. Per-row Apply re-infers (no `_cr` persisted in v1). |
+| `method-receipt` | auto-generated defensibility paragraph (§6.19.6) | **Singleton**. Assembles a copy-paste-ready paragraph from active state — clustering algo + params, dim-reduction pipeline, bootstrap protocol, fixture, Bayes-optimal ARI ceiling (toy only). Updates on every state change. Copy-to-clipboard button. |
+| `bootstrap-stability` | bootstrap-Jaccard on the applied clustering (§6.19.5) | **Singleton + dual-mode.** Live (no `runId`): config UI + Run button + per-cluster results + Save-this-run. Saved (`runId` set): read-only render of stored run. Replaces the use case the deleted Validate tab used to host. |
+| `bridge-analysis` | Layer 2.5 bridge derivation (§6.19.7) | **Singleton**. Reads `state.bridgeAnalysis`; pair selector for `(fineLevel, coarseLevel)`; sortable per-fine-cluster table with per-coarser-level share columns. Click a row → selects that cluster in the viewers. |
 
 ### Adding a new panel type
 

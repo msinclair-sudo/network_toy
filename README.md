@@ -370,8 +370,22 @@ the cascade — so all in-flight feedback lives in this bar.
 Every slot — primary, secondary, bottom — has tabs. Click `+` to
 add a new panel via a picker modal. The picker has two sections:
 
-- **Panel types** — every registered panel: 3D viewer, 2D viewer
-  (both singletons — one each), node table, etc.
+- **Panel types** — every registered panel type:
+  - **3D viewer** / **2D viewer** (singletons — one each) — live
+    blend visualisation with shared colour-mode dropdown.
+  - **Node table** — mode-aware legend table.
+  - **Optimise results** — latest Optimise sweep table; updates
+    when you run a new sweep. Per-row Apply lands the chosen
+    config into the active clustering.
+  - **Bootstrap stability** — runs bootstrap-Jaccard on the
+    currently-applied clustering. Config + Run + per-cluster
+    results + Save-this-run.
+  - **Method receipt** (singleton) — auto-generated defensibility
+    paragraph describing the active clustering's methodology
+    (algorithm, params, bootstrap protocol, fixture, Bayes-
+    optimal ARI ceiling for toy). Copy-to-clipboard.
+  - **Bridge analysis** (singleton) — Layer 2.5 multi-level
+    boundary derivation, with (fine, coarse) level-pair selector.
 - **Validation runs** — every saved run from
   `state.validationRuns` (newest first). Picking one instantiates
   the appropriate renderer bound to that specific run; the same
@@ -534,7 +548,10 @@ app/                              static page + ES modules
         viewer-3d.js              3d-force-graph
         viewer-2d.js              force-graph (canvas-based)
         node-table.js
-        validation-run-optimise.js   renders a saved Optimise run (§6.19)
+        validation-run-optimise.js   Optimise results: live (default) or saved run
+        method-receipt.js         auto-generated defensibility paragraph
+        bootstrap-stability.js    bootstrap-Jaccard on the applied clustering (live + saved)
+        bridge-analysis.js        Layer 2.5 bridge clusters; fine/coarse level-pair selector
         placeholder.js
       modals/
         modal.js

@@ -26,11 +26,12 @@ function isSingletonAlreadyMounted(typeId) {
 }
 
 // Map a ValidationRun.type to the panel-type id that renders it.
-// Extend as new run renderers come online (dim-sweep, bootstrap, etc.).
+// Extend as new run renderers come online.
 function panelTypeForRun(run) {
-  if (run.type === "optimise")     return "validation-run-optimise";
-  if (run.type === "targetRange")  return "validation-run-optimise";  // same renderer
-  // future: dimSweep, bootstrapStability, etc.
+  if (run.type === "optimise")           return "validation-run-optimise";
+  if (run.type === "targetRange")        return "validation-run-optimise";   // same renderer
+  if (run.type === "bootstrapStability") return "bootstrap-stability";       // dual-mode panel
+  // future: dimSweep, etc.
   return null;
 }
 

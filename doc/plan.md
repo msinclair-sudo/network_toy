@@ -2252,17 +2252,55 @@ whether to keep, drop, or upgrade. Same migration pattern as
    `persistedRanked` shape for parity). Per-row Apply on a saved
    run re-infers; the sweep itself doesn't re-run. "Persist with
    cr" is the §6.19 follow-up that makes Apply instant.
-3. **Optimise results panel** — biggest immediate user win; uses
-   the §6.18.3 cr cache for instant reapply on saved rows.
-4. **Dim-sweep results panel** — depends on §6.9 promoting from
-   scratch script to in-app surface. ARI heatmap renderer.
-5. **Bootstrap stability panel** — needs a "Run" button + progress
-   surface inside the panel (separate from the engine cascade).
-6. **Method receipt panel** — small; once §6.18 is done it's just
-   assembling the paragraph from active state or a bound run.
-7. **Bridge analysis panel** — lift existing node-table renderer
-   into a standalone panel.
-8. **Fusion comparison panel** — depends on better cross-view
+3. **Optimise results panel ✓ — shipped 2026-05-25.** Made
+   `validation-run-optimise` dual-mode: no `config.runId` →
+   binds to `state.evalResults.optimise` (latest sweep, live);
+   `config.runId` → renders that saved run. `HIDE_FROM_TYPE_LIST`
+   removed so the panel shows in the picker's *Panel types*
+   section as "Optimise results". Auto-updates on state changes
+   (subscribe). Per-row Apply re-infers (no `_cr` in either
+   mode; persisting `_cr` is the §6.19 follow-up that makes
+   Apply instant). Bug fix: initial render guard `lastSourceRef`
+   was `null`, collided with `findSource()`'s null return →
+   skipped the first empty-state render. Switched to `undefined`
+   sentinel.
+4. **Dim-sweep results panel** ☐ — depends on §6.9 promoting from
+   `validation/dim_sweep_validation.py` to an in-app surface.
+   ARI heatmap renderer (first chart panel). Saved as next slice.
+5. **Bootstrap stability panel ✓ — shipped 2026-05-25.** New
+   `bootstrap-stability` panel; dual-mode like step 3.
+   - **Live mode** (no `runId`): config UI (B / subsampleFrac /
+     minMembers / noiseHandling) + Run/Cancel + status + results
+     section (aggregate strip, Hennig breakdown bar, per-cluster
+     table sorted by mean Jaccard ascending — unstable first).
+     Save-this-run button appears after a successful run,
+     persists as a `type: "bootstrapStability"` ValidationRun.
+   - **Saved mode** (`runId` set): read-only render of the
+     saved result; no Run/Save buttons.
+   - Replaces the use case the deleted Validate tab used to
+     host, but as a pinnable panel rather than a modal-bound tab.
+   - `panel-picker.js`'s `panelTypeForRun` mapping extended:
+     `bootstrapStability` → `bootstrap-stability` (same panel
+     handles both display modes).
+6. **Method receipt panel ✓ — shipped 2026-05-25.** New
+   `method-receipt` panel (singleton). Read-only; assembles the
+   §6.18 defensibility paragraph from live state — clustering
+   algo + params + level structure, data fixture summary,
+   dim-reduction pipeline (non-identity slots only), bootstrap
+   protocol (from latest sweep settings else defaults), Hennig
+   thresholds, latest sweep summary if any, Bayes-optimal ARI
+   ceiling if toy. Copy-to-clipboard button via
+   `navigator.clipboard.writeText`. Updates on every state change.
+7. **Bridge analysis panel ✓ — shipped 2026-05-25.** New
+   `bridge-analysis` panel (singleton). Lifts the node-table's
+   `bridge` source into a standalone panel — `state.bridgeAnalysis`
+   + (fine, coarse) level-pair selector + sortable per-fine-cluster
+   table with per-coarser-level share columns
+   (`L0 shares: 1:60% 2:25% 3:15%`). Clicking a row selects the
+   cluster in the viewers via `setSelection`. Empty hint when
+   fewer than two clustering levels exist or no bridges at the
+   selected pair.
+8. **Fusion comparison panel** ☐ — depends on better cross-view
    metrics (currently fusion changes are qualitative).
 
 The two highest-payoff use cases (per user 2026-05-25):

@@ -1106,6 +1106,217 @@ td.node-table-spread, td.node-table-stab { width: 50px; }
   font-style: italic;
 }
 
+/* ── §6.19.6 — method receipt panel ─────────────────────────────────── */
+
+.panel-method-receipt {
+  padding: 10px 12px;
+  font-size: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  height: 100%;
+  box-sizing: border-box;
+}
+.panel-mr-header { }
+.panel-mr-title  {
+  font-weight: 600;
+  color: var(--accent);
+  font-size: 13px;
+}
+.panel-mr-sub {
+  color: var(--text-dim);
+  font-size: 11px;
+}
+.panel-mr-text {
+  background: var(--bg-2);
+  color: var(--text);
+  padding: 8px 10px;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  flex: 1 1 auto;
+  overflow-y: auto;
+  margin: 0;
+}
+.panel-mr-actions { display: flex; gap: 6px; }
+.panel-mr-copy {
+  background: var(--accent-dim);
+  color: white;
+  border: none;
+  padding: 4px 10px;
+  border-radius: 3px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.panel-mr-copy:hover  { background: var(--accent); }
+
+/* ── §6.19.5 — bootstrap-stability panel ────────────────────────────── */
+
+.panel-bs {
+  padding: 10px 12px;
+  font-size: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.panel-bs-header { }
+.panel-bs-title  { font-weight: 600; color: var(--accent); }
+.panel-bs-meta   { color: var(--text-dim); font-size: 11px; margin-top: 2px; }
+.panel-bs-empty  { color: var(--text-faint); padding: 12px; font-style: italic; }
+
+.panel-bs-cfg {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 16px;
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+.panel-bs-cfg-row {
+  display: grid;
+  grid-template-columns: 110px 1fr auto;
+  align-items: center;
+  gap: 6px;
+}
+.panel-bs-cfg-row label    { color: var(--text-dim); font-size: 11px; }
+.panel-bs-cfg-readout      { font-family: var(--font-mono); font-size: 11px; color: var(--text); text-align: right; min-width: 32px; }
+
+.panel-bs-runrow { display: flex; gap: 6px; align-items: center; }
+.panel-bs-run    {
+  background: var(--accent-dim);
+  color: white;
+  border: none;
+  padding: 5px 12px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.panel-bs-run:hover           { background: var(--accent); }
+.panel-bs-run:disabled        { opacity: 0.6; cursor: not-allowed; }
+.panel-bs-cancel              {
+  background: var(--bg-3);
+  border: 1px solid var(--border-light);
+  color: var(--text);
+  padding: 5px 12px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.panel-bs-status              { color: var(--text-dim); font-size: 11px; }
+
+.panel-bs-results { display: flex; flex-direction: column; gap: 8px; }
+.panel-bs-agg {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.panel-bs-agg b { color: var(--text); font-weight: 600; }
+.panel-bs-breakdown { display: flex; gap: 8px; align-items: center; font-size: 11px; color: var(--text-dim); }
+.panel-bs-breakdown-counts { font-size: 11px; }
+
+.panel-bs-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+.panel-bs-table th, .panel-bs-table td {
+  padding: 3px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.panel-bs-table th {
+  background: var(--bg-3);
+  font-weight: 600;
+  text-align: left;
+  color: var(--text-dim);
+  user-select: none;
+}
+.panel-bs-table th.sortable          { cursor: pointer; }
+.panel-bs-table th.sorted-asc::after  { content: " ▲"; font-size: 9px; }
+.panel-bs-table th.sorted-desc::after { content: " ▼"; font-size: 9px; }
+.panel-bs-row                        { cursor: pointer; }
+.panel-bs-row:hover                  { background: var(--bg-3); }
+.panel-bs-row.selected               { background: var(--bg-3); outline: 1px solid var(--accent-dim); }
+.panel-bs-row.class-stable td        { color: var(--text); }
+.panel-bs-row.class-doubtful td      { color: var(--warn, #e6c067); }
+.panel-bs-row.class-unstable td      { color: var(--err,  #c43d3d); }
+
+.panel-bs-saverow { margin-top: 4px; }
+.panel-bs-save {
+  background: var(--bg-3);
+  border: 1px solid var(--border-light);
+  color: var(--text);
+  padding: 5px 12px;
+  border-radius: 3px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.panel-bs-save:hover     { background: var(--accent-dim); color: white; }
+.panel-bs-save:disabled  { opacity: 0.7; cursor: default; }
+
+/* ── §6.19.7 — bridge-analysis panel ────────────────────────────────── */
+
+.panel-bridge {
+  padding: 10px 12px;
+  font-size: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.panel-bridge-header { display: flex; flex-direction: column; gap: 4px; }
+.panel-bridge-title  { font-weight: 600; color: var(--accent); }
+.panel-bridge-pairbar {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.panel-bridge-pairbar-label  { color: var(--text-dim); }
+.panel-bridge-pair-select {
+  background: var(--bg-3);
+  color: var(--text);
+  border: 1px solid var(--border-light);
+  border-radius: 3px;
+  padding: 2px 6px;
+  font-size: 11px;
+  font-family: var(--font-mono);
+}
+.panel-bridge-summary { font-size: 11px; color: var(--text-dim); }
+.panel-bridge-empty   { padding: 16px; text-align: center; color: var(--text-faint); font-style: italic; }
+.panel-bridge-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+.panel-bridge-table th, .panel-bridge-table td {
+  padding: 3px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.panel-bridge-table th {
+  background: var(--bg-3);
+  text-align: left;
+  color: var(--text-dim);
+  user-select: none;
+}
+.panel-bridge-table th.sortable          { cursor: pointer; }
+.panel-bridge-table th.sorted-asc::after  { content: " ▲"; font-size: 9px; }
+.panel-bridge-table th.sorted-desc::after { content: " ▼"; font-size: 9px; }
+.panel-bridge-row                        { cursor: pointer; }
+.panel-bridge-row:hover                  { background: var(--bg-3); }
+.panel-bridge-row.selected               { background: var(--bg-3); outline: 1px solid var(--accent-dim); }
+.panel-bridge-swatch {
+  display: inline-block;
+  width: 12px; height: 12px;
+  border-radius: 2px;
+  vertical-align: middle;
+}
+
 /* ── algorithm modal (workflow chart) ──────────────────────────────── */
 
 .algorithm-modal-body {

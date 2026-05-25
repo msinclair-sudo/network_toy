@@ -1,15 +1,19 @@
-// Panel: render a saved Optimise validation run (§6.19).
+// Panel: Optimise sweep results (live or saved).
 //
-// Bound to a specific run via `config.runId`. Reads the run from
-// state.validationRuns, renders its ranked table with the same
-// renderer the in-modal Optimise tab uses. Per-row Apply still
-// works — clicks route through the clustering descriptor like the
-// live tab, but with no precomputedCr (saved-run rows have _cr
-// stripped per §6.19.2 v1; Apply triggers a fresh infer).
+// Two modes selected by `config.runId`:
+//   - **Saved** (config.runId set): renders the matching entry from
+//     state.validationRuns. Read-only — Apply on a row re-infers.
+//   - **Live** (no runId): renders state.evalResults.optimise (the
+//     latest sweep run from the Optimise tab). Auto-updates when a
+//     new sweep completes. Apply on a row goes through the same
+//     descriptor path the modal uses.
 //
-// If the bound run is deleted (or the project is loaded with no
-// matching run), the panel shows a small empty-state hint rather
-// than crashing.
+// One panel module, two modes; the picker picks the binding:
+//   - Picked from *Panel types* → no config → live mode.
+//   - Picked from *Validation runs* → config.runId → saved mode.
+//
+// If the bound run is deleted or the live slot is empty, the panel
+// shows a small empty-state hint rather than crashing.
 
 import { getState, subscribe }  from "../state.js";
 import { enqueueBusy }           from "../busy.js";
@@ -17,12 +21,8 @@ import { getLayerDescriptor }    from "../modals/layer-descriptors.js";
 import { renderResults }         from "../modals/clustering-tabs/optimise-results-renderer.js";
 
 export const ID          = "validation-run-optimise";
-export const LABEL       = "Saved Optimise run";
-export const DESCRIPTION = "Renders a saved Optimise sweep table. Per-row Apply lands the chosen config into a clustering level.";
-// Hide from the picker's main type list — this panel is only useful
-// when bound to a specific runId, which the picker injects via the
-// "Validation runs" section instead.
-export const HIDE_FROM_TYPE_LIST = true;
+export const LABEL       = "Optimise results";
+export const DESCRIPTION = "Latest Optimise sweep results, or a saved run when picked from Validation runs. Per-row Apply lands the chosen config into the active clustering.";
 
 export function mount(container, _state, config = {}) {
   container.innerHTML = "";
@@ -30,57 +30,91 @@ export function mount(container, _state, config = {}) {
   wrap.className = "panel-vr-optimise";
   container.appendChild(wrap);
 
-  const runId = config && config.runId;
-  let lastRunRef = null;
+  const runId = (config && config.runId) || null;
+  const liveMode = !runId;
+  // Sentinel: undefined means "not yet rendered". Using null here
+  // would collide with findSource()'s "no result" return value, so
+  // the initial empty-state render would get skipped.
+  let lastSourceRef = undefined;
 
-  function findRun() {
+  // Source resolver — different by mode but produces the same
+  // {label, timestamp, inputs?, results, runtimeSec?} shape so the
+  // renderer below stays uniform.
+  function findSource() {
+    if (liveMode) {
+      const opt = getState().evalResults && getState().evalResults.optimise;
+      if (!opt || !opt.ranked || opt.ranked.length === 0) return null;
+      return {
+        live:      true,
+        label:     "Latest sweep",
+        timestamp: opt.timestamp,
+        results:   opt,
+        runtimeSec: opt.runtimeSec,
+      };
+    }
     const runs = getState().validationRuns || [];
-    return runs.find(r => r.id === runId) || null;
+    const run = runs.find(r => r.id === runId);
+    return run || null;
   }
 
   function render() {
-    const run = findRun();
-    if (run === lastRunRef) return;   // no change → skip rerender (avoids row-click churn)
-    lastRunRef = run;
+    const src = findSource();
+    if (src === lastSourceRef) return;   // no change → skip rerender (avoids row-click churn)
+    lastSourceRef = src;
 
-    if (!run) {
+    if (!src) {
       wrap.innerHTML = "";
       const empty = document.createElement("div");
       empty.className = "panel-vr-empty";
-      empty.textContent = "This saved run no longer exists. Open the panel picker (+) to choose another.";
+      empty.textContent = liveMode
+        ? "No Optimise results yet. Open the Clustering modal → Optimise tab → Run sweep."
+        : "This saved run no longer exists. Open the panel picker (+) to choose another.";
       wrap.appendChild(empty);
       return;
     }
 
     wrap.innerHTML = "";
 
-    // Header — label, type, when, settings summary.
+    // Header — label, meta. Layout same for live + saved, just with
+    // a "(live)" tag on the latter and a fixture/timestamp meta on
+    // saved.
     const header = document.createElement("div");
     header.className = "panel-vr-header";
     const title = document.createElement("div");
     title.className = "panel-vr-title";
-    title.textContent = run.label || "(unlabelled run)";
+    title.textContent = src.live
+      ? "Optimise — live results"
+      : (src.label || "(unlabelled run)");
     header.appendChild(title);
+
     const meta = document.createElement("div");
     meta.className = "panel-vr-meta";
-    const dt = run.timestamp ? new Date(run.timestamp).toLocaleString() : "";
-    const inputsDS = run.inputs && run.inputs.dataSourceId;
-    const inputsCfg = run.inputs && run.inputs.dataSourceConfig;
-    const subset = inputsCfg && inputsCfg.subset ? ` · ${inputsCfg.subset}` : "";
-    const fixtureTag = inputsDS ? `${inputsDS}${subset}` : "unknown source";
-    meta.textContent = `${run.results.totalConfigs} configs · ranked by ${run.results.scorerLabel || run.results.scorerId} · ${fixtureTag} · saved ${dt}`;
+    const dt = src.timestamp ? new Date(src.timestamp).toLocaleString() : "";
+    if (src.live) {
+      const opt = src.results;
+      meta.textContent = `${opt.totalConfigs} configs · ranked by ${opt.scorerLabel || opt.scorerId}${dt ? " · run " + dt : ""}`;
+    } else {
+      const inputsDS  = src.inputs && src.inputs.dataSourceId;
+      const inputsCfg = src.inputs && src.inputs.dataSourceConfig;
+      const subset = inputsCfg && inputsCfg.subset ? ` · ${inputsCfg.subset}` : "";
+      const fixtureTag = inputsDS ? `${inputsDS}${subset}` : "unknown source";
+      meta.textContent = `${src.results.totalConfigs} configs · ranked by ${src.results.scorerLabel || src.results.scorerId} · ${fixtureTag} · saved ${dt}`;
+    }
     header.appendChild(meta);
 
-    // Fixture-mismatch warning: the saved run was produced on a
-    // particular dataSource; if the current state has a different
-    // dataSource, applying a row will re-infer against the CURRENT
-    // data (not the saved data), which may not be what the user wants.
-    const curMode = getState().dataSource && getState().dataSource.mode;
-    if (inputsDS && curMode && inputsDS !== curMode) {
-      const warn = document.createElement("div");
-      warn.className = "panel-vr-warn";
-      warn.textContent = `⚠ Saved on data source "${inputsDS}"; current is "${curMode}". Apply will re-infer against the current data.`;
-      header.appendChild(warn);
+    // Fixture-mismatch warning (saved mode only): the saved run was
+    // produced on a particular dataSource; if the current state has
+    // a different dataSource, applying a row will re-infer against
+    // the CURRENT data, which may not be what the user wants.
+    if (!src.live) {
+      const inputsDS = src.inputs && src.inputs.dataSourceId;
+      const curMode = getState().dataSource && getState().dataSource.mode;
+      if (inputsDS && curMode && inputsDS !== curMode) {
+        const warn = document.createElement("div");
+        warn.className = "panel-vr-warn";
+        warn.textContent = `⚠ Saved on data source "${inputsDS}"; current is "${curMode}". Apply will re-infer against the current data.`;
+        header.appendChild(warn);
+      }
     }
 
     wrap.appendChild(header);
@@ -90,16 +124,14 @@ export function mount(container, _state, config = {}) {
     body.className = "panel-vr-body";
     wrap.appendChild(body);
 
-    // Reconstruct the {ranked, totalConfigs, completed} outcome
-    // the renderer expects, plus a scorer descriptor.
     const outcome = {
-      ranked:       run.results.ranked || [],
-      totalConfigs: run.results.totalConfigs,
-      completed:    run.results.completed,
+      ranked:       src.results.ranked || [],
+      totalConfigs: src.results.totalConfigs,
+      completed:    src.results.completed,
     };
     const scorer = {
-      id:    run.results.scorerId,
-      label: run.results.scorerLabel || run.results.scorerId,
+      id:    src.results.scorerId,
+      label: src.results.scorerLabel || src.results.scorerId,
     };
 
     // Per-row Apply: same routing as the in-modal tab. We don't have
@@ -109,7 +141,7 @@ export function mount(container, _state, config = {}) {
     const onApplyRow = (row /*, levelIdx */) => {
       const desc = getLayerDescriptor("clustering");
       if (!desc) {
-        console.warn("[panel-vr-optimise] no clustering descriptor; can't apply");
+        console.warn("[optimise-results panel] no clustering descriptor; can't apply");
         return;
       }
       const active = desc.getActive();
@@ -118,14 +150,16 @@ export function mount(container, _state, config = {}) {
         params: { ...row.params },
         scope:  "global",
       };
-      // Replace L0 wholesale (single-level apply). Matches the
-      // legacy in-modal behaviour when there's no level picker.
       const levels = [newLvl, ...(active.levels || []).slice(1)];
-      // precomputedCr null → recluster re-infers. cr persistence
-      // would let this skip; queued under the §6.19 follow-ups.
+      // Apply re-infers in v1: both setOptimiseResult (live slot) and
+      // saveValidationRun (saved-run slot) strip `_cr` before
+      // persisting, so the rows we render here never carry the §6.18.3
+      // precomputedCr cache. Re-infer is fast (~one infer per row)
+      // vs the original sweep cost (N × infer). The §6.19 follow-up
+      // to persist `_cr` would make this instant.
       enqueueBusy(`Applying ${row.algoLabel || row.algoId}…`,
                   () => desc.applyChange(row.algoId, levels, { precomputedCr: null }))
-        .catch(e => console.error("[panel-vr-optimise] apply failed:", e));
+        .catch(e => console.error("[optimise-results panel] apply failed:", e));
     };
 
     renderResults(body, outcome, scorer, onApplyRow, null);

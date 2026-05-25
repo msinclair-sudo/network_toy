@@ -11,6 +11,9 @@ import * as Viewer3D               from "./viewer-3d.js";
 import * as Viewer2D               from "./viewer-2d.js";
 import * as NodeTable              from "./node-table.js";
 import * as ValidationRunOptimise  from "./validation-run-optimise.js";
+import * as MethodReceipt          from "./method-receipt.js";
+import * as BootstrapStability     from "./bootstrap-stability.js";
+import * as BridgeAnalysis         from "./bridge-analysis.js";
 
 const entries = new Map();
 
@@ -35,6 +38,9 @@ register(Viewer3D);
 register(Viewer2D);
 register(NodeTable);
 register(ValidationRunOptimise);
+register(MethodReceipt);
+register(BootstrapStability);
+register(BridgeAnalysis);
 
 // Future entries (mounted as their modules come online):
 // register(await import("./cluster-tree.js"));
