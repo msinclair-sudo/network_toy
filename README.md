@@ -109,7 +109,7 @@ dim-reduction modal to render.
 
 Five sequential / sibling sub-stages:
 
-```
+```text
 embedding ─▶ noise ─▶ fusion ─┬─▶ compression ──▶ clustering input
                               │
                               ├─▶ viz          ──▶ 3D viewer + blend

@@ -2022,6 +2022,86 @@ under metric M, with stability quantified by bootstrap protocol
 P, on data D; here are the assumptions M and P make and how they
 might fail."* — not "Optimise said this one was best."
 
+### 6.19 Expose pipeline results as openable panels ☐ — added 2026-05-25
+
+Many of the analytical results the pipeline produces — Optimise sweep
+tables, bootstrap-Jaccard per-cluster scores, bridge analysis at any
+chosen `(fine, coarse)` pair, the planned §6.9 dim-sweep results,
+alignment correlation per layout-algorithm choice, fusion-comparison
+deltas — currently live either:
+- inside a modal (Optimise table is buried in `clustering-modal.js`
+  → Optimise tab; user has to re-open the modal to inspect it), OR
+- as a single number in a status line or status dot (alignment
+  correlation, Bayes-optimal ARI ceiling, fusion identity-flag), OR
+- as a colour mode on the viewers (bridge / boundaryScore), with no
+  side-by-side numerical view.
+
+Surface every analytical result as a **first-class panel type** that
+the user can pin into any slot via the `+ Add panel` picker:
+
+- **Optimise results panel** — the sortable sweep table currently
+  inside the Optimise tab; same renderer, lifted into a panel. Lets
+  the user keep the table open in the bottom slot while they re-run
+  sweeps, hop to Validate, etc. Reads from `state.evalResults.optimise`.
+- **Bootstrap stability panel** — per-cluster Jaccard bars for the
+  currently-applied clustering. Reads the same bootstrap engine the
+  Optimise tab uses; runs on demand. (Replaces what the removed
+  Validate tab used to do, but as a panel anyone can pin.)
+- **Dim-sweep results panel** — the §6.9 ARI matrix, once the script
+  promotes to a UI surface. ARI heatmap + cluster-count table.
+- **Method receipt panel** — single read-only panel that assembles
+  the defensibility paragraph (§6.18 endpoint): "this clustering
+  was scored under bipartite-matched Jaccard at frac=0.5, B=10,
+  minMembers=3, noiseHandling=exclude; the Bayes-optimal ARI ceiling
+  is 0.92." Pulls from `aggregate.*` fields + `genResult.bayesOptimalAri`
+  + active layerParams. Lets the user export a screenshot or copy
+  the paragraph straight into a paper.
+- **Bridge analysis panel** — `bridgeAnalysis.perCluster` rendered
+  as a sortable table with per-coarser-level share columns. Currently
+  reachable only via the node-table source dropdown; lifting to its
+  own panel makes the bridge story easier to read alongside the
+  viewers.
+- **Fusion comparison panel** — when fusion is non-identity:
+  ARI(preFusion, postFusion) + count of papers that switched
+  cluster + a small table of the biggest shifts (papers in the
+  largest pre-fusion cluster that landed elsewhere post-fusion).
+- **Charts / graphs**, not just tables. Some results are easier to
+  read graphically (a heatmap for the dim-sweep ARI matrix; a
+  histogram for cluster-size distribution; a scatter of meanJaccard
+  vs cluster size to spot small-cluster instability). Worth picking
+  one chart library — probably tiny SVG-from-scratch helpers (we
+  already have `gradients.js` for colour bars) rather than a full
+  dep.
+
+**Design questions to resolve when this slice lands:**
+- How do panels subscribe to results that change? Most use the
+  existing `subscribe` pattern; some (Method receipt) need to
+  re-render on every layerParams change.
+- Should panels be lazy-rendered (only when active tab) or always-
+  rendered (so colour-by-N kept in sync)? Today's panels are lazy;
+  the analytical ones probably should stay lazy.
+- Does the Optimise tab keep its table, or is the panel the only
+  surface? Likely keep both for the in-flight feedback during a
+  sweep, but the panel becomes the post-sweep inspection surface.
+- Persistence: should panel layouts (which results are pinned where)
+  survive a project save/load? Already does via `state.panels`;
+  every new panel type just needs its `config` shape defined.
+
+**Order to land in:**
+1. Optimise results panel — biggest user-visible win; lift existing
+   renderer.
+2. Method receipt panel — small; once §6.18 is done it's just
+   assembling the paragraph.
+3. Bridge analysis panel — lift existing node-table renderer.
+4. Bootstrap stability panel — needs a "Run" button + progress
+   surface inside the panel (different from the live engine cascade).
+5. Dim-sweep results panel — depends on §6.9 promoting to UI.
+6. Fusion comparison panel — depends on better cross-view metrics
+   (currently fusion changes are qualitative only).
+
+Not before §6.9 (which exists as a script first), but a natural
+follow-up once we have results worth surfacing.
+
 ### 6.6 Save / load project state ✓
 Project state persists to a `.zip` archive the user explicitly
 saves and loads via the topbar `File ▾` menu (Save / Save as… /
