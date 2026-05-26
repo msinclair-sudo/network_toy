@@ -1,7 +1,16 @@
 # Workflow-tree redesign
 
-**Status:** design draft, in flight (2026-05-26). Iterating with the
-project lead before any code lands.
+**Status (2026-05-26):**
+
+- Phase 1 ✓ shipped (queue.js foundation + Optimise non-blocking +
+  auto-save). The original Phase 1 slice C (bottom-bar queued-jobs
+  surface) is **dropped** — superseded by per-card overlays in
+  Phase 2 (the bottom bar disappears once every long-runner is a
+  card; see §10.D3).
+- Phase 2 design locked, sub-sliced (see §7). Starting next.
+- Open questions remaining: §10.O1 (multi-level clustering shape),
+  §10.O2 (viewer behaviour for cross-source cards), §10.O3 (stale
+  visual), §10.O4 (large-save strategy).
 
 **Why this exists.** The toy has accumulated substantial analysis
 machinery — multi-stage dim-reduction, multi-level clustering,
@@ -219,21 +228,31 @@ type Step = {
 }
 ```
 
-Key shape decisions:
+Key shape decisions (see §10.D1–D7 for full rationale):
 
-- **DAG, not strict tree.** `refIds` allows fan-in (a
-  fusionComparison step that references two cluster steps as ref +
-  cand). The tree renderer treats `parentId` as the primary edge
-  and `refIds` as dashed cross-edges.
-- **Steps are immutable once `done`.** Editing a "done" step's
-  params creates a *new* step with the same parent. This preserves
-  history; old branches stay browsable.
-- **`stale` is computed, not stored.** When a parent's result
-  changes (almost never, since done is immutable — but it can happen
-  if the user explicitly re-runs), descendants become stale.
-- **Re-running a step in place is the exception, not the rule.** The
-  default action on a done step is "fork": create a sibling with
-  edited params.
+- **DAG, not strict tree.** `refIds` allows fan-in (fusionComparison
+  references two cluster cards as ref + cand). The renderer treats
+  `parentId` as the primary edge and `refIds` as dashed cross-edges.
+- **Cards are unique per result.** Each card is one materialised
+  result. Re-running with new params always creates a NEW sibling
+  card; the old card stays browsable. Editing a done card's params
+  opens its modal pre-populated; Apply creates a new sibling.
+- **Immutable once done.** A card transitions pending → running →
+  done | failed | cancelled. Done is terminal; the result is never
+  mutated. Branch-delete is the only way to remove a done card.
+- **Stale is computed.** When an ancestor's result changes (re-run
+  produced a new selected sibling, or the user deletes-and-recreates),
+  every descendant card is computed as stale. The card stays done —
+  its old result still valid as a snapshot — but the renderer shows
+  a "upstream changed" warning + offers `re-run` to refresh.
+- **Result-revision stamps drive stale detection.** Each card has a
+  monotonic `revision` field bumped on every result update; each
+  child stores its parent's `revision` at result time as
+  `upstreamRevision`. Stale = `parent.revision !== upstreamRevision`.
+- **All jobs are cards.** Save / load / engine cascade lanes all
+  become cards over Phase 2. The bottom busy-bar disappears once
+  migration completes (Slice 2.11). Status overlay on the card is
+  the user-visible indicator going forward.
 
 ### 3.2 The queue
 
@@ -282,25 +301,71 @@ custom) slot in here without architectural change.
 
 ### 3.4 Selection + the viewer
 
-`state.workflow.selected` points to one step id. The viewer panels
-read whichever step is currently selected and render it (or render
-the most recent ancestor that produced a basePos, for non-geometric
-steps like optimise). Selecting a different tree node = the viewer
-repaints to that step's data.
+`state.workflow.selected` points to one card id. Existing panels +
+viewers don't change their read API — they keep reading
+`state.dimredResult`, `state.clusterLevels`, `state._basePos`, etc.
+What changes is what feeds those slots:
+
+- A back-compat projection layer (Slice 2.7) syncs the legacy slots
+  from the selected card's ancestry on every `selectStep()` and on
+  every step result-update.
+- Selecting a different card walks back up the tree to find the
+  most recent ancestor of each result type, materialises the legacy
+  slots from that ancestry, and re-publishes state.
+- For non-geometric cards (an Optimise card, a fusion-comparison
+  card) the viewer reads from the nearest ancestor that produced
+  basePos — typically the parent dimred / clustering chain.
 
 This decouples "what's the viewer showing" from "what's the most
 recently-mutated state slot". The user can leave the viewer on
 clustering-A while running an Optimise on clustering-B's branch.
 
-### 3.5 Persistence
+### 3.5 Stale propagation
 
-`state.workflow` rides along in the existing `.zip` save format. The
-flat `validationRuns` slot becomes a synonym for "all step results"
-(or stays as a back-compat alias and we walk the tree to recover
-it). Old saved projects get migrated by reconstructing a linear tree
-from the existing state slots (data → dimred → clustering →
-citations → layout → alignment → blend, all with `status: "done"`
-and the existing result blobs).
+A card has two related fields:
+
+- `revision`: monotonic counter; bumped each time `setStepResult`
+  is called for this card.
+- `upstreamRevision`: stamped at result time, capturing the parent's
+  `revision`. Used to compute stale.
+
+A card is **stale** when `parent.revision !== this.upstreamRevision`.
+Stale is computed at render time, not stored — so changes
+propagate without explicit cascade calls.
+
+When a card's stale flag becomes true:
+
+- The renderer shows a "upstream changed" overlay (per §10.O3 —
+  visual to be decided).
+- A `re-run` affordance appears on hover; clicking enqueues a fresh
+  job with the same params and links the result back to this card
+  (in-place bump of `revision` + `upstreamRevision`).
+- Or the user can fork: clicking "fork & edit" creates a new sibling
+  with editable params.
+
+Stale doesn't auto-cascade further downstream. A clustering card
+goes stale when its dimred parent re-runs; the user re-runs the
+clustering card; that bump in turn makes the *clustering's*
+downstream go stale. Each level requires explicit user action.
+
+### 3.6 Persistence
+
+`state.workflow` rides along in the existing `.zip` save format.
+Each card's `result` field carries TypedArrays (per-cluster
+nodeCluster arrays, dimred Float32Arrays, etc.) — the existing
+deep-walker in `persistence/serialise.js` handles them generically
+(no per-step-type bespoke serialiser needed; same machinery already
+used for validationRuns).
+
+`validationRuns` stays as the existing slot during the transition.
+Phase 2 slice 2.9 (migrate other long-runners) walks the existing
+validationRuns and converts each into a card. Eventually
+validationRuns becomes a derived view ("all cards of these types")
+and the slot is retired.
+
+Schema version bump on the save format the moment `state.workflow`
+becomes the canonical store. Older saves load via the migration
+helper (Slice 2.2).
 
 ## 4. Step types (configuration detail)
 
@@ -316,103 +381,233 @@ the §6.13 FIFO is the v1.)
 
 ## 6. Relationship to existing surfaces
 
-| Existing | Becomes |
-|---|---|
-| `state.layerParams.*` | "current path" projection from selected step |
-| `state.clusterLevels` etc. | cached projection of the selected clustering step |
-| `state.layerStates.*` | per-step `status` field on each tree node |
-| `state.validationRuns` | step-result storage (extended types) |
-| `state.evalResults.optimise` | latest optimise step's result; phased out |
-| `enqueueBusy` | the queue's enqueue action (renamed `enqueueStep`?) |
-| `setBusyPhase` | `updateStepProgress(stepId, {phase})` |
-| Workflow chart | tree renderer |
-| Topbar menus | trimmed; "Add step" button replaces most |
-| Modals | step-config forms (create + close, no apply-and-wait) |
-| Panels | step-result renderers |
+| Existing | Becomes | When |
+|---|---|---|
+| `state.layerParams.*` | back-compat projection from the selected card's ancestry | Slice 2.7 |
+| `state.clusterLevels` / `dimredResult` / `_basePos` / etc. | back-compat projection from the selected card | Slice 2.7 |
+| `state.layerStates.*` | per-card `status` field (per-card, not per-layer) | Slice 2.3 (renderer rewrite) |
+| `state.validationRuns` | derived view "all cards of types matching" | Slice 2.9 → retired in 2.11 |
+| `state.evalResults.optimise` | derived view "latest optimise card's result" | Phased out by Slice 2.9 |
+| `state.busy` (legacy bottom-bar slot) | **removed** — cards carry their own status overlay | Slice 2.11 |
+| `enqueueBusy` (busy.js) | `enqueueJob` (queue.js) with `stepId` binding | Slices 2.4 + 2.9 |
+| `setBusyPhase` | `updateStepProgress(stepId, {phase, fraction})` | Slice 2.4 |
+| Workflow chart (`workflow-chart.js`) | tree-aware renderer reading from `state.workflow` | Slice 2.3 → multi-card 2.8 |
+| Bottom busy-bar (`busy-bar.js`) | **removed** — superseded by per-card overlays | Slice 2.11 |
+| Topbar menus | trimmed; tree operations (export tree, etc.) | Slice 2.11 |
+| Modals | step-config forms (Apply creates a new card) | Slice 2.5 |
+| Panels | step-result renderers bound to a card id | Slice 2.5 (live mode disappears per §10.D5) |
+| Existing layer cards in workflow-chart | become "baseline" cards from migration | Slice 2.2 |
+
+The migration table is staged: each slice can ship independently
+without breaking the surfaces below it. The bottom busy-bar +
+`busy.js` go away only after every long-runner is migrated (2.9);
+until then they continue carrying any legacy callers.
 
 ## 7. Phased delivery plan
 
 Three phases. Each is independently shippable; each makes the toy
 more useful even if subsequent phases never land.
 
-### Phase 1 — Modal independence (the immediate pain)
+### Phase 1 — Modal independence (✓ shipped 2026-05-26)
 
-**Goal.** The Optimise (and similar long-running) modal no longer
-has to stay open. Apply enqueues a job that runs in the background;
-the modal closes immediately. The user picks the resulting config
-from the saved sweep later.
+**Done.** The queue.js typed-job foundation (slice A) + Optimise
+sweep enqueues + auto-saves (slice B). The Optimise modal no longer
+has to stay open. Other long-running modals (bootstrap-stability,
+dim-sweep) still use direct calls — slice C migrates them, but that
+work was rolled into Phase 2 once the design statement landed
+(see below).
 
-**Concretely.**
-
-- New `app/src/ui/queue.js` (or extend `busy.js`): typed-job queue
-  where each job has a stable id, status, and result. Replaces
-  raw `enqueueBusy` for analyses (keeps it for save/load).
-- The Optimise tab's Run button enqueues; the modal can close mid-
-  run. Result lands in `state.validationRuns` automatically (no
-  Save-this-run click required — already runs are auto-saved).
-- Bottom busy bar shows job ids alongside the head label; tooltip
-  reveals queued jobs. Click a queued job → cancel.
-- The Optimise tab on reopen shows the queue + the latest result
-  inline; the user can pick a config from any completed run.
-- Bootstrap-stability + dim-sweep get the same treatment for free.
-
-**Doesn't include.** Tree shape, branching, step migration. This
-phase just makes the existing surfaces non-blocking.
-
-**Effort.** Medium. Touches busy.js, the three long-running modal
-surfaces, the save path. ~1 week of careful work.
+The original Phase-1 slice C (a bottom-bar surface for queued jobs)
+is **dropped** — once all jobs become cards (§10.D3), there's
+nothing left for the bottom bar to show. Skip the intermediate; go
+straight to cards.
 
 ### Phase 2 — Workflow tree expansion
 
-**Goal.** The workflow chart becomes a branching tree. Each completed
-analysis is a tree node. The user can add steps, fork from any
-node, view per-node results.
+This is the big shift: the workflow chart becomes the primary
+analysis surface. Sub-sliced into focused, shippable pieces below.
 
-**Concretely.**
+Effort estimates are rough; assume each slice = a few days of
+focused work + a smoke per affected surface.
 
-- `state.workflow` slot + Step shape + tree CRUD actions.
-- Migration: existing `state.layerParams` + result slots get
-  reconstructed as a linear tree on first load.
-- Workflow chart re-renders the tree (force-directed or
-  hierarchical layout; switch from hand-positioned).
-- Each tree node is clickable: opens the step's renderer panel as
-  the selection target.
-- "Add step" button per node: opens the step-type picker → opens
-  the step's config modal → on Apply, enqueues the step.
-- Existing modals adapt: their "Apply" creates a new tree step
-  (sibling of the currently-selected step's parent, in most cases)
-  rather than mutating state directly.
-- Old `state.clusterLevels` etc. become read-only projections from
-  the selected step.
+#### Slice 2.1 — `state.workflow` shape + step CRUD actions
 
-**Doesn't include.** Cross-source step types (fusion-comparison
-between two arbitrary clusterings). Those come in Phase 3.
+State-layer only; no UI yet. Introduce:
 
-**Effort.** Large. The tree CRUD + migration + per-modal-adapter is
-substantial. ~3 weeks. Highest risk for breaking existing behaviour;
-warrants careful staging and a regression smoke per existing panel.
+```js
+state.workflow = {
+  steps:    { [id]: Step },
+  rootId:   string,
+  selected: string,
+}
+```
 
-### Phase 3 — Cross-source steps + next-step affordances + dead-UX cleanup
+Step shape per §3.1 (with the §10.D1–D3 decisions baked in:
+immutable-once-done, stale-on-upstream-change, status lifecycle).
 
-**Goal.** Polish the tree so users have a clear path through.
+Actions: `createStep`, `updateStepStatus`, `setStepResult`,
+`deleteStep` (with cascade), `selectStep`, `markDescendantsStale`.
 
-**Concretely.**
+No callers yet; tests are pure state mutations. Out of scope:
+migration, renderer, modal wiring.
 
-- Cross-source steps land: `fusionComparison` becomes the canonical
-  comparison renderer for *any* two cluster sources, not just
-  pre/post fusion. Step picker per slot.
-- "Next step" affordances per tree node: a small "what next?" panel
-  showing valid follow-ons based on the current node's type and
-  result.
-- Topbar audit: kill all 7 disabled stubs that aren't on the
-  roadmap; keep the rest. Restructure menus around tree operations.
-- Workflow chart: pan/zoom; collapse subtrees; node hover preview.
-- "Method receipt" panel becomes tree-walking — emits the
-  defensibility paragraph based on the selected step's full
-  ancestry.
+#### Slice 2.2 — Migration: legacy state → linear baseline tree
 
-**Effort.** Medium. Polish + cleanup; lower risk than Phase 2.
-~1–2 weeks.
+When a project loads (or on first boot) without `state.workflow`
+populated, reconstruct a baseline linear chain from existing slots:
+data → dimred → clustering → (optionally) citations → layout →
+alignment → blend. Each card carries the existing result; all
+done; the active path becomes `selected`.
+
+Old saved projects load via the existing schema-version path; the
+deserialiser invokes the migration helper.
+
+Pure helper; tested via "load a v2 .zip, verify tree shape".
+
+#### Slice 2.3 — Workflow-chart renderer rewrite
+
+Replace the hand-positioned 7-node SVG with a tree-aware renderer.
+First cut renders the baseline linear tree from 2.2 — visually
+identical to today's chart for unmigrated projects, but reading
+from `state.workflow` instead of the hard-coded `NODES` list.
+
+Click → `selectStep(id)`. Status dots driven by step status, not
+the legacy `state.layerStates`.
+
+Smoke: chart renders correctly on boot + after migration + after
+state mutation.
+
+#### Slice 2.4 — Step ↔ job binding + spinner/position overlay
+
+queue.js's `enqueueJob` gains a `stepId` opt. When a job is bound
+to a step, the step's status mirrors the job's status; the
+workflow-chart renders a spinner overlay on the step's card while
+the job runs and a position badge while pending.
+
+Optimise (shipped slice B) gets retrofitted: each Run creates a
+new clustering child card AND enqueues a job bound to it. The
+spinner appears on the new card; the old card stays done +
+unchanged.
+
+This is where "each card is unique" goes live.
+
+#### Slice 2.5 — Modal-as-step-creator
+
+Every modal's Apply creates a new step (forks from the currently-
+selected step's parent or appends as child, depending on the step
+type's semantics). No more direct mutation of `state.layerParams`
+or `state.dimredResult` etc.
+
+Modals touched: data-source-modal, dimred-modal, clustering-modal
+(Configure tab), algorithm-modal (citation layout).
+
+The legacy "current path" slots become read-only projections from
+the selected step — listeners that read `state.dimredResult` keep
+working without rewriting them (Slice 2.7 handles the back-compat
+layer).
+
+Smoke: each modal applied creates a new tree card; old result
+intact; new result attached.
+
+#### Slice 2.6 — Stale propagation
+
+When a card's params or result changes (whether by re-run or by a
+new sibling becoming "selected"), descendants get marked stale.
+Visual warning per §10.O3.
+
+`re-run to refresh` affordance on each stale card.
+
+Smoke: change a dimred card's params → corresponding clustering
+descendant goes stale → clicking re-run produces a new clustering
+card whose status is fresh.
+
+#### Slice 2.7 — Back-compat projection layer
+
+Existing panels + viewers read from singular slots
+(`state.dimredResult`, `state.clusterLevels`, `state._basePos`,
+etc.). These become *read-only projections* from
+`state.workflow.steps[state.workflow.selected]` (and its ancestors).
+
+Concretely: a `syncSelectionProjections()` helper, called by
+`selectStep` and after any step's result lands, populates the
+legacy slots from the active path. Nothing in the panels needs to
+change — they keep reading state.dimredResult; the underlying data
+is now selection-driven.
+
+Smoke: select different clustering cards → viewer-3d / node-table
+/ all panels reflect the selection without modifications.
+
+#### Slice 2.8 — Multi-card per layer (real branching UI)
+
+Today's chart layout is hand-positioned for 7 nodes. Once 2.5
+lands, users can create unlimited siblings — the renderer needs
+to lay them out automatically.
+
+Pick a layout strategy: hierarchical (top-down, siblings spread
+horizontally) is the obvious default. Add pan / zoom / collapse
+controls.
+
+Smoke: create 3 dimred siblings → chart renders all three
+side-by-side; selecting each shows its result.
+
+#### Slice 2.9 — Migrate other long-runners to step-bound jobs
+
+Bootstrap-stability + dim-sweep + (eventually) save / load all
+become cards via 2.5's pattern. Each creates a new card and binds
+a queue.js job.
+
+Once this slice lands, the bottom busy-bar is empty; we can
+retire it (slice 2.11).
+
+#### Slice 2.10 — Cross-source steps (fusion-comparison + future)
+
+`fusionComparison` becomes the canonical pairwise comparison
+renderer for any two cluster cards — not just pre/post-fusion.
+Step config picks ref + cand source cards via the tree picker.
+`refIds` wired through.
+
+Same pattern unblocks "compare two algorithm choices on the same
+data" — a future cross-algorithm card.
+
+#### Slice 2.11 — Dead-UX cleanup + bottom-bar removal
+
+- Kill the 7 disabled topbar stubs (§2.2 of this doc).
+- Remove `busy.js` + `busy-bar.js` (their callers are all
+  migrated by 2.9; bottom bar is no longer load-bearing).
+- Replace any remaining `enqueueBusy` calls with `enqueueJob`
+  bound to an appropriate step.
+- Restructure topbar menus around tree operations (export tree,
+  import tree, manage selected step, etc.).
+
+#### Slice 2.12 — Next-step affordances
+
+Per-card "what's next?" panel showing valid follow-ons based on
+the selected step's type and result state. Could surface as a
+right-rail panel that subscribes to `state.workflow.selected`.
+
+Out of scope for first cut: ML-driven suggestions. Just a static
+rule table per step type.
+
+### Dependency graph
+
+```
+2.1 (state shape)
+  └─▶ 2.2 (migration)
+        └─▶ 2.3 (renderer)
+              ├─▶ 2.4 (step↔job binding + overlay)
+              │     └─▶ 2.5 (modal-as-step-creator)
+              │           ├─▶ 2.6 (stale propagation)
+              │           ├─▶ 2.7 (back-compat projection layer)
+              │           │     └─▶ 2.8 (multi-card layout)
+              │           │           └─▶ 2.10 (cross-source steps)
+              │           └─▶ 2.9 (migrate other long-runners)
+              │                 └─▶ 2.11 (dead-UX + bottom-bar removal)
+              │                       └─▶ 2.12 (next-step affordances)
+```
+
+2.1–2.4 must land in order. 2.5 + 2.7 can ship in either order
+(2.7 keeps panels working while 2.5 changes how modals create
+steps). 2.6 / 2.8 / 2.9 / 2.10 are parallel once 2.5 + 2.7 are in.
 
 ## 8. Migration / back-compat
 
@@ -453,95 +648,162 @@ them); the bump is forward-compat protection.
 - **Not a queue rewrite.** `busy.js`'s FIFO is the basis. We extend
   it (typed jobs, per-job cancel) but don't replace.
 
-## 10. Open design questions
+## 10. Design decisions
 
-Things I can't resolve alone — flagged for discussion before coding.
+### Locked (2026-05-26)
 
-### 10.1 Tree vs strict DAG
+#### 10.D1 Cards are unique per result (immutable once done)
+
+Each card represents one materialised result. Re-running with new
+params creates a **new card**, never overwrites a done one. This
+keeps the history browsable and means a saved project carries
+every analysis the user ran on it.
+
+The flow:
+- Pending → Running → Done | Failed | Cancelled.
+- Done is terminal. Editing a done card's params opens its modal
+  pre-populated, and Apply creates a sibling card with the new
+  params (same parent).
+- The user can explicitly Delete a card; deletion cascades to
+  descendants and removes their saved results.
+
+Implications:
+- "Run the same algorithm twice with the same params" produces two
+  cards (sibling duplicates). Cheap; nothing breaks; user can delete
+  one.
+- "Re-run after upstream changed" = create a new card (the old one
+  is stale; see 10.D2).
+- Today's `clusterLevels` slot becomes a projection from the
+  *selected* clustering card; switching cards in the tree switches
+  the viewer's projection.
+
+#### 10.D2 Stale propagation: downstream cards warn when upstream changes
+
+When a card produces a new result (whether by re-running in place or
+because a new sibling was added that shifts the "selected" path),
+every downstream card that depended on the prior result gets marked
+**stale**. The card stays done — its old result is still valid as a
+snapshot — but the renderer shows a visual warning ("upstream
+changed") and offers a one-click "re-run to refresh" affordance.
+
+No auto-cascade. The user decides whether to re-run, because:
+- Auto-cascade has been the source of several historical UX bugs
+  (citation layout, fusion).
+- The user may want to inspect the old result alongside the new
+  upstream before deciding.
+
+Stale is a computed property: each render walks the tree and asks
+"does this card's `result.upstreamRevision` equal its parent's
+`result.revision`?" — when they differ, stale=true.
+
+#### 10.D3 All jobs are cards
+
+Every long-running operation becomes a card in the tree, not a
+bottom-bar job. This includes:
+- Engine-cascade lanes (reingest, redimred, recluster, etc.) —
+  each lane becomes a card or a sub-step of a card.
+- Save / load — a "Save project to disk" card, a "Load project
+  from disk" card. The user sees them in their history.
+- Optimise sweeps, bootstrap stability, dim sweep, fusion comparison
+  — already framed as cards in §3.3.
+
+The bottom busy bar disappears once migration completes. The card's
+status overlay (spinner + queue position) is the user-visible
+indicator going forward.
+
+This is more invasive than the original §3.3 list — but it follows
+naturally from "the tree is the workflow". A separate bottom-bar
+surface would mean two places to look for in-flight work.
+
+#### 10.D4 DAG, not strict tree
 
 `refIds` allows fan-in (fusionComparison references two clusterings).
-Strict tree forbids this; user has to pick a "primary" parent. DAG
-allows the natural shape but harder to render and reason about
-(cycles? merge nodes? topological sort?).
+The tree renderer treats `parentId` as the primary edge (drawn
+solid), `refIds` as cross-edges (drawn dashed). Cycles forbidden;
+enforced at refIds-add time.
 
-**Lean**: DAG with no cycles (enforced at refIds-add time). Renderer
-treats `parentId` as the primary edge, `refIds` as dashed
-back-references.
+#### 10.D5 Live-mode panels disappear
 
-### 10.2 What invalidates a parent's children?
+Several panels are dual-mode today (live = reads latest
+`state.evalResults.optimise`; saved = renders a specific
+ValidationRun). In the tree model there is no "latest" — there are
+just cards, each with a result. The panel always binds to a card id.
 
-If the user re-runs a `dimred` step in place (rare path, since the
-default is fork), do all its `clustering` children re-run
-automatically? Or stay stale until the user acts?
+#### 10.D6 Branch deletion cascades
 
-**Lean**: stale, not auto-rerun. Auto-cascade was the source of
-several historical UX pains (citation layout, fusion). Explicit user
-action keeps the model predictable.
+Per-card delete with confirm. Removing a card removes its result
+AND every descendant card's result. The user gets a confirm dialog
+listing what'll be deleted.
 
-### 10.3 How does the tree present multi-level clustering?
+#### 10.D7 No save-size cap initially
+
+Each card's result can be substantial (Int32Arrays per cluster level,
+per-cluster maps, etc.). No cap on save size; the existing zip
++ binary-payload format handles arbitrary blob counts. Watch for
+pain at the 50+ card mark; revisit then.
+
+### Still open
+
+#### 10.O1 How does the tree present multi-level clustering?
 
 A clustering step today produces `clusterLevels[]` — multiple levels
-in one result. Does each level become a separate child tree node? Or
-stays as a single step with a multi-level result?
+in one result. Three candidates:
 
-**Lean**: single step, multi-level result. The level array is part
-of one clustering's output; splitting them across tree nodes makes
-"add another level" awkward.
+- **Single card, multi-level result** — one card carries the whole
+  `clusterLevels[]` array. Simple. But making each level
+  individually optimisable requires per-level state inside the card.
+- **One card per level** — chain of clustering cards, each
+  producing one level. Maps naturally to per-level optimise. But
+  "add another level" becomes "add a child" — UI ceremony.
+- **One card with sub-cards for additional levels** — hybrid: card
+  wraps level 0; additional levels are child cards under it. Lets
+  the user see "this clustering grew to 3 levels" while keeping
+  per-level work first-class.
 
-But: auto-recursion (the deferred §7 Q1/Q3 work) might want per-level
-steps so each level can be optimised independently. Worth revisiting
-when that slice begins.
+**Lean**: hybrid (the third option). Aligns with the deferred
+auto-recursion work (§7 of plan.md Q1/Q3) — each recursion step is
+naturally a new child card.
 
-### 10.4 What happens to live-mode panels?
+Decide when the auto-recursion slice gets queued for actual work.
 
-Several panels are dual-mode today (live = renders latest
-`state.evalResults.optimise`; saved = renders a specific
-ValidationRun). In the tree model there's no "latest" — there are
-just steps, each with a result. Live mode goes away.
+#### 10.O2 What does "current viewer" mean for a fusion-comparison step?
 
-**Lean**: live mode disappears. The panel always binds to a step id.
-The "render the latest" use case becomes "render the selected step",
-which is the same shape.
+A fusion-comparison card has no geometry of its own. Three options:
 
-### 10.5 How does the user remove dead branches?
+- **Show nothing** (empty viewer + hint).
+- **Show the candidate** (the post-fusion side, by convention).
+- **Show a side-by-side** (twin scatters in viewer-2d).
 
-If they fork-experiment and want to delete an old branch:
+**Lean**: show the candidate, with the fusion-comparison panel
+making the difference visible. Side-by-side viewers could be a
+future viewer panel.
 
-- Per-node delete (with confirm if it has children)?
-- Soft-delete (hidden but present)?
-- Hard-delete on a "manage tree" surface?
+#### 10.O3 What's the visual for "stale upstream"?
 
-**Lean**: per-node delete with confirm; cascades to children. Soft-
-delete is a follow-up feature if users ask.
+A done card whose upstream has changed should clearly signal it.
+Options:
+- Coloured border (amber).
+- Striped fill on the card body.
+- Icon overlay (warning triangle).
+- Reduced opacity (faded).
 
-### 10.6 Project save size
+Decide at render time. Probably amber border + "re-run" affordance
+on hover.
 
-Each step's result can be substantial (Int32Arrays per cluster level,
-per-cluster maps, etc.). A user with 50 forked clusterings has 50x
-the per-clustering data in the save. Cap? Lazy-load?
+#### 10.O4 Stash strategy when the project is large
 
-**Lean**: no cap initially. Each step's result is stashed in the
-existing `arrays/` payload subdirectory of the .zip; deserialise is
-already lazy (only revives the referenced TypedArrays). Watch
-for pain at the 20+ step mark.
+If a project has 50+ cards each carrying TypedArray results, the
+save zip could balloon. Options:
+- Lazy-rehydrate (already done): only revive when read.
+- Compress per-card.
+- Garbage-collect cancelled/failed cards on save.
+- Cap settled-card retention.
 
-### 10.7 What does "current viewer" mean for a fusion-comparison step?
-
-Selecting a fusion-comparison step has no geometry of its own — it's
-a comparison of two upstream clusterings. Does the viewer:
-
-- show nothing (with a hint)?
-- show one of the two referenced clusterings (which?)?
-- show a side-by-side of both (in viewer-2d as twin scatters)?
-
-**Lean**: shows the "candidate" (the post-fusion side, by
-convention), with the comparison panel making the difference
-visible. Side-by-side could be a future viewer panel.
+Defer until pain appears.
 
 ---
 
-**Sign-off needed before any Phase-1 code.** Sections 1–3 carry the
-load-bearing decisions; the rest is sequencing + open questions.
-Once those three are agreed, Phase 1 (modal independence) becomes a
-~1-week concrete slice; the rest follows once Phase 1 ships and we
-have evidence of how the new shape feels.
+**Sign-off status (2026-05-26):** §1–3 architecture + §10.D1–D7
+decisions locked. Phase 1 slices A + B shipped (queue.js foundation
++ Optimise non-blocking). Phase 2 is now the next chunk of work —
+see §7 for the sub-slice sequence.
