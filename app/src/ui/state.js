@@ -299,6 +299,60 @@ const state = {
   // when explicitly saved). Future slices may persist running queue
   // state so a reload can pick up mid-flight work — out of scope here.
   jobs: { byId: {}, order: [], runningId: null },
+
+  // ── Workflow tree (workflow-tree-redesign Phase 2 slice 2.1). ───────
+  // First-class store for the branching DAG of analysis cards.
+  // Replaces the singular layerParams / dimredResult / clusterLevels /
+  // etc. slots as the canonical source of truth, with those legacy
+  // slots becoming back-compat projections from the selected card's
+  // ancestry (Slice 2.7). Mutated only through ui/workflow.js — direct
+  // update({workflow: ...}) calls outside that module will violate
+  // invariants (parent/child consistency, single root, valid status
+  // transitions, revision monotonicity).
+  //
+  // Shape:
+  //   {
+  //     steps:    { [id]: Step },     // every card ever created in this
+  //                                    // project (settled cards stay until
+  //                                    // explicit delete)
+  //     rootId:   string | null,      // tree root; null = empty workflow
+  //     selected: string | null,      // currently-selected card; drives
+  //                                    // the viewer + panel back-compat
+  //                                    // projections (Slice 2.7)
+  //   }
+  //
+  // Step shape:
+  //   {
+  //     id:               string,
+  //     type:             string,     // "data" | "dimred" | "clustering" | "optimise" | ...
+  //     label:            string,
+  //     params:           object,
+  //     parentId:         string | null,    // null only for root
+  //     childIds:         string[],         // insertion order
+  //     refIds:           string[],         // cross-edges for fan-in (e.g.
+  //                                          // a fusion-comparison card
+  //                                          // referencing two clusterings)
+  //
+  //     status:           "pending" | "running" | "done" | "failed" | "cancelled",
+  //     result:           any | null,
+  //     error:            string | null,
+  //     revision:         number,           // bumped on each setStepResult
+  //     upstreamRevision: number | null,    // parent's revision stamped at
+  //                                          // result time; stale check =
+  //                                          // parent.revision !== this.upstreamRevision
+  //
+  //     progress:         { phase?: string, fraction?: number } | null,
+  //     runtimeSec:       number | null,
+  //
+  //     createdAt:        ISO string,
+  //     startedAt:        ISO string | null,
+  //     endedAt:          ISO string | null,
+  //   }
+  //
+  // Default empty — additive schema; older saves load with the empty
+  // shape. Slice 2.2 will migrate populated legacy slots into a baseline
+  // linear tree on first load.
+  workflow: { steps: {}, rootId: null, selected: null },
 };
 
 const subscribers = new Set();
