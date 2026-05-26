@@ -266,6 +266,7 @@ def test_chart_helpers_render(page):
     assert out["whiskers"] == 2
 
 
+@pytest.mark.slow
 def test_dim_sweep_runner_tiny(page):
     """Run a 2-dim × 1-seed sweep on BFS-5000. Pure runner exercise
     (no panel). Expected: ariMatrix has the expected keys, diagonals

@@ -56,6 +56,10 @@ def test_run_enqueues_and_closes_modal(page):
     )
 
 
+import pytest
+
+
+@pytest.mark.slow
 def test_smallest_sweep_completes_and_auto_saves(page):
     """End-to-end: enqueue a small HDBSCAN-only resolution sweep
     ranked by number-of-clusters (no bootstrap). Verify auto-save
