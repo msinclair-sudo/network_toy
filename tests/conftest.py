@@ -166,7 +166,7 @@ def bfs5000_page(playwright_browser):
     ctx, page = _boot_page(playwright_browser)
 
     page.evaluate(
-        '''async ({ hdbscanParams }) => {
+        '''async ({ hdbscanParams, compressionParams }) => {
             const state  = await import("/app/src/ui/state.js");
             const engine = await import("/app/src/ui/engine.js");
             const cur = state.getState();
