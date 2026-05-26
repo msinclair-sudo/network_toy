@@ -28,6 +28,13 @@ export function openClusteringModal(descriptor) {
   // Per-tab handles, populated lazily on first activation.
   const tabHandles = {};
 
+  // Forward-declared so the Optimise tab's Run handler can close the
+  // modal after enqueueing the sweep. Set when openModal returns
+  // below. The Optimise tab calls closeModal() once enqueueJob
+  // succeeds; the modal goes away, the bottom busy bar takes over.
+  let modalHandle = null;
+  const closeModal = () => { if (modalHandle) modalHandle.close(); };
+
   // Body shell.
   const body = document.createElement("div");
   body.className = "clustering-modal-body";
@@ -83,17 +90,18 @@ export function openClusteringModal(descriptor) {
   function buildTab(tabId, host) {
     if (tabId === "configure") return buildConfigureTab(host, descriptor);
     if (tabId === "optimise") return buildOptimiseTab(host, {
-      // Expose the current levels so the Optimise tab's per-row
-      // dropdown can offer "Apply to L0", "Apply to L1", … "+ New".
-      // Read from the descriptor (canonical state), not Configure's
-      // working copy, since Optimise users may not have visited
-      // Configure since boot.
-      getLevels: () => {
-        const active = descriptor.getActive();
-        return active.levels.map((l, i) => ({
-          uid: l.uid, index: i, scope: l.scope, method: active.method,
-        }));
-      },
+      // Close the modal when a sweep is queued (workflow-tree-redesign
+      // Phase 1 slice B). The job runs on the background queue; the
+      // bottom busy bar shows progress; results auto-save to
+      // validationRuns and surface in the panel picker.
+      closeModal,
+
+      // The legacy onApplyRow + getLevels callbacks were dropped
+      // 2026-05-26 with the inline result-table removal. Per-row Apply
+      // now lives in the validation-run-optimise panel, which passes
+      // its own callback. Stubs below kept for now in case any
+      // external consumer still calls buildOptimiseTab with these
+      // names — they're ignored inside.
       // levelIdx semantics:
       //   0..existingLevels.length-1 → replace that level's params with
       //                                row.params; other levels untouched.
@@ -152,7 +160,7 @@ export function openClusteringModal(descriptor) {
   paneEls.configure.style.display = "";
   tabHandles.configure = buildTab("configure", paneEls.configure);
 
-  const modalHandle = openModal({
+  modalHandle = openModal({
     title: descriptor.label,
     body,
     actions: [

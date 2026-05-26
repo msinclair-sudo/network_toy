@@ -12,7 +12,7 @@
 // user can confirm the new config is stable.
 
 import { getState, update, subscribe, setOptimiseResult, saveValidationRun } from "../../state.js";
-import * as engine from "../../engine.js";
+import { enqueueJob }    from "../../queue.js";
 import { listAlgorithms } from "../../../clustering-registry.js";
 import { sweepAcrossAlgorithms, runTargetRangeSweep } from "../../../eval/sweep.js";
 import {
@@ -20,32 +20,23 @@ import {
   numClustersScorer, clusterRichnessScorer,
 } from "../../../eval/scorers.js";
 import { SCORE_VERSION } from "../../../eval/bootstrap.js";
-import { renderResults, formatScalar } from "./optimise-results-renderer.js";
 
 export function buildOptimiseTab(host, opts = {}) {
-  const onApplyRow = opts.onApplyRow || (() => {});
-  // Provided by clustering-modal so the per-row Apply dropdown can list
-  // existing levels + "+ New". Returns [{uid, index, scope, method}].
-  // Optional — if absent, the Apply column reverts to a single
-  // "Apply to L0" button.
-  const getLevels   = opts.getLevels  || null;
+  // closeModal: called after a successful enqueue so the modal goes
+  // away while the sweep runs in the background. Result auto-saves to
+  // state.validationRuns; the user picks it up from the panel picker.
+  // Optional for back-compat: if absent, the modal stays open
+  // (legacy behaviour, useful for any external consumer).
+  const closeModal = opts.closeModal || (() => {});
+
+  // (onApplyRow + getLevels removed 2026-05-26 — the modal no longer
+  //  renders the in-tab results table. Per-row Apply lives in the
+  //  validation-run-optimise panel now; the panel passes its own
+  //  callbacks. See workflow-tree-redesign.md Phase 1 slice B.)
 
   const allAlgos = listAlgorithms();
   // Per-algorithm enable flags.
   const enabled = new Map(allAlgos.map(a => [a.id, true]));
-
-  // §6.18.4 — real AbortController per run so the cancel button (and
-  // tab hide) actively terminates in-flight workers via
-  // worker-runner.js's signal.addEventListener("abort", …) hook. We
-  // pass `abortController.signal` everywhere the old polling-object
-  // signal went; downstream checks for `.aborted` keep working (it's
-  // a native AbortSignal property). Controller is freshly constructed
-  // at run start because AbortController is one-shot — once aborted,
-  // stays aborted.
-  let abortController = null;
-  const cancelCurrentRun = () => {
-    if (abortController) abortController.abort();
-  };
 
   // ── notice ──────────────────────────────────────────────────────
   const notice = document.createElement("div");
@@ -378,58 +369,38 @@ export function buildOptimiseTab(host, opts = {}) {
     }
   });
 
-  // Run row.
+  // Run row. Single button: queues a sweep job + closes the modal.
+  // Mid-flight progress + results live in the bottom busy bar and the
+  // panel picker respectively — the modal is config-only now.
   const runRow = document.createElement("div");
   runRow.className = "cm-tab-runrow";
   const runBtn = document.createElement("button");
   runBtn.type = "button";
   runBtn.className = "cm-tab-run";
-  runBtn.textContent = "Run sweep";
-  const cancelBtn = document.createElement("button");
-  cancelBtn.type = "button";
-  cancelBtn.className = "cm-tab-cancel";
-  cancelBtn.textContent = "Cancel";
-  cancelBtn.style.display = "none";
+  runBtn.textContent = "Queue sweep";
   const status = document.createElement("span");
   status.className = "cm-tab-status";
   runRow.appendChild(runBtn);
-  runRow.appendChild(cancelBtn);
   runRow.appendChild(status);
   settings.appendChild(runRow);
   host.appendChild(settings);
 
-  // Results section.
-  const results = document.createElement("div");
-  results.className = "cm-tab-section cm-tab-results";
-  results.style.display = "none";
-  host.appendChild(results);
+  // Note: the inline result table that used to live here was removed
+  // 2026-05-26 (workflow-tree-redesign Phase 1 slice B). Saved sweeps
+  // surface in the panel picker under "Validation runs"; the
+  // validation-run-optimise panel renders them (and, in live mode,
+  // the latest sweep). Cached-result restore on tab open is also
+  // gone — the modal is purely a config surface.
 
-  // Restore from state if a previous sweep is cached AND it was
-  // produced under the current scoring protocol. §6.18.7d migration:
-  // older caches (no scoreVersion or != SCORE_VERSION) are silently
-  // discarded — the user gets a banner explaining the situation and
-  // is asked to re-run. We don't try to upgrade the old format in
-  // place because the numbers genuinely mean different things.
-  const cachedOpt = getState().evalResults && getState().evalResults.optimise;
-  if (cachedOpt && cachedOpt.ranked) {
-    if (cachedOpt.scoreVersion === SCORE_VERSION) {
-      renderResults(
-        results,
-        { ranked: cachedOpt.ranked, totalConfigs: cachedOpt.totalConfigs, completed: cachedOpt.completed },
-        { id: cachedOpt.scorerId, label: cachedOpt.scorerLabel },
-        onApplyRow,
-        getLevels,
-      );
-      results.style.display = "";
-      status.textContent = `cached · ${cachedOpt.totalConfigs} configs · ranked by ${cachedOpt.scorerLabel}`;
-    } else {
-      // Pre-§6.18.7 cache. Drop it on the floor and explain.
-      try { setOptimiseResult(null); } catch (_) {}
-      status.textContent = "Older optimise scores discarded — re-run to see scores under the current method (§6.18.7).";
-    }
-  }
-
-  runBtn.addEventListener("click", async () => {
+  // ── Run handler (workflow-tree-redesign Phase 1 slice B). ──────────
+  // Snapshot all inputs at click time, build a self-contained job fn
+  // that closes over the snapshot (never reads global state at run
+  // time), enqueue it through queue.js, then close the modal. The
+  // bottom busy bar shows progress (queue.js mirrors its running job
+  // into state.busy). On completion, the sweep auto-saves as a
+  // ValidationRun — the user picks it up from the panel picker
+  // ("Validation runs" section).
+  runBtn.addEventListener("click", () => {
     const s = getState();
     if (!s.genResult || !s.dimredResult) {
       status.textContent = "Apply a clustering first.";
@@ -438,227 +409,249 @@ export function buildOptimiseTab(host, opts = {}) {
     const algos = allAlgos.filter(a => enabled.get(a.id));
     if (algos.length === 0) { status.textContent = "Pick at least one algorithm."; return; }
 
-    // Resolve the scorer for resolution/full modes. Target-range mode
-    // has its own ranking (proximity or bootstrap mean-Jaccard) and
-    // doesn't read scorerId at all.
+    // Validate target-range bounds before enqueue so the user sees the
+    // error here rather than via a silent failed job.
+    if (sweepMode === "target" && !(targetMax >= targetMin && targetMin >= 1)) {
+      status.textContent = `invalid range [${targetMin}, ${targetMax}]`;
+      return;
+    }
+
+    // Resolve the scorer (validate ARI availability before enqueue).
     let scorer = null;
     if (sweepMode !== "target") {
       scorer = pickScorer(scorerId, s, B, noiseHandling);
       if (!scorer) { status.textContent = "ARI requires toy mode (no ground truth in real data)."; return; }
     }
 
-    // Fresh AbortController per run (one-shot — once aborted, stays
-    // aborted, so we can't reuse the previous run's controller).
-    abortController = new AbortController();
-    const signal = abortController.signal;
+    // ── Snapshot. Everything the sweep reads, captured now. ───────────
+    const snapshot = {
+      // Identity refs — the sweep closes over them; future workflow-
+      // tree work will replace these with the active branch's data.
+      genResult:            s.genResult,
+      dimredResult:         s.dimredResult,
+      dimredResultPreFusion: s.dimredResultPreFusion || null,
+      // Sweep settings.
+      algos,
+      sweepMode,
+      scorer,
+      B,
+      noiseHandling,
+      // Target-range knobs.
+      targetMin, targetMax, phase1Count, refineStep,
+      targetBoot,
+      sweepAgainst,
+      // For the saved ValidationRun's inputs snapshot.
+      dataSourceMode:       (s.dataSource && s.dataSource.mode) || "toy",
+      dataSourceConfig:     (s.dataSource && s.dataSource.configs && s.dataSource.configs[s.dataSource.mode]) || {},
+      layerParamsSnapshot:  s.layerParams,
+      scorerId, sweepMode_str: sweepMode,
+      // branchId is null today — Phase 2's workflow-tree work populates
+      // this with the active branch's id so saved results stay tagged
+      // and follow branch-delete semantics.
+      branchId:             null,
+    };
 
-    runBtn.disabled = true;
-    runBtn.textContent = "Running…";
-    runBtn.classList.add("running");
-    cancelBtn.style.display = "";
-    status.textContent = `0 / ?`;
-    results.style.display = "none";
-    results.innerHTML = "";
+    // ── Label + enqueue. ─────────────────────────────────────────────
+    const algoTag = snapshot.algos.length === 1 ? snapshot.algos[0].id : `${snapshot.algos.length} algos`;
+    const modeTag = snapshot.sweepMode === "target"
+      ? `target [${snapshot.targetMin}, ${snapshot.targetMax}]`
+      : snapshot.sweepMode;
+    const subsetTag = snapshot.dataSourceMode === "real"
+      ? (snapshot.dataSourceConfig.subset || "real")
+      : `toy n=${snapshot.genResult.nodes.length}`;
+    const label = `Optimise · ${algoTag} · ${modeTag} · ${subsetTag}`;
 
-    const t0 = performance.now();
-    let outcome = null;
-    try {
-      if (sweepMode === "target") {
-        if (!(targetMax >= targetMin && targetMin >= 1)) {
-          status.textContent = `invalid range [${targetMin}, ${targetMax}]`;
-          runBtn.disabled = false;
-          runBtn.textContent = "Run sweep";
-          runBtn.classList.remove("running");
-          cancelBtn.style.display = "none";
-          return;
-        }
-        // Resolve which dim-reduction(s) the sweep targets. When the
-        // user picked "Both", we run twice and merge — tagging every
-        // row by source so the unified table is readable.
-        const hasPre = !!s.dimredResultPreFusion;
-        const effectiveAgainst = (sweepAgainst !== "post" && !hasPre) ? "post" : sweepAgainst;
-        const passes = effectiveAgainst === "both"
-          ? [
-              { tag: "post", dimred: s.dimredResult },
-              { tag: "pre",  dimred: s.dimredResultPreFusion },
-            ]
-          : effectiveAgainst === "pre"
-            ? [{ tag: "pre",  dimred: s.dimredResultPreFusion }]
-            : [{ tag: "post", dimred: s.dimredResult }];
+    const { promise } = enqueueJob({
+      type:  "optimise",
+      label,
+      fn:    (ctx) => runOptimiseJob(snapshot, ctx),
+    });
 
-        const mergedRanked = [];
-        const mergedPhase1 = [];
-        const mergedPhase2 = [];
-        let mergedHitCount = 0;
-        let mergedUsedFallback = false;
-        for (let pi = 0; pi < passes.length; pi++) {
-          if (signal.aborted) break;
-          const pass = passes[pi];
-          const subOutcome = await runTargetRangeSweep({
-            algorithms:   algos,
-            genResult:    s.genResult,
-            dimredResult: pass.dimred,
-            n:            s.genResult.nodes.length,
-            targetMin, targetMax,
-            phase1Count, refineStep,
-            runBootstrap: targetBoot,
-            // Inherit the bootstrap defaults from bootstrap.js (frac=0.5
-            // post-§6.18.7, minMembers=3 post-§6.18.9); explicit override
-            // would shadow that. noiseHandling carries the user's pick
-            // from the Optimise settings dropdown.
-            bootstrapOpts:{ B, noiseHandling },
-            // Distinct seed per pass so the LHS samples don't collide
-            // on identical configs across the two passes.
-            seed:         42 + (pi * 1009),
-            onProgress: (phase, i, total, label) => {
-              const passLabel = passes.length > 1 ? `[${pass.tag}] ` : "";
-              status.textContent = `${passLabel}${phase} · ${i} / ${total} · ${label}`;
-            },
-            abortSignal: signal,
-          });
-          // Tag each row + section with the pass it came from. Same
-          // tag also lands on the cached settings so the renderer can
-          // show a Source column when passes.length > 1.
-          for (const r of subOutcome.ranked) r.source = pass.tag;
-          for (const e of subOutcome.phase1) e.source = pass.tag;
-          for (const e of subOutcome.phase2) e.source = pass.tag;
-          mergedRanked.push(...subOutcome.ranked);
-          mergedPhase1.push(...subOutcome.phase1);
-          mergedPhase2.push(...subOutcome.phase2);
-          mergedHitCount     += subOutcome.hitCount || 0;
-          mergedUsedFallback = mergedUsedFallback || !!subOutcome.usedFallback;
-        }
-        // Re-rank the merged ranked list with the same comparator
-        // runTargetRangeSweep uses (in-range first, then primary desc).
-        mergedRanked.sort((a, b) => {
-          if (a.inRange !== b.inRange) return a.inRange ? -1 : 1;
-          const ap = Number.isFinite(a.primary) ? a.primary : -Infinity;
-          const bp = Number.isFinite(b.primary) ? b.primary : -Infinity;
-          if (bp !== ap) return bp - ap;
-          return (b.secondary || 0) - (a.secondary || 0);
-        });
-        outcome = {
-          ranked:       mergedRanked,
-          phase1:       mergedPhase1,
-          phase2:       mergedPhase2,
-          hitCount:     mergedHitCount,
-          usedFallback: mergedUsedFallback,
-          totalConfigs: mergedPhase1.length + mergedPhase2.length,
-          completed:    mergedPhase1.length + mergedPhase2.length,
-          // Pass the effective sweep-against down so the renderer can
-          // decide whether to show the Source column.
-          _sweepAgainst: effectiveAgainst,
-        };
-      } else {
-        outcome = await sweepAcrossAlgorithms({
-          algorithms:    algos,
-          genResult:     s.genResult,
-          dimredResult:  s.dimredResult,
-          scorer,
-          resolutionOnly: (sweepMode === "resolution"),
-          onProgress: (i, total, label) => { status.textContent = `${i} / ${total} · ${label}`; },
-          abortSignal: signal,
-        });
-      }
-    } catch (e) {
-      console.error("[optimise-tab] sweep threw:", e);
-      status.textContent = "error — see console";
-    }
+    // Detach handling: on success, auto-save the result. On failure or
+    // cancel, log + leave it — nothing to display because the modal is
+    // already closed.
+    promise.then(
+      (outcome) => persistSweepOutcome(outcome, snapshot, label),
+      (err) => {
+        if (err && err.name === "AbortError") return;   // cancelled — silent
+        console.error("[optimise-tab] sweep job failed:", err);
+      },
+    );
 
-    const dt = ((performance.now() - t0) / 1000).toFixed(1);
-    if (outcome) {
-      // Synthesise a "scorer" label for target-range runs so the cached
-      // header text reads sensibly when the user hops away and back.
-      const effectiveScorer = sweepMode === "target"
-        ? { id: targetBoot ? "target+bootstrap" : "target", label: targetBoot ? "target range + reproducibility" : "target range (proximity)" }
-        : scorer;
-      // Cache into state so the table survives tab hops + project saves.
-      // Strip `_cr` from each row before persisting — it's a runtime-only
-      // cache (A3, §6.18.3) holding Int32Arrays that don't round-trip
-      // cleanly through the .zip serializer. The live `outcome.ranked`
-      // keeps `_cr` for the apply-button click handler this session;
-      // restoring from cache after a reload loses the optimisation and
-      // falls back to re-infer on Apply, which is acceptable.
-      const persistedRanked = outcome.ranked.map(r => {
-        const { _cr, ...rest } = r;
-        return rest;
-      });
-      setOptimiseResult({
-        // §6.18.7d — stamp the bootstrap protocol version. On reload
-        // we discard caches that don't match SCORE_VERSION so the user
-        // never compares apples (v1) against oranges (v2).
-        scoreVersion: SCORE_VERSION,
-        ranked:       persistedRanked,
-        totalConfigs: outcome.totalConfigs,
-        completed:    outcome.completed,
-        scorerId:     effectiveScorer.id,
-        scorerLabel:  effectiveScorer.label,
-        settings:     {
-          B, scorerId, sweepMode, noiseHandling, algorithms: algos.map(a => a.id),
-          ...(sweepMode === "target"
-            ? {
-                targetMin, targetMax, phase1Count, refineStep,
-                runBootstrap: targetBoot,
-                sweepAgainst: outcome._sweepAgainst || sweepAgainst,
-              }
-            : {}),
-        },
-        runtimeSec:   parseFloat(dt),
-        timestamp:    new Date().toISOString(),
-      });
-      renderResults(results, outcome, effectiveScorer, onApplyRow, getLevels);
-      results.style.display = "";
-      const againstSuffix = (sweepMode === "target" && outcome._sweepAgainst === "both")
-        ? " · both fusion sources"
-        : (sweepMode === "target" && outcome._sweepAgainst === "pre")
-          ? " · pre-fusion"
-          : "";
-      // Status suffix for target-range: report hit count + band, plus
-      // a "refined N closest (no hits)" note when B12's fallback fired
-      // so the user knows the table isn't from in-band configs.
-      const phaseSuffix = sweepMode === "target"
-        ? (outcome.usedFallback
-            ? ` · no hits in [${targetMin}, ${targetMax}] — refined the closest Phase-1 configs${againstSuffix}`
-            : ` · ${outcome.hitCount || 0} hits in [${targetMin}, ${targetMax}]${againstSuffix}`)
-        : "";
-      // §6.18.10 B6 — distribution stats so the user reads the
-      // "best of N" with appropriate scepticism. "best 0.78 ·
-      // median 0.42 · sd 0.18" tells a much clearer story than just
-      // "best 0.78", which the user might read as "this is good"
-      // without seeing the spread.
-      const distSuffix = formatDistributionStats(outcome.ranked);
-      status.textContent = signal.aborted
-        ? `cancelled · ${outcome.completed} / ${outcome.totalConfigs} configs · ${dt}s${phaseSuffix}${distSuffix}`
-        : `${outcome.totalConfigs} configs in ${dt}s · ranked by ${effectiveScorer.label}${phaseSuffix}${distSuffix}`;
-
-      // §6.19.2 — Save-this-run button. Lets the user persist this
-      // outcome as a ValidationRun that survives project save/load
-      // and can be re-opened later from a panel without re-running
-      // the sweep. Stashed on the run row (.cm-tab-runrow), shown
-      // only after a successful sweep (not on cancellation or error).
-      if (!signal.aborted && outcome.ranked && outcome.ranked.length > 0) {
-        showSaveRunButton(runRow, outcome, persistedRanked, effectiveScorer,
-                          algos, B, scorerId, sweepMode, noiseHandling,
-                          sweepMode === "target"
-                            ? { targetMin, targetMax, phase1Count, refineStep,
-                                runBootstrap: targetBoot,
-                                sweepAgainst: outcome._sweepAgainst || sweepAgainst }
-                            : {},
-                          parseFloat(dt));
-      }
-    }
-
-    runBtn.disabled = false;
-    runBtn.textContent = "Run sweep";
-    runBtn.classList.remove("running");
-    cancelBtn.style.display = "none";
+    closeModal();
   });
 
-  cancelBtn.addEventListener("click", cancelCurrentRun);
-
   return {
-    onTabHidden: cancelCurrentRun,
+    // No mid-flight cancel inside the modal anymore — the job lives on
+    // the global queue. Cancel comes from the bottom bar / panel later.
+    onTabHidden: () => {},
   };
+}
+
+// ── Job runner ───────────────────────────────────────────────────────
+// Pure: reads only from `snapshot` + the registry. No state-of-the-
+// world dependency. ctx.signal threads through every async hop.
+async function runOptimiseJob(snapshot, ctx) {
+  const { signal, setPhase } = ctx;
+  if (snapshot.sweepMode === "target") {
+    // Resolve which dim-reduction(s) the sweep targets — same logic as
+    // the legacy in-modal Run handler.
+    const hasPre = !!snapshot.dimredResultPreFusion;
+    const effectiveAgainst = (snapshot.sweepAgainst !== "post" && !hasPre) ? "post" : snapshot.sweepAgainst;
+    const passes = effectiveAgainst === "both"
+      ? [
+          { tag: "post", dimred: snapshot.dimredResult },
+          { tag: "pre",  dimred: snapshot.dimredResultPreFusion },
+        ]
+      : effectiveAgainst === "pre"
+        ? [{ tag: "pre",  dimred: snapshot.dimredResultPreFusion }]
+        : [{ tag: "post", dimred: snapshot.dimredResult }];
+
+    const mergedRanked = [];
+    const mergedPhase1 = [];
+    const mergedPhase2 = [];
+    let mergedHitCount = 0;
+    let mergedUsedFallback = false;
+    for (let pi = 0; pi < passes.length; pi++) {
+      if (signal.aborted) break;
+      const pass = passes[pi];
+      const subOutcome = await runTargetRangeSweep({
+        algorithms:   snapshot.algos,
+        genResult:    snapshot.genResult,
+        dimredResult: pass.dimred,
+        n:            snapshot.genResult.nodes.length,
+        targetMin:    snapshot.targetMin,
+        targetMax:    snapshot.targetMax,
+        phase1Count:  snapshot.phase1Count,
+        refineStep:   snapshot.refineStep,
+        runBootstrap: snapshot.targetBoot,
+        bootstrapOpts:{ B: snapshot.B, noiseHandling: snapshot.noiseHandling },
+        seed:         42 + (pi * 1009),
+        onProgress: (phase, i, total, lbl) => {
+          const passLabel = passes.length > 1 ? `[${pass.tag}] ` : "";
+          setPhase(`${passLabel}${phase} · ${i}/${total} · ${lbl}`);
+        },
+        abortSignal: signal,
+      });
+      for (const r of subOutcome.ranked) r.source = pass.tag;
+      for (const e of subOutcome.phase1) e.source = pass.tag;
+      for (const e of subOutcome.phase2) e.source = pass.tag;
+      mergedRanked.push(...subOutcome.ranked);
+      mergedPhase1.push(...subOutcome.phase1);
+      mergedPhase2.push(...subOutcome.phase2);
+      mergedHitCount     += subOutcome.hitCount || 0;
+      mergedUsedFallback = mergedUsedFallback || !!subOutcome.usedFallback;
+    }
+    mergedRanked.sort((a, b) => {
+      if (a.inRange !== b.inRange) return a.inRange ? -1 : 1;
+      const ap = Number.isFinite(a.primary) ? a.primary : -Infinity;
+      const bp = Number.isFinite(b.primary) ? b.primary : -Infinity;
+      if (bp !== ap) return bp - ap;
+      return (b.secondary || 0) - (a.secondary || 0);
+    });
+    return {
+      ranked:       mergedRanked,
+      phase1:       mergedPhase1,
+      phase2:       mergedPhase2,
+      hitCount:     mergedHitCount,
+      usedFallback: mergedUsedFallback,
+      totalConfigs: mergedPhase1.length + mergedPhase2.length,
+      completed:    mergedPhase1.length + mergedPhase2.length,
+      _sweepAgainst: effectiveAgainst,
+    };
+  }
+  // Resolution / full sweep.
+  return await sweepAcrossAlgorithms({
+    algorithms:    snapshot.algos,
+    genResult:     snapshot.genResult,
+    dimredResult:  snapshot.dimredResult,
+    scorer:        snapshot.scorer,
+    resolutionOnly: (snapshot.sweepMode === "resolution"),
+    onProgress: (i, total, lbl) => { setPhase(`${i}/${total} · ${lbl}`); },
+    abortSignal: signal,
+  });
+}
+
+// On successful completion, push the outcome into the legacy
+// state.evalResults.optimise slot (the validation-run-optimise panel's
+// live mode reads it) AND save as a ValidationRun (Phase 1 slice B
+// auto-save replaces the old manual Save-this-run button). Both
+// receive cr-stripped rows; v1 persisted rows re-infer on Apply
+// rather than skip-infer.
+function persistSweepOutcome(outcome, snapshot, label) {
+  const effectiveScorer = snapshot.sweepMode === "target"
+    ? {
+        id:    snapshot.targetBoot ? "target+bootstrap" : "target",
+        label: snapshot.targetBoot ? "target range + reproducibility" : "target range (proximity)",
+      }
+    : snapshot.scorer;
+
+  const persistedRanked = outcome.ranked.map(r => {
+    const { _cr, ...rest } = r;
+    return rest;
+  });
+
+  const settings = {
+    B:             snapshot.B,
+    scorerId:      snapshot.scorerId,
+    sweepMode:     snapshot.sweepMode,
+    noiseHandling: snapshot.noiseHandling,
+    algorithms:    snapshot.algos.map(a => a.id),
+    ...(snapshot.sweepMode === "target"
+      ? {
+          targetMin:    snapshot.targetMin,
+          targetMax:    snapshot.targetMax,
+          phase1Count:  snapshot.phase1Count,
+          refineStep:   snapshot.refineStep,
+          runBootstrap: snapshot.targetBoot,
+          sweepAgainst: outcome._sweepAgainst || snapshot.sweepAgainst,
+        }
+      : {}),
+  };
+
+  setOptimiseResult({
+    scoreVersion: SCORE_VERSION,
+    ranked:       persistedRanked,
+    totalConfigs: outcome.totalConfigs,
+    completed:    outcome.completed,
+    scorerId:     effectiveScorer.id,
+    scorerLabel:  effectiveScorer.label,
+    settings,
+    runtimeSec:   null,   // not tracked in the job-runner path; the
+                          // job-level runtime sits on the ValidationRun
+    timestamp:    new Date().toISOString(),
+  });
+
+  // Auto-save as a ValidationRun. branchId stays null until Phase 2's
+  // workflow tree starts populating it.
+  try {
+    saveValidationRun({
+      type:  "optimise",
+      label,
+      inputs: {
+        dataSourceId:        snapshot.dataSourceMode,
+        dataSourceConfig:    snapshot.dataSourceConfig,
+        layerParamsSnapshot: snapshot.layerParamsSnapshot,
+      },
+      settings,
+      results: {
+        ranked:          persistedRanked,
+        totalConfigs:    outcome.totalConfigs,
+        completed:       outcome.completed,
+        scorerId:        effectiveScorer.id,
+        scorerLabel:     effectiveScorer.label,
+        hitCount:        outcome.hitCount,
+        usedFallback:    outcome.usedFallback,
+        phase2CacheHits: outcome.phase2CacheHits,
+      },
+      scoreVersion: SCORE_VERSION,
+      runtimeSec:   null,
+      // Phase-2 wiring point. Always null until the workflow tree lands.
+      branchId:     null,
+    });
+  } catch (e) {
+    console.error("[optimise-tab] auto-save of sweep result failed:", e);
+  }
 }
 
 // Pick the active scorer based on user choice + data-source mode.
@@ -695,113 +688,13 @@ function extractGroundTruth(state) {
   return gt;
 }
 
-// renderResults + scorer column logic + cell formatters now live in
-// optimise-results-renderer.js so the §6.19 validation-run-optimise
-// panel can share them without coupling the panel to the modal.
-// Kept locally below: formatDistributionStats (status-line-only).
-
-// §6.18.10 B6 — distribution stats for the sweep's primary scores.
-// Reads "  ·  best 0.78 · median 0.42 · sd 0.18 · n 27" (or empty
-// when fewer than 2 finite values — stats wouldn't be meaningful).
-// The aim is honest disclosure: "best of N" cherry-picks, and the
-// user should see the variance to read the headline appropriately.
-// §6.19.2 — render a "Save this run" button into the run row after
-// a sweep completes. Click prompts for a label (auto-suggested);
-// confirm calls saveValidationRun() with a typed entry that travels
-// with the project archive.
-//
-// The persisted run stores the same `persistedRanked` rows that
-// setOptimiseResult took (i.e. with `_cr` already stripped per
-// §6.18.3) — so v1 saves are compact but per-row Apply on a reload
-// will re-infer, not skip-infer. cr persistence is a follow-up.
-function showSaveRunButton(runRow, outcome, persistedRanked, scorer,
-                            algos, B, scorerId, sweepMode, noiseHandling,
-                            extraSettings, runtimeSec) {
-  // Remove any previous save button (e.g. from an earlier sweep this
-  // session — we re-create after every run so it tracks the latest).
-  const existing = runRow.querySelector(".cm-tab-save-run");
-  if (existing) existing.remove();
-
-  const btn = document.createElement("button");
-  btn.type = "button";
-  btn.className = "cm-tab-save-run";
-  btn.textContent = "Save this run";
-  btn.title = "Save this sweep as a Validation run — it survives a project reload and is openable later from the panel picker.";
-
-  btn.addEventListener("click", () => {
-    const state = getState();
-    const ds    = state.dataSource;
-    const mode  = (ds && ds.mode) || "toy";
-    const cfg   = (ds && ds.configs && ds.configs[mode]) || {};
-
-    // Auto-suggest a label from sweep shape + data fixture. The user
-    // can edit before confirming.
-    const subsetTag = mode === "real" ? (cfg.subset || "real") : `toy n=${state.genResult ? state.genResult.nodes.length : "?"}`;
-    const algoTag   = algos.length === 1 ? algos[0].id : `${algos.length} algos`;
-    const dateTag   = new Date().toISOString().slice(0, 10);
-    const auto      = `${algoTag} · ${sweepMode} · ${subsetTag} · ${dateTag}`;
-
-    const label = window.prompt("Label for this validation run:", auto);
-    if (label === null) return;   // user cancelled
-
-    try {
-      const id = saveValidationRun({
-        type: "optimise",
-        label: label.trim() || auto,
-        inputs: {
-          dataSourceId:        mode,
-          dataSourceConfig:    cfg,
-          layerParamsSnapshot: state.layerParams,
-        },
-        settings: {
-          B, scorerId, sweepMode, noiseHandling,
-          algorithms: algos.map(a => a.id),
-          ...extraSettings,
-        },
-        results: {
-          ranked:       persistedRanked,
-          totalConfigs: outcome.totalConfigs,
-          completed:    outcome.completed,
-          scorerId:     scorer.id,
-          scorerLabel:  scorer.label,
-          hitCount:     outcome.hitCount,
-          usedFallback: outcome.usedFallback,
-          phase2CacheHits: outcome.phase2CacheHits,
-        },
-        scoreVersion: SCORE_VERSION,
-        runtimeSec,
-      });
-      btn.textContent = "Saved ✓";
-      btn.disabled = true;
-      // Reset after a moment so re-saves are visible.
-      setTimeout(() => { btn.textContent = "Save again"; btn.disabled = false; }, 1500);
-      console.log("[optimise] saved validation run:", id);
-    } catch (e) {
-      console.error("[optimise] saveValidationRun failed:", e);
-      btn.textContent = "Save failed — see console";
-    }
-  });
-
-  runRow.appendChild(btn);
-}
-
-function formatDistributionStats(ranked) {
-  if (!ranked || ranked.length < 2) return "";
-  const vals = ranked
-    .map(r => r.primary)
-    .filter(v => Number.isFinite(v));
-  if (vals.length < 2) return "";
-  const sorted = vals.slice().sort((a, b) => a - b);
-  const best   = sorted[sorted.length - 1];
-  const mid    = sorted[Math.floor(sorted.length / 2)];
-  let sum = 0;
-  for (const v of vals) sum += v;
-  const mean = sum / vals.length;
-  let sqsum = 0;
-  for (const v of vals) sqsum += (v - mean) * (v - mean);
-  const sd = Math.sqrt(sqsum / vals.length);
-  return ` · best ${formatScalar(best)} · median ${formatScalar(mid)} · sd ${formatScalar(sd)} · n ${vals.length}`;
-}
+// renderResults + scorer column logic + cell formatters live in
+// optimise-results-renderer.js; the validation-run-optimise panel
+// imports them. The modal no longer renders results inline as of
+// workflow-tree-redesign Phase 1 slice B (2026-05-26) — results
+// auto-save to validationRuns and surface in the panel picker.
+// `showSaveRunButton` + `formatDistributionStats` were dropped
+// alongside that change.
 
 function slider(labelText, min, max, step, init, onInput, hint) {
   const row = document.createElement("div");

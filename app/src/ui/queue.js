@@ -56,6 +56,7 @@ function getJobsSnapshot() {
 function patchJobs(partial) {
   const cur = getJobsSnapshot();
   update({ jobs: { ...cur, ...partial } });
+  mirrorToBusy();
 }
 function patchJob(id, fields) {
   const cur = getJobsSnapshot();
@@ -68,6 +69,55 @@ function patchJob(id, fields) {
       byId: { ...cur.byId, [id]: nextJob },
     },
   });
+  mirrorToBusy();
+}
+
+// Mirror our running job (and pending count) into state.busy so the
+// existing bottom busy-bar lights up for jobs enqueued through this
+// module without busy.js needing to know. Slice B will properly merge
+// the two queues; until then this keeps the user-visible feedback
+// working with zero changes elsewhere.
+//
+// We OVERWRITE state.busy with our snapshot when we have a running job,
+// and clear it back to null when our last job finishes — BUT only if
+// state.busy was last set by us (tracked via lastMirroredId). If
+// busy.js's own queue published in between, we leave it alone so its
+// save/load + Apply cascade feedback stays uninterrupted.
+let lastMirroredId = null;
+
+function mirrorToBusy() {
+  const cur = getJobsSnapshot();
+  if (cur.runningId) {
+    const run = cur.byId[cur.runningId];
+    if (!run) return;
+    const tail = [];
+    for (const id of cur.order) {
+      if (id === cur.runningId) continue;
+      const j = cur.byId[id];
+      if (j && j.status === "pending") tail.push({ id: j.id, label: j.label });
+    }
+    update({
+      busy: {
+        current: {
+          id:    run.id,
+          label: run.label,
+          phase: run.phase || null,
+          since: run.startedAt ? Date.parse(run.startedAt) : Date.now(),
+        },
+        queue: tail,
+      },
+    });
+    lastMirroredId = run.id;
+  } else if (lastMirroredId) {
+    // Our running job just ended. Only clear state.busy if the head
+    // it shows is ours — otherwise busy.js's own queue ran a job
+    // in parallel and we should leave its publish alone.
+    const cs = getState();
+    if (cs.busy && cs.busy.current && cs.busy.current.id === lastMirroredId) {
+      update({ busy: null });
+    }
+    lastMirroredId = null;
+  }
 }
 
 // ── runner ───────────────────────────────────────────────────────────
