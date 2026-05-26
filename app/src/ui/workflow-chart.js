@@ -27,6 +27,7 @@ import {
   selectStep, listSteps, STEP_STATUS,
 } from "./workflow.js";
 import { migrateLegacyToWorkflowIfNeeded } from "./workflow-migration.js";
+import { projectStepIntoLegacyState }      from "./workflow-projection.js";
 import { getLayerDescriptor }              from "./modals/layer-descriptors.js";
 
 // Spine step types — the universal pipeline. Anything else attached
@@ -355,11 +356,17 @@ function renderCard(step, x, y, w, h, isSide, selectedId, positionByStep) {
 
 function onCardClick(step) {
   selectStep(step.id);
+  // Slice 2.7: swap the legacy state slots (state.dimredResult /
+  // clusterLevels / basePos / etc.) to this card's snapshot, so the
+  // viewer + every panel re-paints to the selected card's data.
+  // Cheap (refs only, no recompute).
+  projectStepIntoLegacyState(step.id);
 
   // Transitional: if this step type maps to an existing layer
-  // descriptor, open the modal. Slice 2.5 will replace this with
-  // "create a new step" semantics. For now it preserves the current
-  // UX while the rest of Phase 2 lands.
+  // descriptor, also open the modal. Slice 2.5 made these create-step
+  // on Apply, so reopening lets the user edit + fork. Slice 2.8+
+  // will surface a "fork from this card" affordance and the
+  // auto-open will become opt-in.
   const descriptorId = DESCRIPTOR_BY_TYPE[step.type];
   if (!descriptorId) return;
   const desc = getLayerDescriptor(descriptorId);

@@ -79,6 +79,13 @@ function findCanonicalParent(childType) {
 // then calls one of the engine.* functions. The job's fn closes over
 // the patched params; the queue runner mirrors lifecycle onto the step.
 //
+// Slice 2.7: after engineFn returns, we SNAPSHOT the relevant state
+// slots into the step's result based on its type. Each card holds a
+// ref to the exact result objects it produced (the engine creates
+// fresh objects on each Apply, so refs don't alias). The projection
+// layer (workflow-projection.js) replays these into legacy state slots
+// when the user selects the card.
+//
 // Returns the job's promise (resolves with the engine result when the
 // step completes; rejects on failure or cancel). Modals await this so
 // their Running… indicator stays visible until completion (modals that
@@ -98,15 +105,53 @@ function createAndRunStep({ type, label, params, engineFn }) {
     stepId,
     fn: async (_ctx) => {
       await engineFn();
-      // The actual analytical result lives in legacy state slots
-      // (state.dimredResult, state.clusterLevels, etc.). For now the
-      // step's result is a minimal sentinel; slice 2.7 will derive
-      // the per-card analytical result from these slots based on
-      // step ancestry.
-      return { capturedAt: new Date().toISOString() };
+      // Snapshot the relevant state slots into the step's result, so
+      // the projection layer can replay them back when this card is
+      // selected later. Each engine function creates fresh objects, so
+      // these refs aren't shared with other steps' results.
+      return snapshotResultForType(type);
     },
   });
   return promise;
+}
+
+// Per-type snapshot — picks the state slots that "belong" to this
+// layer's output. Refs are captured at the moment the engine function
+// returns; subsequent Apply on a SIBLING produces a new result with
+// fresh refs, so the old card's refs stay intact (immutable per §10.D1).
+function snapshotResultForType(type) {
+  const s = getState();
+  if (type === "dimred") {
+    return {
+      capturedAt:            new Date().toISOString(),
+      dimredResult:          s.dimredResult,
+      _basePos:              s._basePos,
+      _basePos2d:            s._basePos2d,
+      dimredResultPreFusion: s.dimredResultPreFusion,
+      _basePosPreFusion:     s._basePosPreFusion,
+    };
+  }
+  if (type === "clustering") {
+    return {
+      capturedAt:             new Date().toISOString(),
+      clusterLevels:          s.clusterLevels,
+      clusterResult:          s.clusterResult,
+      clusterLevelsPreFusion: s.clusterLevelsPreFusion,
+      clusterResultPreFusion: s.clusterResultPreFusion,
+      bridgeAnalysis:         s.bridgeAnalysis,
+    };
+  }
+  if (type === "citationLayout") {
+    return {
+      capturedAt:            new Date().toISOString(),
+      citationLayout:        s.citationLayout,
+      alignedCitationLayout: s.alignedCitationLayout,
+      alignmentCorrelation:  s.alignmentCorrelation,
+    };
+  }
+  // Other types use the sentinel — the migration helper or per-type
+  // builder already populated their result blob.
+  return { capturedAt: new Date().toISOString() };
 }
 
 // ── descriptors ─────────────────────────────────────────────────────
