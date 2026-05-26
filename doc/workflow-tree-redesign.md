@@ -1,16 +1,45 @@
 # Workflow-tree redesign
 
-**Status (2026-05-26):**
+**Status (2026-05-27):**
 
-- Phase 1 ✓ shipped (queue.js foundation + Optimise non-blocking +
-  auto-save). The original Phase 1 slice C (bottom-bar queued-jobs
+- **Phase 1** ✓ shipped — queue.js foundation + Optimise non-blocking
+  + auto-save. The original Phase 1 slice C (bottom-bar queued-jobs
   surface) is **dropped** — superseded by per-card overlays in
-  Phase 2 (the bottom bar disappears once every long-runner is a
-  card; see §10.D3).
-- Phase 2 design locked, sub-sliced (see §7). Starting next.
-- Open questions remaining: §10.O1 (multi-level clustering shape),
-  §10.O2 (viewer behaviour for cross-source cards), §10.O3 (stale
-  visual), §10.O4 (large-save strategy).
+  Phase 2.
+- **Phase 2 slices 2.1 → 2.8 (excl. 2.7's reverse-7)** ✓ shipped on
+  `main`:
+  - **2.1** state.workflow shape + CRUD actions (workflow.js)
+  - **2.2** legacy state → tree migration (workflow-migration.js)
+  - **2.3** tree-aware workflow-chart renderer
+  - **2.4** step↔job binding + spinner + queue-position badge
+  - **2.5** modal-as-step-creator (Apply forks a new card)
+  - **2.6** re-run affordance on stale cards (↻ button)
+  - **2.7** back-compat projection layer (click a card → viewer swaps)
+  - **2.8** branching tree layout (multi-card siblings spread
+    horizontally with Reingold-Tilford-ish placement)
+- **Phase 2 remaining**:
+  - **2.9** migrate bootstrap-stability + dim-sweep + save/load to
+    step-bound jobs (extends 2.4's pattern; ~1-2 days)
+  - **2.10** cross-source comparison steps (any two clusterings, not
+    just pre/post fusion)
+  - **2.11** dead-UX cleanup + bottom-bar removal (once 2.9 lands)
+  - **2.12** "what's next?" affordances per card
+- **§10.O3 stale visual** resolved by 2.6 (amber dashed border +
+  re-run button). Remaining open questions: §10.O1 (multi-level
+  clustering shape), §10.O2 (viewer behaviour for cross-source
+  cards), §10.O4 (large-save strategy).
+
+**Test infrastructure (committed alongside Phase 2 work):**
+
+- `tests/` directory + `pytest.ini` + `conftest.py` with shared
+  fixtures (page / toy_page / clean_page). 45+ tests across 9
+  modules.
+- Default `pytest` ≈ 13 min (BFS-5000 real-data session + slow
+  integration tests); `pytest -m "not slow"` ≈ 3 min for fast
+  iteration. `slow` marker is on the 4 tests that run real
+  HDBSCAN / UMAP at n=5000.
+- `scratch/` cleared (was 32 smokes; 5 high/medium-value migrated
+  to pytest, the rest dropped — see commit log).
 
 **Why this exists.** The toy has accumulated substantial analysis
 machinery — multi-stage dim-reduction, multi-level clustering,
@@ -430,7 +459,7 @@ analysis surface. Sub-sliced into focused, shippable pieces below.
 Effort estimates are rough; assume each slice = a few days of
 focused work + a smoke per affected surface.
 
-#### Slice 2.1 — `state.workflow` shape + step CRUD actions
+#### Slice 2.1 — `state.workflow` shape + step CRUD actions ✓ shipped
 
 State-layer only; no UI yet. Introduce:
 
@@ -451,7 +480,7 @@ Actions: `createStep`, `updateStepStatus`, `setStepResult`,
 No callers yet; tests are pure state mutations. Out of scope:
 migration, renderer, modal wiring.
 
-#### Slice 2.2 — Migration: legacy state → baseline tree
+#### Slice 2.2 — Migration: legacy state → baseline tree ✓ shipped
 
 When a project loads (or on first boot) without `state.workflow`
 populated, reconstruct a baseline tree from existing slots:
@@ -480,7 +509,7 @@ path; the deserialiser invokes the migration helper.
 Pure helper; tested via "load a v2 .zip, verify tree shape" plus
 "toy boot → clustering-and-blend present; real boot → no blend".
 
-#### Slice 2.3 — Workflow-chart renderer rewrite
+#### Slice 2.3 — Workflow-chart renderer rewrite ✓ shipped
 
 Replace the hand-positioned 7-node SVG with a tree-aware renderer.
 First cut renders the baseline linear tree from 2.2 — visually
@@ -493,7 +522,7 @@ the legacy `state.layerStates`.
 Smoke: chart renders correctly on boot + after migration + after
 state mutation.
 
-#### Slice 2.4 — Step ↔ job binding + spinner/position overlay
+#### Slice 2.4 — Step ↔ job binding + spinner/position overlay ✓ shipped
 
 queue.js's `enqueueJob` gains a `stepId` opt. When a job is bound
 to a step, the step's status mirrors the job's status; the
@@ -507,7 +536,7 @@ unchanged.
 
 This is where "each card is unique" goes live.
 
-#### Slice 2.5 — Modal-as-step-creator
+#### Slice 2.5 — Modal-as-step-creator ✓ shipped
 
 Every modal's Apply creates a new step (forks from the currently-
 selected step's parent or appends as child, depending on the step
@@ -525,7 +554,7 @@ layer).
 Smoke: each modal applied creates a new tree card; old result
 intact; new result attached.
 
-#### Slice 2.6 — Stale propagation
+#### Slice 2.6 — Stale propagation ✓ shipped
 
 When a card's params or result changes (whether by re-run or by a
 new sibling becoming "selected"), descendants get marked stale.
@@ -537,7 +566,7 @@ Smoke: change a dimred card's params → corresponding clustering
 descendant goes stale → clicking re-run produces a new clustering
 card whose status is fresh.
 
-#### Slice 2.7 — Back-compat projection layer
+#### Slice 2.7 — Back-compat projection layer ✓ shipped
 
 Existing panels + viewers read from singular slots
 (`state.dimredResult`, `state.clusterLevels`, `state._basePos`,
@@ -553,7 +582,7 @@ is now selection-driven.
 Smoke: select different clustering cards → viewer-3d / node-table
 / all panels reflect the selection without modifications.
 
-#### Slice 2.8 — Multi-card per layer (real branching UI)
+#### Slice 2.8 — Multi-card per layer (real branching UI) ✓ shipped
 
 Today's chart layout is hand-positioned for 7 nodes. Once 2.5
 lands, users can create unlimited siblings — the renderer needs
@@ -797,17 +826,14 @@ A fusion-comparison card has no geometry of its own. Three options:
 making the difference visible. Side-by-side viewers could be a
 future viewer panel.
 
-#### 10.O3 What's the visual for "stale upstream"?
+#### 10.O3 What's the visual for "stale upstream"? ✓ resolved 2026-05-27
 
-A done card whose upstream has changed should clearly signal it.
-Options:
-- Coloured border (amber).
-- Striped fill on the card body.
-- Icon overlay (warning triangle).
-- Reduced opacity (faded).
-
-Decide at render time. Probably amber border + "re-run" affordance
-on hover.
+**Resolved by slice 2.6.** Stale cards get an amber dashed border
+(`.wf-node-rect.stale` already shipped with slice 2.3) plus a small
+amber ↻ "re-run" button in the top-right corner. Click forks a new
+sibling under the current canonical parent via `rerunStep(stepId)`
+in `layer-descriptors.js`, which dispatches to the matching
+descriptor's `applyChange` with the stale step's stored params.
 
 #### 10.O4 Stash strategy when the project is large
 

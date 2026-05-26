@@ -2554,6 +2554,61 @@ Append in `doc/dim-sweep-results.md` documents the full result.
 ### 6.10 `doc/method-manual.md` ☐
 Was item 9. Still too early.
 
+### 6.20 Workflow-tree redesign ✓ ↻ — Phase 1 + Phase 2 slices 2.1-2.8 shipped 2026-05-26→27
+
+The toy's UX shifted from viewer-centric to workflow-centric: every
+analysis is a card on a branching tree; modals fork siblings rather
+than mutating state in place; selecting a card swaps the legacy
+state slots (back-compat projection) so existing panels + viewer
+re-paint to that card's data. Full design + slice list in
+`doc/workflow-tree-redesign.md`.
+
+**What landed:**
+
+- **Phase 1** — queue.js typed-job queue (slice A) + Optimise non-
+  blocking with auto-save to validationRuns (slice B). Slice C
+  (bottom-bar queued-jobs surface) dropped — per-card overlays
+  supersede.
+- **Phase 2 slices 2.1 → 2.8** (the workflow-tree itself):
+  - state.workflow tree shape + step CRUD (workflow.js, immutable-
+    per-card, stale-via-revision-stamps, branch-delete cascade)
+  - Migration from legacy state slots (workflow-migration.js)
+  - Tree-aware workflow-chart renderer (auto-migrates on mount;
+    branching Reingold-Tilford-ish layout, spinner overlay on
+    running cards, queue-position badge on pending, ↻ re-run
+    button on stale)
+  - queue.js step↔job binding (job lifecycle mirrors to the
+    bound step's status)
+  - Modal-as-step-creator (every Apply on dimred / clustering /
+    citation-layout modals forks a new sibling card; data-source
+    modal is the exception — clears the tree + re-migrates)
+  - Back-compat projection layer (selectStep + walk ancestry +
+    project each step's snapshot into legacy state slots; viewer
+    re-paints to the selected card's data)
+- **Test infrastructure** committed alongside — pytest in `tests/`,
+  conftest fixtures (page / toy_page / clean_page), BFS-5000 as
+  default fixture per user directive 2026-05-26, slow marker for
+  real-data tests. scratch/ cleared (32 smokes → 0; high/medium-
+  value migrated, rest dropped).
+
+**Remaining Phase 2 work (when next session resumes):**
+- **2.9** migrate bootstrap-stability / dim-sweep / save / load to
+  step-bound jobs (extends 2.4 pattern; ~1-2 days)
+- **2.10** cross-source comparison steps (fusion-comparison via
+  refIds, generalised to any two clusterings)
+- **2.11** dead-UX cleanup + bottom-bar removal (depends on 2.9)
+- **2.12** "what's next?" affordances per card
+
+**Open design questions** (in workflow-tree-redesign.md §10.O*):
+- O1 multi-level clustering presentation (single card vs per-level
+  vs hybrid)
+- O2 viewer behaviour for cross-source cards
+- O4 large-save strategy (defer until pain appears)
+- O3 stale visual ✓ resolved by 2.6.
+
+See `doc/workflow-tree-redesign.md` for full design + slice list +
+sequencing.
+
 ### Parallel track (deferred)
 
 Compression / subsampling for "real data in the toy" — load a
@@ -2583,10 +2638,15 @@ exploration. Out of scope for the immediate plan.
 
 - **Stopping predicate for recursion.** Currently the user
   controls level count manually via the modal's `+ Add level`.
-  At real-data scale we may want an auto-stop: leaf-size threshold,
-  coherence threshold, or modularity-gain. Not urgent at toy scale.
-- **Subsample size for the toy at real-data shape.** 5 k? 10 k?
-  20 k? Empirical, deferred to large-data compression work.
+  Deferred (per user 2026-05-26) until auto cluster recursion is
+  designed — it'll be coupled to the Optimise tab and is a
+  carefully-design slice. The §6.20 workflow-tree restructure has
+  to land first so the clustering machinery's surrounding metrics
+  + logging are surfaced before we design the recursion.
+- ~~**Subsample size for the toy at real-data shape.**~~ Resolved
+  2026-05-26 — BFS-5000 is the default test fixture; user confirmed
+  5k is fine for current work. Future scale-up to 10k/20k is a
+  separate parallel track if needed.
 - ~~**ARI dim-sweep verdict.**~~ Resolved 2026-05-25 (§6.9):
   `ARI(50, 100) = 0.806` on BFS-5000 — below 0.9, so default
   bumped 50 → 100. `ARI(100, 200) = 1.000` so 100 is the
