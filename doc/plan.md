@@ -131,8 +131,7 @@ port; real-pipeline-only candidate), real-pipeline Python port
 (Layer 4/5a in scoring app), method manual, IndexedDB autosave
 (file save/load shipped; auto-restore-last-session is a follow-
 up), Web Worker port for heavy compute lanes (UMAP / HDBSCAN /
-FR / UMAP-on-graph), Pivot MDS + spectral citation-layout
-algorithms (§6.14 follow-ups beyond UMAP-on-graph).
+FR / UMAP-on-graph).
 
 **Stability failure mode (resolved):** the original stability
 scorer ranked trivially-coarse clusterings highest — a single
@@ -335,8 +334,10 @@ The toy's α blends two endpoints in the integrated tool:
 
 - α = 0: **viz-umap-3d** (UMAP-on-SPECTER2 to 3-d) — what the
   embedding alone says.
-- α = 1: **citation-graph layout** (pivot MDS or sparse spectral,
-  per Leiden component) — what the citation topology alone says.
+- α = 1: **citation-graph layout** (FR, MDS, or UMAP-on-graph —
+  the three algorithms currently registered in
+  `citation-layout/registry.js`) — what the citation topology
+  alone says.
 
 ### 2.4 Sparse storage
 
@@ -1206,7 +1207,7 @@ state shape; **previous spec preserved below for reference.**
 - Click another menu item while busy → no-op (if the
   pointer-events guard lands) or doesn't crash (if it doesn't).
 
-### 6.14 Citation layout for sparse large-scale graphs ✓ ↻ — **partial**
+### 6.14 Citation layout for sparse large-scale graphs ✓ ↻
 
 **Shipped:**
 - **Year propagation end-to-end** (`make_dev_subset.py`,
@@ -1227,23 +1228,6 @@ state shape; **previous spec preserved below for reference.**
   views encode distinct information, blend is meaningful).
   No spherical shell, no nested orbitals — preserves local
   citation neighbourhoods rather than global pairwise distances.
-
-**Still pending** (medium-term, in original ranked order):
-- **Pivot MDS** — replaces classical MDS at scale with a low-rank
-  pivot approximation. Carries the graph-distance-preservation
-  intent forward without the m²-BFS cost.
-- **Spectral layout** — low-eigenvectors of the graph Laplacian.
-  Substantial work without an off-the-shelf JS sparse-eigsh.
-- **Barnes–Hut FR** — preserves FR's force formulation including
-  the now-working cladogram time anchor; only the all-pairs
-  repulsion sum changes (octree approximation, `O(n log n)`).
-
-Defer all three until UMAP-on-graph proves load-bearing for
-real-data exploration; if it doesn't, the next pick depends on
-which structural property the user finds it missing
-(reproducibility-of-runs ⇒ Pivot MDS; large-scale topology
-fidelity ⇒ spectral; preserving FR's cladogram semantics
-exactly ⇒ Barnes–Hut).
 
 **Observed at BFS-5000 (n=5000, |E|=12268, density ~0.001) — pre-fix baseline:**
 - FR collapsed to a **uniform spherical shell** — every node
@@ -1270,47 +1254,11 @@ degeneracy is fixed: both carvers now emit `paper_years.json` and
 `real.js` normalises to `t ∈ [0, 1]` per subset (see "Shipped"
 above). FR's cladogram anchor recovers real semantic structure on
 BFS-5000. The sparsity-driven sphere itself isn't fixed by
-year propagation alone — UMAP-on-graph (also shipped) is the
-recommended algorithm at this density; the medium-term picks
-below remain the path forward for FR-formulation-specific or
-graph-distance-preservation work.
-
-**Medium-term: new layout algorithms for scale.** The scaling
-doc (`doc/scaling.md` §2.4.2) already enumerates the alternatives
-worth registering in `citation-layout/registry.js`. In rough
-order of bang-for-effort at n=5–50k:
-- **Pivot MDS** (Brandes & Pich 2007) — pick `p ≈ 50–500` pivot
-  nodes, BFS from each (`O(p · |E|)`), embed pivots exactly,
-  triangulate the rest. Carries the graph-distance-preservation
-  idea verbatim with low-rank approximation. Tractable at any size.
-- **Spectral layout** — low-eigenvectors of the graph Laplacian
-  (`sparse eigsh` equivalent in JS). Captures large-scale
-  topology rather than per-pair distances. Linear-ish on sparse
-  graphs.
-- **UMAP on citation graph** (`umap-js` with a precomputed
-  k-NN graph from citations). Reuses the same library already
-  loaded for the dim-reduction layer. Mathematically not MDS,
-  but for visualisation it's often what users actually want.
-- **Barnes–Hut FR** as a last resort if we want to keep FR's
-  formulation. Octree-approximated repulsion takes the all-pairs
-  sum from `O(n²)` to `O(n log n)`. Doesn't fix the cladogram-
-  anchor degeneracy; that's a separate issue.
-
-Each new algorithm slots in as a new entry in
-`citation-layout/registry.js` with `{ id, defaultParams, compute,
-modalSchema }` — same shape as `fr` and `mds`. The blend / align
-contract is unchanged: any 3-d positional array works.
-
-**Open question — which scoring metric for cross-layout sweep?**
-The eval surface (§6.5) currently sweeps clustering algorithms.
-Citation-layout has no analogous quality metric registered.
-Candidates: alignment correlation against basePos, edge-crossing
-count, neighbourhood-preservation precision-recall (Venna &
-Kaski 2001). Don't pick yet — wait until at least two new
-algorithms are registered so the choice has real candidates to
-compare. The eval-surface infrastructure should generalise so
-"sweep over citation-layout algorithms" becomes a third tab in
-the layout modal without re-implementing the sweep engine.
+year propagation alone — UMAP-on-graph is the recommended
+algorithm at this density. Treating §6.14 as complete: UMAP-on-graph
+covers the sparse-large-graph case; additional layout algorithms
+will be added on demand if a concrete need surfaces, not
+speculatively.
 
 ### 6.15 Citation-aware embedding fusion (Layer 1.5 sub-stage) ✓ ↻ — **MVP shipped**
 
@@ -1627,10 +1575,10 @@ they don't have today:
 - Not a replacement for the per-frame blend. Both stay. Fusion
   modifies *what gets embedded into 3-d*; blend interpolates
   *between two 3-d arrangements*. Different things.
-- Not a substitute for the algorithm comparisons in §6.14
-  (Pivot MDS / spectral / Barnes-Hut). Those compete with UMAP
-  on graph; fusion is a layer above them that all of them can
-  consume.
+- Not a substitute for the citation-layout algorithms in §6.14
+  (FR / MDS / UMAP-on-graph). Those produce a 3-d arrangement
+  from the citation topology; fusion is a layer above them that
+  any of them can consume.
 
 ### 6.5 Stability + Optimisation (Validate + Optimise) ✓ ↻ — **beta**
 
