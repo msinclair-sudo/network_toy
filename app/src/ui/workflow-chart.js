@@ -64,15 +64,27 @@ const SVG_NS = "http://www.w3.org/2000/svg";
 export function mountWorkflowChart() {
   const root = document.getElementById("workflow-chart");
   if (!root) return;
+  // One-shot migration on mount: bootstrap the tree from legacy slots
+  // if the workflow is empty. Idempotent. Subsequent state changes
+  // re-render but do NOT re-migrate — that would clobber tests + any
+  // workflow mutations performed by other modules.
+  migrateLegacyToWorkflowIfNeeded();
+  // Subscribe with a debounced one-shot retry: when state.genResult
+  // first becomes populated after boot (toy boot is fast but real-mode
+  // ingest takes ~30 s), the workflow is still empty. We re-attempt
+  // migration once per render until the root appears, then stop trying.
+  let migrationDone = !!getRootStep();
   render(root);
-  subscribe(() => render(root));
+  subscribe(() => {
+    if (!migrationDone) {
+      const ran = migrateLegacyToWorkflowIfNeeded();
+      if (ran || getRootStep()) migrationDone = true;
+    }
+    render(root);
+  });
 }
 
 function render(root) {
-  // Auto-migrate on every render if the workflow is empty but legacy
-  // slots have data. Idempotent — no-ops after the first hit.
-  migrateLegacyToWorkflowIfNeeded();
-
   const rootStep = getRootStep();
 
   // Empty-state: no tree yet. Could happen on a degenerate boot
