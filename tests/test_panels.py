@@ -104,55 +104,55 @@ def test_bootstrap_stability_live_run(page):
 # ── fusion-comparison helpers ──────────────────────────────────────────
 
 
-def test_nmi_helper(page):
-    """Pure NMI computation. Doesn't need data."""
+def test_fusion_compare_helpers(page):
+    """Pure helper unit tests — NMI on three label arrays + a hand-
+    crafted compareFusionPartitions case. Merged from two prior
+    tests since both exercise the eval/{nmi,fusion-compare}.js
+    surface with no data dependency."""
     out = page.evaluate(
         '''async () => {
             const { normalisedMutualInformation, adjustedMutualInformation } =
                 await import("/app/src/eval/nmi.js");
-            const A = new Int32Array([0,0,0,1,1,1,2,2,2]);
-            const B = new Int32Array([0,0,0,1,1,1,2,2,2]);
-            const C = new Int32Array([2,2,2,0,0,0,1,1,1]);    // relabelled
-            const D = new Int32Array([0,1,2,0,1,2,0,1,2]);    // independent
-            return {
-                identical: normalisedMutualInformation(A, B).nmi_arith,
-                permuted:  normalisedMutualInformation(A, C).nmi_arith,
-                indep:     normalisedMutualInformation(A, D).nmi_arith,
-                ami:       adjustedMutualInformation(A, B).ami,
-            };
-        }'''
-    )
-    assert abs(out["identical"] - 1.0) < 1e-6
-    assert abs(out["permuted"]  - 1.0) < 1e-6
-    assert out["indep"] < 0.3
-    assert abs(out["ami"] - 1.0) < 1e-3
-
-
-def test_compare_partitions_hand_crafted(page):
-    out = page.evaluate(
-        '''async () => {
             const { compareFusionPartitions } = await import("/app/src/eval/fusion-compare.js");
+            // NMI cases.
+            const A = new Int32Array([0,0,0,1,1,1,2,2,2]);
+            const B = new Int32Array([0,0,0,1,1,1,2,2,2]);  // identical
+            const C = new Int32Array([2,2,2,0,0,0,1,1,1]);  // relabelled
+            const D = new Int32Array([0,1,2,0,1,2,0,1,2]);  // independent
+            // compareFusionPartitions case.
             const pre  = { nodeCluster: new Int32Array([0,0,0,0, 1,1,1,1, 2,2,2,2]),
                            clusters: [{id:0},{id:1},{id:2}] };
             const post = { nodeCluster: new Int32Array([0,0,0,2, 1,1,1,1, 2,2,2,1]),
                            clusters: [{id:0},{id:1},{id:2}] };
             const r = compareFusionPartitions(pre, post);
             return {
-                ari:   r.aggregate.ari,
-                nmi:   r.aggregate.nmi_arith,
-                macro: r.aggregate.macroJaccard,
-                pre:   r.aggregate.nClustersPre,
-                post:  r.aggregate.nClustersPost,
-                top:   r.topMovers[0],
-                len:   r.perNodeRetention.length,
+                identical: normalisedMutualInformation(A, B).nmi_arith,
+                permuted:  normalisedMutualInformation(A, C).nmi_arith,
+                indep:     normalisedMutualInformation(A, D).nmi_arith,
+                ami:       adjustedMutualInformation(A, B).ami,
+                cmp: {
+                    ari:   r.aggregate.ari,
+                    macro: r.aggregate.macroJaccard,
+                    pre:   r.aggregate.nClustersPre,
+                    post:  r.aggregate.nClustersPost,
+                    topRetention: r.topMovers[0].retention,
+                    len:   r.perNodeRetention.length,
+                },
             };
         }'''
     )
-    assert 0.5 < out["ari"] < 1.0
-    assert 0.5 < out["macro"] < 1.0
-    assert out["pre"] == 3 and out["post"] == 3
-    assert out["len"] == 12
-    assert out["top"]["retention"] < 0.5
+    # NMI.
+    assert abs(out["identical"] - 1.0) < 1e-6
+    assert abs(out["permuted"]  - 1.0) < 1e-6
+    assert out["indep"] < 0.3
+    assert abs(out["ami"] - 1.0) < 1e-3
+    # compareFusionPartitions.
+    c = out["cmp"]
+    assert 0.5 < c["ari"]   < 1.0
+    assert 0.5 < c["macro"] < 1.0
+    assert c["pre"] == 3 and c["post"] == 3
+    assert c["len"] == 12
+    assert c["topRetention"] < 0.5
 
 
 def test_fusion_comparison_panel_empty_when_no_prefusion(page):
