@@ -412,10 +412,35 @@ html, body {
   pointer-events: none;
 }
 
-#workflow-chart .wf-state-dot.fresh    { fill: var(--ok); }
-#workflow-chart .wf-state-dot.stale    { fill: var(--warn); }
-#workflow-chart .wf-state-dot.error    { fill: var(--err); }
-#workflow-chart .wf-state-dot.not-run  { fill: var(--not-run); }
+#workflow-chart .wf-state-dot.fresh     { fill: var(--ok); }
+#workflow-chart .wf-state-dot.stale     { fill: var(--warn); }
+#workflow-chart .wf-state-dot.error     { fill: var(--err); }
+#workflow-chart .wf-state-dot.cancelled { fill: var(--text-faint); }
+#workflow-chart .wf-state-dot.pending   { fill: var(--text-dim); opacity: 0.6; }
+#workflow-chart .wf-state-dot.running   { fill: var(--accent); }
+#workflow-chart .wf-state-dot.not-run   { fill: var(--not-run); }
+
+/* Phase 2 slice 2.3 — tree-aware chart additions. */
+
+#workflow-chart .wf-node-rect.selected {
+  stroke: var(--accent);
+  stroke-width: 2;
+}
+#workflow-chart .wf-node-rect.stale {
+  stroke: var(--warn);
+  stroke-dasharray: 4 3;
+}
+#workflow-chart .wf-node-rect.side {
+  fill: var(--bg-2);
+  rx: 3;
+  ry: 3;
+}
+#workflow-chart .wf-empty-hint {
+  padding: 12px;
+  color: var(--text-faint);
+  font-size: 11px;
+  font-style: italic;
+}
 
 /* ── blend control (bottom of left rail) ─────────────────────────────── */
 /* Compact stack. Each section is a small uppercase title plus one or
