@@ -19,7 +19,7 @@
 // lane (recluster, relayoutCitations, …).
 
 import { openModal } from "./modal.js";
-import { enqueueBusy } from "../busy.js";
+// enqueueBusy import removed 2026-05-27 (slice 2.5) — see Apply onClick.
 
 export function openAlgorithmModal(descriptor) {
   const active = descriptor.getActive();
@@ -182,11 +182,11 @@ export function openAlgorithmModal(descriptor) {
         primary: true,
         onClick: () => {
           // Apply commits the choice, closes the modal, and hands the
-          // (potentially slow) engine cascade to the global busy queue.
-          // The engine lane's own setBusyLabel calls override this
-          // generic "Applying…" label as the cascade walks; the user
-          // sees the specific step in the bottom bar.
-          enqueueBusy("Applying…", () => descriptor.applyChange(chosenAlgoId, chosenParams))
+          // descriptor.applyChange (slice 2.5) creates a tree step +
+          // enqueues a job via queue.js; the runner's mirror publishes
+          // to state.busy so the bottom bar still lights up + the
+          // chart card spins. No outer enqueueBusy — that nests queues.
+          descriptor.applyChange(chosenAlgoId, chosenParams)
             .catch(e => console.error("[algorithm-modal] applyChange failed:", e));
         },
       },

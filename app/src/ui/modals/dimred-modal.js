@@ -19,7 +19,7 @@
 // and re-runs engine.redimred(). Cancel discards the working copy.
 
 import { openModal } from "./modal.js";
-import { enqueueBusy } from "../busy.js";
+// enqueueBusy import removed 2026-05-27 (slice 2.5) — see Apply onClick.
 
 const SECTIONS = [
   {
@@ -86,13 +86,13 @@ export function openDimredModal(descriptor) {
         label: "Apply",
         primary: true,
         onClick: () => {
-          // Apply commits the working state, closes the modal, and
-          // hands the (potentially slow) engine cascade to the global
-          // busy queue. The bottom bar shows progress; the user is
-          // free to open another modal and stack a follow-up. The
-          // engine lanes update the bar's label as the cascade walks
-          // through (Dim-reduction… → Clustering… → Citations…).
-          enqueueBusy("Dim-reduction…", () => descriptor.applyChange(working))
+          // Apply commits the working state; the descriptor (slice 2.5)
+          // creates a new dimred tree step and enqueues a job that
+          // runs the cascade. Modal closes immediately; the spinner
+          // shows on the new card; the bottom busy bar mirrors the
+          // running job (no outer enqueueBusy needed — that would
+          // race state.busy publishes with queue.js's mirror).
+          descriptor.applyChange(working)
             .catch(e => console.error("[dimred-modal] applyChange failed:", e));
           // returning undefined → modal closes via the default handler
         },

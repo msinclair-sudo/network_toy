@@ -1,4 +1,5 @@
-"""Tests for the step↔job binding (Phase 2 slice 2.4).
+"""Tests for the step↔job binding (Phase 2 slice 2.4) +
+descriptor-level modal-as-step-creator (Phase 2 slice 2.5).
 
 Verifies:
   - enqueueJob({stepId}) mirrors job lifecycle onto the bound step
@@ -6,7 +7,11 @@ Verifies:
   - workflow-chart renders spinner overlay on RUNNING steps + queue-
     position badge on PENDING steps (both in one test — they're
     aspects of the same render path)
+  - descriptor.applyChange creates a new tree step under the canonical
+    parent type; multiple applies produce sibling cards (slice 2.5)
 """
+
+import pytest
 
 
 def test_queue_mirrors_all_lifecycle_paths(page):
@@ -138,3 +143,109 @@ def test_chart_spinner_and_queue_badge(page):
     )
     assert out["spinners"] >= 1, "expected a spinner on the running step"
     assert "1" in out["badges"], f"expected position-1 badge, got {out['badges']}"
+
+
+# ── Slice 2.5: modal-as-step-creator (descriptor.applyChange) ──────────
+
+
+@pytest.mark.slow
+def test_clustering_descriptor_creates_sibling_card(page):
+    """Calling clusteringDescriptor.applyChange creates a new
+    clustering tree step under the dimred parent. Slow because the
+    cascade runs real HDBSCAN at n=5000."""
+    out = page.evaluate(
+        '''async () => {
+            const wf = await import("/app/src/ui/workflow.js");
+            const mig = await import("/app/src/ui/workflow-migration.js");
+            const { getLayerDescriptor } = await import("/app/src/ui/modals/layer-descriptors.js");
+            mig.migrateLegacyToWorkflowIfNeeded();
+
+            const beforeClustering = wf.listSteps({ type: "clustering" }).length;
+            const dimredCards = wf.listSteps({ type: "dimred" });
+            if (dimredCards.length === 0) throw new Error("no dimred parent in migrated tree");
+            const desc = getLayerDescriptor("clustering");
+            // Use mutualKNN to keep this test as fast as possible at n=5000.
+            const reg = await import("/app/src/clustering-registry.js");
+            const algo = reg.getAlgorithm("mutualKNN");
+            const newLevels = [{
+                uid: Math.random().toString(36).slice(2, 10),
+                params: algo.defaultParams(),
+                scope: "global",
+            }];
+            // applyChange returns a promise that resolves after the job
+            // completes (queue.js runs the cascade).
+            await desc.applyChange("mutualKNN", newLevels);
+
+            const afterClustering = wf.listSteps({ type: "clustering" });
+            const newCard = afterClustering[afterClustering.length - 1];
+            return {
+                beforeCount:   beforeClustering,
+                afterCount:    afterClustering.length,
+                newCardType:   newCard.type,
+                newCardStatus: newCard.status,
+                newCardParentType: newCard.parentId
+                    ? wf.getStep(newCard.parentId).type
+                    : null,
+                newCardHasResult: newCard.result !== null,
+            };
+        }'''
+    )
+    assert out["afterCount"] == out["beforeCount"] + 1
+    assert out["newCardType"] == "clustering"
+    assert out["newCardStatus"] == "done"
+    assert out["newCardParentType"] == "dimred"
+    assert out["newCardHasResult"] is True
+
+
+@pytest.mark.slow
+def test_clustering_applies_create_siblings_not_replace(page):
+    """Each Apply creates a NEW sibling card under the same dimred
+    parent — never overwrites a prior clustering card (§10.D1).
+    Tests immutability + uniqueness across two consecutive Applies."""
+    out = page.evaluate(
+        '''async () => {
+            const wf = await import("/app/src/ui/workflow.js");
+            const mig = await import("/app/src/ui/workflow-migration.js");
+            const { getLayerDescriptor } = await import("/app/src/ui/modals/layer-descriptors.js");
+            const reg = await import("/app/src/clustering-registry.js");
+            mig.migrateLegacyToWorkflowIfNeeded();
+            const desc = getLayerDescriptor("clustering");
+            const algo = reg.getAlgorithm("mutualKNN");
+
+            const startCount = wf.listSteps({ type: "clustering" }).length;
+
+            // Apply #1.
+            await desc.applyChange("mutualKNN", [{
+                uid: "u1", params: { ...algo.defaultParams(), mutualK: 5 }, scope: "global",
+            }]);
+            // Apply #2 — different params.
+            await desc.applyChange("mutualKNN", [{
+                uid: "u2", params: { ...algo.defaultParams(), mutualK: 20 }, scope: "global",
+            }]);
+
+            const after = wf.listSteps({ type: "clustering" });
+            // Find the two newest siblings — both should share the same
+            // dimred parent + each should have its own non-null result.
+            const last = after[after.length - 1];
+            const prev = after[after.length - 2];
+            return {
+                createdCount:        after.length - startCount,
+                lastParent:          last && last.parentId,
+                prevParent:          prev && prev.parentId,
+                sameParent:          last && prev && last.parentId === prev.parentId,
+                lastParams_mutualK:  last && last.params.levels[0].params.mutualK,
+                prevParams_mutualK:  prev && prev.params.levels[0].params.mutualK,
+                lastResultId:        last && (last.result && last.result.capturedAt),
+                prevResultId:        prev && (prev.result && prev.result.capturedAt),
+                distinctIds:         last.id !== prev.id,
+            };
+        }'''
+    )
+    assert out["createdCount"] == 2
+    assert out["sameParent"] is True
+    # Each card carries its own (different) params.
+    assert out["lastParams_mutualK"] != out["prevParams_mutualK"]
+    # Both have a non-null result blob.
+    assert out["lastResultId"] is not None
+    assert out["prevResultId"] is not None
+    assert out["distinctIds"] is True
