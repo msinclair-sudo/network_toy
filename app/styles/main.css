@@ -442,6 +442,41 @@ html, body {
   font-style: italic;
 }
 
+/* Phase 2 slice 2.4 — spinner overlay on RUNNING cards + queue-position
+   badge on PENDING cards. */
+@keyframes wf-spinner-rotate {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+#workflow-chart .wf-spinner-track {
+  fill: none;
+  stroke: var(--border-light);
+  stroke-width: 1.5;
+}
+#workflow-chart .wf-spinner-arc {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-dasharray: 8 24;
+  stroke-dashoffset: 0;
+  transform-origin: center;
+  animation: wf-spinner-rotate 0.9s linear infinite;
+}
+#workflow-chart .wf-queue-badge circle {
+  fill: var(--accent);
+  stroke: var(--bg-2);
+  stroke-width: 1;
+}
+#workflow-chart .wf-queue-badge text {
+  fill: var(--bg-1);
+  font-size: 9px;
+  font-weight: 700;
+  text-anchor: middle;
+  dominant-baseline: middle;
+  pointer-events: none;
+}
+
 /* ── blend control (bottom of left rail) ─────────────────────────────── */
 /* Compact stack. Each section is a small uppercase title plus one or
    two single-line rows. Rows mirror the toy-data row grid

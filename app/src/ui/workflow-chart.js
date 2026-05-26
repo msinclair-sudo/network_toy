@@ -215,17 +215,46 @@ function renderSvg(root, layout) {
     svg.appendChild(renderEdge(e));
   }
 
-  // Spine cards.
+  // Build a stepId → queue-position map for the spinner / badge
+  // overlays (Phase 2 slice 2.4). Walk state.jobs.order; running +
+  // pending jobs each carry an in-flight position counted from 0.
+  const positionByStep = buildQueuePositionMap();
   const selectedId = (getSelectedStep() && getSelectedStep().id) || null;
+
+  // Spine cards.
   for (const { step, x, y } of layout.spine) {
-    svg.appendChild(renderCard(step, x, y, NODE_W, NODE_H, /*isSide=*/false, selectedId));
+    svg.appendChild(renderCard(step, x, y, NODE_W, NODE_H, /*isSide=*/false, selectedId, positionByStep));
   }
   // Side-branch cards.
   for (const { step, x, y } of layout.side) {
-    svg.appendChild(renderCard(step, x, y, SIDE_W, SIDE_H, /*isSide=*/true, selectedId));
+    svg.appendChild(renderCard(step, x, y, SIDE_W, SIDE_H, /*isSide=*/true, selectedId, positionByStep));
   }
 
   root.appendChild(svg);
+}
+
+/**
+ * Walk state.jobs.order, count in-flight (pending + running) jobs,
+ * and emit a Map(stepId → 0-based position) for every job that has
+ * a bound stepId. Position 0 = currently running; 1 = next pending;
+ * etc.
+ *
+ * @returns {Map<string, number>}
+ */
+function buildQueuePositionMap() {
+  const out = new Map();
+  const state = getState();
+  const jobs  = state.jobs;
+  if (!jobs || !jobs.order) return out;
+  let pos = 0;
+  for (const jid of jobs.order) {
+    const j = jobs.byId[jid];
+    if (!j) continue;
+    if (j.status !== "pending" && j.status !== "running") continue;
+    if (j.stepId) out.set(j.stepId, pos);
+    pos++;
+  }
+  return out;
 }
 
 function renderEdge(e) {
@@ -242,7 +271,7 @@ function renderEdge(e) {
   return svgEl("path", { d, class: "wf-arrow" });
 }
 
-function renderCard(step, x, y, w, h, isSide, selectedId) {
+function renderCard(step, x, y, w, h, isSide, selectedId, positionByStep) {
   const g = svgEl("g", { transform: `translate(${x}, ${y})` });
 
   const cls = ["wf-node-rect"];
@@ -253,15 +282,47 @@ function renderCard(step, x, y, w, h, isSide, selectedId) {
   rect.addEventListener("click", () => onCardClick(step));
   g.appendChild(rect);
 
-  // Status indicator: small circle. Colour reflects step.status.
-  // (Spinner animation lands in slice 2.4 when jobs bind to steps.)
-  const dot = svgEl("circle", {
-    cx: 10,
-    cy: h / 2,
-    r: 4,
-    class: `wf-state-dot ${statusClass(step.status)}`,
-  });
-  g.appendChild(dot);
+  // Status indicator: spinning ring when running, static dot otherwise.
+  // The spinner is a partial-arc circle that rotates via CSS animation;
+  // sits at the same location as the static dot.
+  if (step.status === STEP_STATUS.RUNNING) {
+    const spinnerG = svgEl("g", {
+      class: "wf-spinner",
+      transform: `translate(10, ${h / 2})`,
+    });
+    spinnerG.appendChild(svgEl("circle", {
+      cx: 0, cy: 0, r: 5,
+      class: "wf-spinner-track",
+    }));
+    spinnerG.appendChild(svgEl("circle", {
+      cx: 0, cy: 0, r: 5,
+      class: "wf-spinner-arc",
+    }));
+    g.appendChild(spinnerG);
+  } else {
+    const dot = svgEl("circle", {
+      cx: 10,
+      cy: h / 2,
+      r: 4,
+      class: `wf-state-dot ${statusClass(step.status)}`,
+    });
+    g.appendChild(dot);
+  }
+
+  // Queue-position badge for PENDING steps that are bound to a job.
+  // Sits in the top-right corner. Position 0 = currently running (not
+  // shown — handled by the spinner above); 1 = next pending, etc.
+  const queuePos = positionByStep && positionByStep.get(step.id);
+  if (step.status === STEP_STATUS.PENDING && queuePos != null && queuePos > 0) {
+    const badgeR = 7;
+    const badge = svgEl("g", { class: "wf-queue-badge",
+                               transform: `translate(${w - badgeR - 4}, ${badgeR + 4})` });
+    badge.appendChild(svgEl("circle", { cx: 0, cy: 0, r: badgeR }));
+    const t = svgEl("text", { x: 0, y: 0 });
+    t.textContent = String(queuePos);
+    badge.appendChild(t);
+    g.appendChild(badge);
+  }
 
   // Main label.
   const labelY = isSide ? h / 2 + 4 : h / 2 - 6;
