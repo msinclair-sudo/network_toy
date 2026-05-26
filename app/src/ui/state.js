@@ -264,6 +264,41 @@ const state = {
   // Mutate via saveValidationRun / deleteValidationRun / clearValidationRuns.
   // Default empty array — additive schema; older saves load with [].
   validationRuns: [],
+
+  // ── Typed-job queue (workflow-tree-redesign Phase 1, slice A). ──────
+  // First-class jobs with stable ids, types, status transitions, and
+  // per-job cancellation. Coexists with state.busy (legacy display
+  // queue from §6.13); the bridge happens in slice B. Mutated only
+  // through actions in ui/queue.js — direct update({jobs: ...}) calls
+  // outside that module will race the runner.
+  //
+  // Shape:
+  //   {
+  //     byId:      { [id]: Job },     // every job ever enqueued in this session
+  //     order:     string[],          // creation order (id list); used for
+  //                                    // pending discovery + UI listing
+  //     runningId: string | null,     // id of the job currently executing
+  //   }
+  //
+  // Job shape:
+  //   {
+  //     id, type, label,
+  //     status:    "pending" | "running" | "done" | "failed" | "cancelled",
+  //     result:    any | null,        // populated on done
+  //     error:     string | null,     // populated on failed
+  //     phase:     string | null,     // mid-flight status line (free text)
+  //     progress:  number | null,     // 0..1 mid-flight progress fraction
+  //     createdAt: ISO string,
+  //     startedAt: ISO string | null,
+  //     endedAt:   ISO string | null,
+  //   }
+  //
+  // Default empty — additive schema; older saves load with the empty
+  // shape. Not persisted across save/load in this slice (jobs are
+  // ephemeral runtime state; their *results* live in validationRuns
+  // when explicitly saved). Future slices may persist running queue
+  // state so a reload can pick up mid-flight work — out of scope here.
+  jobs: { byId: {}, order: [], runningId: null },
 };
 
 const subscribers = new Set();
