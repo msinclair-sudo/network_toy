@@ -23,19 +23,12 @@
 
 import { getState, subscribe }            from "./state.js";
 import {
-  getRootStep, getStepChildren, getSelectedStep, isStepStale,
-  selectStep, listSteps, STEP_STATUS,
+  getRootStep, getStep, getSelectedStep, isStepStale,
+  selectStep, STEP_STATUS,
 } from "./workflow.js";
 import { migrateLegacyToWorkflowIfNeeded } from "./workflow-migration.js";
 import { projectStepIntoLegacyState }      from "./workflow-projection.js";
-import { getLayerDescriptor }              from "./modals/layer-descriptors.js";
-
-// Spine step types — the universal pipeline. Anything else attached
-// to a spine card is rendered as a "side branch" to the right.
-const SPINE_TYPES = new Set([
-  "data", "dimred", "clustering", "citations",
-  "citationLayout", "alignment", "blend",
-]);
+import { getLayerDescriptor, rerunStep }   from "./modals/layer-descriptors.js";
 
 // Map step.type → existing layer-descriptor id (the chart's click
 // handler opens that descriptor's modal during the transition;
@@ -47,17 +40,17 @@ const DESCRIPTOR_BY_TYPE = {
   "citationLayout": "layout",
 };
 
-// Layout constants.
-const NODE_W       = 200;
-const NODE_H       = 40;
-const SPINE_X      = 10;
-const SIDE_X       = 230;        // x-offset for side-branch cards
-const SIDE_W       = 180;
-const SIDE_H       = 30;
-const VERTICAL_GAP = 52;         // vertical distance between spine rows
-const SIDE_GAP     = 6;          // vertical gap between stacked side-branch cards
+// Layout constants. Cards are smaller than slice 2.3 since branching
+// trees can fan out wide; smaller cards keep ~4-5 siblings visible
+// in a standard left rail. Long labels truncate.
+const NODE_W       = 120;
+const NODE_H       = 36;
+const HORIZ_GAP    = 12;         // horizontal gap between sibling subtrees
+const VERTICAL_GAP = 56;         // vertical distance between depth levels
 const TOP_PAD      = 10;
 const BOTTOM_PAD   = 12;
+const LEFT_PAD     = 8;
+const RIGHT_PAD    = 8;
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 
@@ -104,81 +97,95 @@ function render(root) {
 // ── layout ───────────────────────────────────────────────────────────
 
 /**
- * Compute SVG-local positions for every step.
+ * Compute SVG-local positions for every step using a Reingold-Tilford-
+ * ish recursive tree layout. Phase 2 slice 2.8 — replaces the linear
+ * spine + side-branch layout from slice 2.3 since slice 2.5 lets the
+ * user create multiple siblings per layer.
+ *
+ * Algorithm:
+ *   Pass 1 — compute subtree width per node (in card-slots):
+ *     leaf:     width = 1
+ *     internal: width = max(1, sum of children widths)
+ *   Pass 2 — pre-order traversal:
+ *     each node gets centred over its allotted subtree-width.
+ *     Children laid out left-to-right; sibling subtrees butt up
+ *     against each other (HORIZ_GAP between cards).
+ *     y = depth × VERTICAL_GAP + TOP_PAD.
  *
  * Returns:
  *   {
- *     spine:    [{ step, x, y }],         // ordered top-down
- *     side:     [{ step, x, y, parentY }], // attached to a spine row
- *     edges:    [{ from: id, to: id }],
+ *     positions: [{ step, x, y }],
+ *     edges:     [{ fromX, fromY, toX, toY }],
  *     viewboxW, viewboxH,
  *   }
- *
- * Layout strategy (slice 2.3 first cut):
- *   - Follow the spine: from root, prefer the first child whose type
- *     is in SPINE_TYPES; that's the next spine row.
- *   - Any other children of a spine row are "side branches" — stacked
- *     vertically to the right of the parent row.
- *   - The first non-spine child of a spine row anchors the row's side
- *     stack; subsequent side children stack downward, then we adjust
- *     the next spine row downward if the side stack overflows.
  */
 function computeLayout(rootStep) {
-  const spine = [];
-  const side  = [];
-  const edges = [];
+  const slotWidth = NODE_W + HORIZ_GAP;     // total slot pitch per card
 
-  let curY = TOP_PAD;
-  let cur  = rootStep;
-  const seenIds = new Set();
-
-  while (cur) {
-    if (seenIds.has(cur.id)) break;   // cycle guard (shouldn't happen)
-    seenIds.add(cur.id);
-
-    spine.push({ step: cur, x: SPINE_X, y: curY });
-    const children = getStepChildren(cur.id);
-
-    // Non-spine children → side branches at this row.
-    const sideKids = children.filter(c => !SPINE_TYPES.has(c.type));
-    let sideY = curY;
-    for (let i = 0; i < sideKids.length; i++) {
-      const sk = sideKids[i];
-      side.push({ step: sk, x: SIDE_X, y: sideY, parentY: curY });
-      edges.push({ fromX: SPINE_X + NODE_W, fromY: curY + NODE_H / 2,
-                   toX:   SIDE_X,           toY:   sideY + SIDE_H / 2 });
-      sideY += SIDE_H + SIDE_GAP;
+  // Pass 1: width-in-slots per node.
+  const widthOf = new Map();
+  function computeWidth(stepId) {
+    const step = stepId && getStepInTree(stepId);
+    if (!step) return 0;
+    if (step.childIds.length === 0) {
+      widthOf.set(stepId, 1);
+      return 1;
     }
+    let total = 0;
+    for (const cid of step.childIds) total += computeWidth(cid);
+    const w = Math.max(1, total);
+    widthOf.set(stepId, w);
+    return w;
+  }
+  computeWidth(rootStep.id);
 
-    // Next spine row: the first child whose type is a spine type.
-    const next = children.find(c => SPINE_TYPES.has(c.type)) || null;
-    if (next) {
-      // Push spine row down if the side stack here goes past the
-      // default row height.
-      const sideHeight = sideKids.length > 0
-        ? (sideY - curY)   // total height of the side stack
-        : 0;
-      const nextY = curY + Math.max(VERTICAL_GAP, sideHeight + 12);
-      edges.push({ fromX: SPINE_X + NODE_W / 2, fromY: curY + NODE_H,
-                   toX:   SPINE_X + NODE_W / 2, toY:   nextY });
-      curY = nextY;
-      cur  = next;
-    } else {
-      cur = null;
+  // Pass 2: place each node. (x, y) is the top-left of the card; we
+  // compute the centre internally and translate.
+  const positions = [];
+  const edges = [];
+  function place(stepId, xLeftSlot, y) {
+    const step = getStepInTree(stepId);
+    if (!step) return;
+    const w = widthOf.get(stepId);
+    // Card centre = midpoint of allotted slot range.
+    const xCentre = xLeftSlot + (w * slotWidth) / 2 - HORIZ_GAP / 2;
+    const xCard   = xCentre - NODE_W / 2;
+    positions.push({ step, x: xCard, y });
+
+    let childXLeft = xLeftSlot;
+    for (const cid of step.childIds) {
+      const cWidth   = widthOf.get(cid);
+      const childCentre = childXLeft + (cWidth * slotWidth) / 2 - HORIZ_GAP / 2;
+      const childY      = y + VERTICAL_GAP;
+      edges.push({
+        fromX: xCentre,
+        fromY: y + NODE_H,
+        toX:   childCentre,
+        toY:   childY,
+      });
+      place(cid, childXLeft, childY);
+      childXLeft += cWidth * slotWidth;
     }
   }
+  place(rootStep.id, LEFT_PAD, TOP_PAD);
 
-  // Viewbox: tallest of spine bottom or last side card.
-  const spineBottom = spine.length > 0
-    ? spine[spine.length - 1].y + NODE_H
-    : TOP_PAD + NODE_H;
-  const sideBottom = side.length > 0
-    ? Math.max(...side.map(s => s.y + SIDE_H))
-    : 0;
-  const viewboxH = Math.max(spineBottom, sideBottom) + BOTTOM_PAD;
-  const viewboxW = SIDE_X + SIDE_W + 10;
+  // Compute viewport from the placed positions.
+  const maxX = positions.length > 0
+    ? Math.max(...positions.map(p => p.x + NODE_W)) + RIGHT_PAD
+    : LEFT_PAD + NODE_W + RIGHT_PAD;
+  const maxY = positions.length > 0
+    ? Math.max(...positions.map(p => p.y + NODE_H)) + BOTTOM_PAD
+    : TOP_PAD + NODE_H + BOTTOM_PAD;
 
-  return { spine, side, edges, viewboxW, viewboxH };
+  return { positions, edges, viewboxW: maxX, viewboxH: maxY };
+}
+
+// Wraps getStep with a null-safe lookup; used during the recursive
+// layout so a missing step (shouldn't happen if invariants hold)
+// doesn't throw.
+function getStepInTree(stepId) {
+  try { return getStep(stepId); }
+  catch (_) { return null; }
 }
 
 // ── render ───────────────────────────────────────────────────────────
@@ -222,13 +229,10 @@ function renderSvg(root, layout) {
   const positionByStep = buildQueuePositionMap();
   const selectedId = (getSelectedStep() && getSelectedStep().id) || null;
 
-  // Spine cards.
-  for (const { step, x, y } of layout.spine) {
-    svg.appendChild(renderCard(step, x, y, NODE_W, NODE_H, /*isSide=*/false, selectedId, positionByStep));
-  }
-  // Side-branch cards.
-  for (const { step, x, y } of layout.side) {
-    svg.appendChild(renderCard(step, x, y, SIDE_W, SIDE_H, /*isSide=*/true, selectedId, positionByStep));
+  // All cards (uniform size now — slice 2.8 dropped the spine/side
+  // distinction in favour of pure tree layout).
+  for (const { step, x, y } of layout.positions) {
+    svg.appendChild(renderCard(step, x, y, NODE_W, NODE_H, selectedId, positionByStep));
   }
 
   root.appendChild(svg);
@@ -272,11 +276,10 @@ function renderEdge(e) {
   return svgEl("path", { d, class: "wf-arrow" });
 }
 
-function renderCard(step, x, y, w, h, isSide, selectedId, positionByStep) {
+function renderCard(step, x, y, w, h, selectedId, positionByStep) {
   const g = svgEl("g", { transform: `translate(${x}, ${y})` });
 
   const cls = ["wf-node-rect"];
-  if (isSide)                   cls.push("side");
   if (step.id === selectedId)   cls.push("selected");
   if (isStepStale(step.id))     cls.push("stale");
   const rect = svgEl("rect", { width: w, height: h, class: cls.join(" ") });
@@ -325,28 +328,52 @@ function renderCard(step, x, y, w, h, isSide, selectedId, positionByStep) {
     g.appendChild(badge);
   }
 
-  // Main label.
-  const labelY = isSide ? h / 2 + 4 : h / 2 - 6;
+  // Slice 2.6: re-run affordance on stale cards. Clickable ↻ glyph in
+  // the top-right corner (offset left when a queue badge is also there).
+  // Click → forkStep via rerunStep — creates a new sibling under the
+  // canonical (current) parent with the stale card's params.
+  if (isStepStale(step.id)) {
+    const btnR = 8;
+    const btnX = (queuePos != null && queuePos > 0) ? w - btnR - 22 : w - btnR - 4;
+    const btn = svgEl("g", {
+      class: "wf-rerun-btn",
+      transform: `translate(${btnX}, ${btnR + 4})`,
+    });
+    btn.appendChild(svgEl("circle", { cx: 0, cy: 0, r: btnR }));
+    // Refresh glyph — a partial-arc path + arrowhead.
+    btn.appendChild(svgEl("path", {
+      d: "M -3.5 -1.5 A 3.5 3.5 0 1 0 -2 -3.5 L -2 -1 L -4 -1",
+      class: "wf-rerun-glyph",
+    }));
+    btn.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      rerunStep(step.id).catch(e =>
+        console.error("[workflow-chart] rerunStep failed:", e)
+      );
+    });
+    g.appendChild(btn);
+  }
+
+  // Main label + small sub-label below (algorithm summary).
+  // Card is small (120×36); both lines truncate to ~15-18 chars.
+  const sub = subLabelFor(step);
+  const labelY = sub ? h / 2 - 5 : h / 2;
   const label = svgEl("text", {
-    x: w / 2 + (isSide ? -4 : 4),
+    x: w / 2 + 4,
     y: labelY,
     class: "wf-node-label",
   });
-  label.textContent = truncate(step.label, isSide ? 22 : 28);
+  label.textContent = truncate(step.label, 16);
   g.appendChild(label);
 
-  // Sub-label (algorithm summary) on spine cards only.
-  if (!isSide) {
-    const sub = subLabelFor(step);
-    if (sub) {
-      const algoText = svgEl("text", {
-        x: w / 2 + 4,
-        y: h / 2 + 7,
-        class: "wf-node-algo",
-      });
-      algoText.textContent = truncate(sub, 28);
-      g.appendChild(algoText);
-    }
+  if (sub) {
+    const algoText = svgEl("text", {
+      x: w / 2 + 4,
+      y: h / 2 + 7,
+      class: "wf-node-algo",
+    });
+    algoText.textContent = truncate(sub, 16);
+    g.appendChild(algoText);
   }
 
   return g;

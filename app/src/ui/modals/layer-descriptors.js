@@ -21,7 +21,7 @@ import { listAlgorithms as listClusteringAlgos,
 import { listAlgorithms as listLayoutAlgos,
          getAlgorithm   as getLayoutAlgo }         from "../../citation-layout/registry.js";
 import { getState, update, setDataSourceMode, setDataSourceConfig } from "../state.js";
-import { createStep, listSteps, clearWorkflow }     from "../workflow.js";
+import { createStep, listSteps, clearWorkflow, getStep } from "../workflow.js";
 import { enqueueJob }                              from "../queue.js";
 import { openAlgorithmModal }                       from "./algorithm-modal.js";
 import { openClusteringModal }                      from "./clustering-modal.js";
@@ -286,6 +286,38 @@ function clusteringDescriptor() {
     openModal: () => openClusteringModal(desc),
   };
   return desc;
+}
+
+// Slice 2.6: fork a stale step. Reads the step's stored params,
+// dispatches to the matching descriptor's applyChange. Creates a new
+// sibling card under the canonical parent (which is now the *fresh*
+// upstream — that's the whole point of re-running). Returns the
+// descriptor's promise so callers can await completion.
+//
+// Unknown step types throw — only the layer types we know how to
+// re-run get this affordance.
+export function rerunStep(stepId) {
+  const step = getStep(stepId);
+  if (!step) throw new Error(`[rerunStep] unknown stepId "${stepId}"`);
+  if (step.type === "dimred") {
+    const p = step.params || {};
+    return dimredDescriptor().applyChange({
+      noise:       p.noise,
+      fusion:      p.fusion,
+      compression: p.compression,
+      viz:         p.viz,
+      viz2d:       p.viz2d,
+    });
+  }
+  if (step.type === "clustering") {
+    const p = step.params || {};
+    return clusteringDescriptor().applyChange(p.method, p.levels || []);
+  }
+  if (step.type === "citationLayout") {
+    const p = step.params || {};
+    return layoutDescriptor().applyChange(p.method, p.params || {});
+  }
+  throw new Error(`[rerunStep] type "${step.type}" not re-runnable`);
 }
 
 function layoutDescriptor() {
