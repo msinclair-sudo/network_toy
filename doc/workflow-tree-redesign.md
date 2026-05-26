@@ -451,18 +451,34 @@ Actions: `createStep`, `updateStepStatus`, `setStepResult`,
 No callers yet; tests are pure state mutations. Out of scope:
 migration, renderer, modal wiring.
 
-#### Slice 2.2 — Migration: legacy state → linear baseline tree
+#### Slice 2.2 — Migration: legacy state → baseline tree
 
 When a project loads (or on first boot) without `state.workflow`
-populated, reconstruct a baseline linear chain from existing slots:
-data → dimred → clustering → (optionally) citations → layout →
-alignment → blend. Each card carries the existing result; all
-done; the active path becomes `selected`.
+populated, reconstruct a baseline tree from existing slots:
 
-Old saved projects load via the existing schema-version path; the
-deserialiser invokes the migration helper.
+  - **Always**: `data → dimred → clustering`. These are the
+    universal analysis spine for both toy and real data; every
+    project has them.
+  - **Toy-mode only**: `citations → layout → alignment → blend`
+    branch off clustering. These are the taste-network simulation
+    output and only exist in toy mode (or when the user has
+    explicitly imported citation edges in real mode). The
+    migration helper adds these cards only when the corresponding
+    result slots are populated.
+  - **Validation runs** (Optimise sweeps, bootstrap-stability,
+    dim-sweeps, fusion-comparisons that the user saved) get
+    attached as children of the relevant ancestor (e.g. a
+    `type: "optimise"` ValidationRun attaches under the clustering
+    card it was scored against, identified by
+    `inputs.layerParamsSnapshot.clustering`).
 
-Pure helper; tested via "load a v2 .zip, verify tree shape".
+Each migrated card carries the existing result + `status: "done"`.
+The active path's leaf (typically the clustering card) becomes
+`selected`. Old saved projects load via the existing schema-version
+path; the deserialiser invokes the migration helper.
+
+Pure helper; tested via "load a v2 .zip, verify tree shape" plus
+"toy boot → clustering-and-blend present; real boot → no blend".
 
 #### Slice 2.3 — Workflow-chart renderer rewrite
 
@@ -616,10 +632,13 @@ Old saved projects load. The deserialiser detects whether
 
 - **Present**: use as-is.
 - **Absent**: reconstruct from `state.layerParams` + existing result
-  slots. Build a linear tree: data → dimred → clustering →
-  (optionally) citations → layout → alignment → blend, all done.
-  `validationRuns` get reattached to their nearest matching step by
-  `inputs.dataSourceId` + `inputs.layerParamsSnapshot` heuristic.
+  slots per Slice 2.2's rules:
+  - Always emit `data → dimred → clustering` (the universal spine).
+  - Add the `citations → layout → alignment → blend` branch only
+    when the corresponding result slots are populated — i.e. toy
+    mode or real mode with imported citations.
+  - `validationRuns` get reattached to their nearest matching
+    ancestor by `inputs.layerParamsSnapshot` heuristic.
 
 Existing modals stay during the transition. Phase 2's adapter layer
 makes them create-step instead of mutate-state, but they don't
