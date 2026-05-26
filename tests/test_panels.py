@@ -104,9 +104,9 @@ def test_bootstrap_stability_live_run(page):
 # ── fusion-comparison helpers ──────────────────────────────────────────
 
 
-def test_nmi_helper(clean_page):
+def test_nmi_helper(page):
     """Pure NMI computation. Doesn't need data."""
-    out = clean_page.evaluate(
+    out = page.evaluate(
         '''async () => {
             const { normalisedMutualInformation, adjustedMutualInformation } =
                 await import("/app/src/eval/nmi.js");
@@ -128,8 +128,8 @@ def test_nmi_helper(clean_page):
     assert abs(out["ami"] - 1.0) < 1e-3
 
 
-def test_compare_partitions_hand_crafted(clean_page):
-    out = clean_page.evaluate(
+def test_compare_partitions_hand_crafted(page):
+    out = page.evaluate(
         '''async () => {
             const { compareFusionPartitions } = await import("/app/src/eval/fusion-compare.js");
             const pre  = { nodeCluster: new Int32Array([0,0,0,0, 1,1,1,1, 2,2,2,2]),
@@ -230,9 +230,9 @@ def test_fusion_comparison_panel_with_synthetic_prefusion(page):
 # ── dim-sweep panel + chart helpers ────────────────────────────────────
 
 
-def test_chart_helpers_render(clean_page):
+def test_chart_helpers_render(page):
     """heatmap + bars helpers produce SVG output. No data needed."""
-    out = clean_page.evaluate(
+    out = page.evaluate(
         '''async () => {
             const heatHost = document.createElement("div");
             const barsHost = document.createElement("div");

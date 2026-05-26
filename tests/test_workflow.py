@@ -1,14 +1,16 @@
 """Tests for app/src/ui/workflow.js (CRUD + invariants) and
 app/src/ui/workflow-migration.js (legacy state → tree migration).
 
-CRUD tests use clean_page (no data needed). Migration tests use the
-default page fixture (BFS-5000 loaded) to verify real-mode shape, and
-toy_page for the toy-mode shape (taste-network citations).
+All tests share the bfs5000_page session. CRUD tests don't read
+genResult / dimredResult / etc., so they reuse the session context
+(workflow + jobs + validationRuns are reset between tests by the
+`page` fixture). The migration tests verify spine shape on the
+real-data fixture; toy_page handles the toy-mode citation branch.
 """
 
 
-def test_empty_workflow_on_boot(clean_page):
-    out = clean_page.evaluate(
+def test_empty_workflow_on_boot(page):
+    out = page.evaluate(
         '''async () => {
             const w = await import("/app/src/ui/workflow.js");
             const state = await import("/app/src/ui/state.js");
@@ -27,8 +29,8 @@ def test_empty_workflow_on_boot(clean_page):
     assert out["list"] == []
 
 
-def test_create_step_validation(clean_page):
-    out = clean_page.evaluate(
+def test_create_step_validation(page):
+    out = page.evaluate(
         '''async () => {
             const w = await import("/app/src/ui/workflow.js");
             w.clearWorkflow();
@@ -60,8 +62,8 @@ def test_create_step_validation(clean_page):
     assert all(out.values()), f"validation failures: {out}"
 
 
-def test_status_transitions(clean_page):
-    out = clean_page.evaluate(
+def test_status_transitions(page):
+    out = page.evaluate(
         '''async () => {
             const w = await import("/app/src/ui/workflow.js");
             w.clearWorkflow();
@@ -97,8 +99,8 @@ def test_status_transitions(clean_page):
     assert out["terminal"] is True
 
 
-def test_stale_propagation(clean_page):
-    out = clean_page.evaluate(
+def test_stale_propagation(page):
+    out = page.evaluate(
         '''async () => {
             const w = await import("/app/src/ui/workflow.js");
             w.clearWorkflow();
@@ -118,8 +120,8 @@ def test_stale_propagation(clean_page):
     assert out["after"] is True
 
 
-def test_progress_clamping_and_running_only(clean_page):
-    out = clean_page.evaluate(
+def test_progress_clamping_and_running_only(page):
+    out = page.evaluate(
         '''async () => {
             const w = await import("/app/src/ui/workflow.js");
             w.clearWorkflow();
@@ -144,8 +146,8 @@ def test_progress_clamping_and_running_only(clean_page):
     assert out["clamped"] == 1.0
 
 
-def test_select_step(clean_page):
-    out = clean_page.evaluate(
+def test_select_step(page):
+    out = page.evaluate(
         '''async () => {
             const w = await import("/app/src/ui/workflow.js");
             w.clearWorkflow();
@@ -168,8 +170,8 @@ def test_select_step(clean_page):
     assert out["sD"] == out["root"]
 
 
-def test_delete_cascade(clean_page):
-    out = clean_page.evaluate(
+def test_delete_cascade(page):
+    out = page.evaluate(
         '''async () => {
             const w = await import("/app/src/ui/workflow.js");
             w.clearWorkflow();
@@ -202,8 +204,8 @@ def test_delete_cascade(clean_page):
     assert out["rootStill"] is True
 
 
-def test_list_steps_filters_dont_prune_traversal(clean_page):
-    out = clean_page.evaluate(
+def test_list_steps_filters_dont_prune_traversal(page):
+    out = page.evaluate(
         '''async () => {
             const w = await import("/app/src/ui/workflow.js");
             w.clearWorkflow();
@@ -301,11 +303,12 @@ def test_migration_is_idempotent(page):
     assert out["firstCount"] == out["secondCount"]
 
 
-def test_validation_runs_attach_to_right_anchor(clean_page):
+def test_validation_runs_attach_to_right_anchor(page):
     """ValidationRun anchor mapping: dimSweep → dimred; everything else
-    → clustering. Run on a synthesised state snapshot (clean_page +
-    inferBaselineTree on a hand-built input)."""
-    out = clean_page.evaluate(
+    → clustering. Tests inferBaselineTree on a hand-built snapshot
+    (independent of the session's real-data state — workflow is cleared
+    first)."""
+    out = page.evaluate(
         '''async () => {
             const w   = await import("/app/src/ui/workflow.js");
             const mig = await import("/app/src/ui/workflow-migration.js");

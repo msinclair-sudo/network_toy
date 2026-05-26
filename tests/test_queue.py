@@ -1,11 +1,13 @@
 """Tests for app/src/ui/queue.js — typed-job FIFO queue.
 
-Pure module + state tests; uses clean_page (no BFS-5000 ingest needed).
+Pure module + state tests; shares the session bfs5000_page (these
+tests don't read genResult / dimredResult, so reusing the session
+saves ~5s per test vs. spawning a fresh browser context each time).
 """
 
 
-def test_enqueue_and_happy_path(clean_page):
-    out = clean_page.evaluate(
+def test_enqueue_and_happy_path(page):
+    out = page.evaluate(
         '''async () => {
             const q = await import("/app/src/ui/queue.js");
             const state = await import("/app/src/ui/state.js");
@@ -42,8 +44,8 @@ def test_enqueue_and_happy_path(clean_page):
     assert out["hadStartedAt"] and out["hadEndedAt"]
 
 
-def test_list_jobs_filters(clean_page):
-    out = clean_page.evaluate(
+def test_list_jobs_filters(page):
+    out = page.evaluate(
         '''async () => {
             const q = await import("/app/src/ui/queue.js");
             const a = q.enqueueJob({ type: "x", label: "x", fn: async () => 1 });
@@ -63,8 +65,8 @@ def test_list_jobs_filters(clean_page):
     assert out["missing"] == 0
 
 
-def test_fifo_single_worker(clean_page):
-    out = clean_page.evaluate(
+def test_fifo_single_worker(page):
+    out = page.evaluate(
         '''async () => {
             const q = await import("/app/src/ui/queue.js");
             const state = await import("/app/src/ui/state.js");
@@ -92,8 +94,8 @@ def test_fifo_single_worker(clean_page):
     assert out["br"] == "b"
 
 
-def test_cancel_pending(clean_page):
-    out = clean_page.evaluate(
+def test_cancel_pending(page):
+    out = page.evaluate(
         '''async () => {
             const q = await import("/app/src/ui/queue.js");
             const state = await import("/app/src/ui/state.js");
@@ -122,8 +124,8 @@ def test_cancel_pending(clean_page):
     assert out["bResult"] == "AbortError"
 
 
-def test_cancel_running(clean_page):
-    out = clean_page.evaluate(
+def test_cancel_running(page):
+    out = page.evaluate(
         '''async () => {
             const q = await import("/app/src/ui/queue.js");
             const state = await import("/app/src/ui/state.js");
@@ -157,8 +159,8 @@ def test_cancel_running(clean_page):
     assert out["result"] == "AbortError"
 
 
-def test_failure_propagates_queue_continues(clean_page):
-    out = clean_page.evaluate(
+def test_failure_propagates_queue_continues(page):
+    out = page.evaluate(
         '''async () => {
             const q = await import("/app/src/ui/queue.js");
             const state = await import("/app/src/ui/state.js");
@@ -190,8 +192,8 @@ def test_failure_propagates_queue_continues(clean_page):
     assert out["bStatus"] == "done"
 
 
-def test_clear_settled_jobs_keeps_inflight(clean_page):
-    out = clean_page.evaluate(
+def test_clear_settled_jobs_keeps_inflight(page):
+    out = page.evaluate(
         '''async () => {
             const q = await import("/app/src/ui/queue.js");
             const state = await import("/app/src/ui/state.js");
