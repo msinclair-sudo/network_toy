@@ -1,68 +1,204 @@
-// Workflow chart — SVG DAG renderer for the pipeline.
+// Workflow chart — tree-aware SVG renderer.
 //
-// One node per layer. Input layers ([Data], [Citations]) are drawn
-// with dashed strokes to distinguish them from method layers.
-// Click a node → opens its modal (stub for now; wired in slice 4).
+// Phase 2 slice 2.3 of the workflow-tree-redesign. Reads from
+// state.workflow (the typed branching DAG that lives in workflow.js)
+// instead of the hand-positioned 7-node list this file used to ship.
 //
-// State coupling:
-//   state.layerStates[id]      → status dot colour
-//   state.activeAlgorithm[id]  → small algorithm name under the label
+// Self-contained module: defined inputs + outputs.
+//   - Inputs: state.workflow (via workflow.js's read API) + state
+//     subscriptions for re-render.
+//   - Side effects: mounts an SVG under #workflow-chart; calls
+//     selectStep(id) on click; opens the relevant modal for spine
+//     step types via getLayerDescriptor (slice 2.5 will move this
+//     into modal-as-step-creator).
+//   - Auto-migration: when state.workflow is empty but the legacy
+//     state slots are populated, calls migrateLegacyToWorkflowIfNeeded
+//     to bootstrap a baseline linear tree before rendering. Idempotent.
 //
-// Layout is hand-positioned (the pipeline is fixed; auto-layout is
-// overkill at this scale). One column for the main spine, plus a
-// citations branch.
+// Layout (slice 2.3 first cut): the tree is rendered as a vertical
+// spine, with non-spine children (e.g. saved ValidationRun cards
+// attached to a clustering step) floated to the right at their
+// parent's depth. Real branching layout (multiple siblings on the
+// spine) lands in slice 2.8.
 
 import { getState, subscribe }            from "./state.js";
+import {
+  getRootStep, getStepChildren, getSelectedStep, isStepStale,
+  selectStep, listSteps, STEP_STATUS,
+} from "./workflow.js";
+import { migrateLegacyToWorkflowIfNeeded } from "./workflow-migration.js";
+import { projectStepIntoLegacyState }      from "./workflow-projection.js";
 import { getLayerDescriptor }              from "./modals/layer-descriptors.js";
 
-// Single-column DAG laid out vertically. Citations is a *method*
-// node here (toy generates them via taste-network); for real-data
-// mode it becomes an input node and the toy's path through the
-// chart stays the same.
-//
-// y-positions are in SVG-local units; the SVG itself scales width
-// to fit the rail.
-const NODES = [
-  // [id, label, x, y, kind]   kind: "input" | "method"
-  { id: "data",       label: "Data",         x: 10, y:  10, kind: "input"  },
-  { id: "dimred",     label: "Dim reduce",   x: 10, y:  62, kind: "method" },
-  { id: "clustering", label: "Clustering",   x: 10, y: 114, kind: "method" },
-  { id: "citations",  label: "Citations",    x: 10, y: 166, kind: "method" },
-  { id: "layout",     label: "Cit. layout",  x: 10, y: 218, kind: "method" },
-  { id: "alignment",  label: "Alignment",    x: 10, y: 270, kind: "method" },
-  { id: "blend",      label: "Blend",        x: 10, y: 322, kind: "method" },
-];
+// Spine step types — the universal pipeline. Anything else attached
+// to a spine card is rendered as a "side branch" to the right.
+const SPINE_TYPES = new Set([
+  "data", "dimred", "clustering", "citations",
+  "citationLayout", "alignment", "blend",
+]);
 
-const EDGES = [
-  ["data",       "dimred"],
-  ["dimred",     "clustering"],
-  ["clustering", "citations"],
-  ["citations",  "layout"],
-  ["layout",     "alignment"],
-  ["alignment",  "blend"],
-];
+// Map step.type → existing layer-descriptor id (the chart's click
+// handler opens that descriptor's modal during the transition;
+// slice 2.5 replaces this with "create a new step" semantics).
+const DESCRIPTOR_BY_TYPE = {
+  "data":           "data",
+  "dimred":         "dimred",
+  "clustering":     "clustering",
+  "citationLayout": "layout",
+};
 
-const NODE_W = 200;
-const NODE_H = 40;
-const VIEWBOX_W = 220;
-const VIEWBOX_H = 372;
+// Layout constants.
+const NODE_W       = 200;
+const NODE_H       = 40;
+const SPINE_X      = 10;
+const SIDE_X       = 230;        // x-offset for side-branch cards
+const SIDE_W       = 180;
+const SIDE_H       = 30;
+const VERTICAL_GAP = 52;         // vertical distance between spine rows
+const SIDE_GAP     = 6;          // vertical gap between stacked side-branch cards
+const TOP_PAD      = 10;
+const BOTTOM_PAD   = 12;
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+
 
 export function mountWorkflowChart() {
   const root = document.getElementById("workflow-chart");
   if (!root) return;
+  // One-shot migration on mount: bootstrap the tree from legacy slots
+  // if the workflow is empty. Idempotent. Subsequent state changes
+  // re-render but do NOT re-migrate — that would clobber tests + any
+  // workflow mutations performed by other modules.
+  migrateLegacyToWorkflowIfNeeded();
+  // Subscribe with a debounced one-shot retry: when state.genResult
+  // first becomes populated after boot (toy boot is fast but real-mode
+  // ingest takes ~30 s), the workflow is still empty. We re-attempt
+  // migration once per render until the root appears, then stop trying.
+  let migrationDone = !!getRootStep();
   render(root);
-  subscribe(() => render(root));
+  subscribe(() => {
+    if (!migrationDone) {
+      const ran = migrateLegacyToWorkflowIfNeeded();
+      if (ran || getRootStep()) migrationDone = true;
+    }
+    render(root);
+  });
 }
 
 function render(root) {
-  const state = getState();
+  const rootStep = getRootStep();
+
+  // Empty-state: no tree yet. Could happen on a degenerate boot
+  // (no genResult). Render an empty hint rather than a blank rail.
+  if (!rootStep) {
+    renderEmptyHint(root);
+    return;
+  }
+
+  // Compute layout: walk the spine top-down + lay out side-branches
+  // to the right at each spine node's row.
+  const layout = computeLayout(rootStep);
+  renderSvg(root, layout);
+}
+
+// ── layout ───────────────────────────────────────────────────────────
+
+/**
+ * Compute SVG-local positions for every step.
+ *
+ * Returns:
+ *   {
+ *     spine:    [{ step, x, y }],         // ordered top-down
+ *     side:     [{ step, x, y, parentY }], // attached to a spine row
+ *     edges:    [{ from: id, to: id }],
+ *     viewboxW, viewboxH,
+ *   }
+ *
+ * Layout strategy (slice 2.3 first cut):
+ *   - Follow the spine: from root, prefer the first child whose type
+ *     is in SPINE_TYPES; that's the next spine row.
+ *   - Any other children of a spine row are "side branches" — stacked
+ *     vertically to the right of the parent row.
+ *   - The first non-spine child of a spine row anchors the row's side
+ *     stack; subsequent side children stack downward, then we adjust
+ *     the next spine row downward if the side stack overflows.
+ */
+function computeLayout(rootStep) {
+  const spine = [];
+  const side  = [];
+  const edges = [];
+
+  let curY = TOP_PAD;
+  let cur  = rootStep;
+  const seenIds = new Set();
+
+  while (cur) {
+    if (seenIds.has(cur.id)) break;   // cycle guard (shouldn't happen)
+    seenIds.add(cur.id);
+
+    spine.push({ step: cur, x: SPINE_X, y: curY });
+    const children = getStepChildren(cur.id);
+
+    // Non-spine children → side branches at this row.
+    const sideKids = children.filter(c => !SPINE_TYPES.has(c.type));
+    let sideY = curY;
+    for (let i = 0; i < sideKids.length; i++) {
+      const sk = sideKids[i];
+      side.push({ step: sk, x: SIDE_X, y: sideY, parentY: curY });
+      edges.push({ fromX: SPINE_X + NODE_W, fromY: curY + NODE_H / 2,
+                   toX:   SIDE_X,           toY:   sideY + SIDE_H / 2 });
+      sideY += SIDE_H + SIDE_GAP;
+    }
+
+    // Next spine row: the first child whose type is a spine type.
+    const next = children.find(c => SPINE_TYPES.has(c.type)) || null;
+    if (next) {
+      // Push spine row down if the side stack here goes past the
+      // default row height.
+      const sideHeight = sideKids.length > 0
+        ? (sideY - curY)   // total height of the side stack
+        : 0;
+      const nextY = curY + Math.max(VERTICAL_GAP, sideHeight + 12);
+      edges.push({ fromX: SPINE_X + NODE_W / 2, fromY: curY + NODE_H,
+                   toX:   SPINE_X + NODE_W / 2, toY:   nextY });
+      curY = nextY;
+      cur  = next;
+    } else {
+      cur = null;
+    }
+  }
+
+  // Viewbox: tallest of spine bottom or last side card.
+  const spineBottom = spine.length > 0
+    ? spine[spine.length - 1].y + NODE_H
+    : TOP_PAD + NODE_H;
+  const sideBottom = side.length > 0
+    ? Math.max(...side.map(s => s.y + SIDE_H))
+    : 0;
+  const viewboxH = Math.max(spineBottom, sideBottom) + BOTTOM_PAD;
+  const viewboxW = SIDE_X + SIDE_W + 10;
+
+  return { spine, side, edges, viewboxW, viewboxH };
+}
+
+// ── render ───────────────────────────────────────────────────────────
+
+function renderEmptyHint(root) {
+  root.innerHTML = "";
+  const div = document.createElement("div");
+  div.className = "wf-empty-hint";
+  div.textContent = "Workflow tree appears once data is loaded.";
+  root.appendChild(div);
+}
+
+function renderSvg(root, layout) {
   root.innerHTML = "";
 
-  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-  svg.setAttribute("viewBox", `0 0 ${VIEWBOX_W} ${VIEWBOX_H}`);
-  svg.setAttribute("preserveAspectRatio", "xMidYMin meet");
+  const svg = svgEl("svg", {
+    viewBox: `0 0 ${layout.viewboxW} ${layout.viewboxH}`,
+    preserveAspectRatio: "xMidYMin meet",
+  });
 
-  // arrowhead marker
   const defs = svgEl("defs");
   const marker = svgEl("marker", {
     id: "wf-arrowhead",
@@ -71,94 +207,144 @@ function render(root) {
     markerWidth: "6", markerHeight: "6",
     orient: "auto-start-reverse",
   });
-  const arrowPath = svgEl("path", { d: "M 0 0 L 10 5 L 0 10 z", fill: "#4a5260" });
-  marker.appendChild(arrowPath);
+  marker.appendChild(svgEl("path", { d: "M 0 0 L 10 5 L 0 10 z", fill: "#4a5260" }));
   defs.appendChild(marker);
   svg.appendChild(defs);
 
-  // edges
-  for (const [from, to] of EDGES) {
-    const a = NODES.find(n => n.id === from);
-    const b = NODES.find(n => n.id === to);
-    if (!a || !b) continue;
-    svg.appendChild(renderEdge(a, b));
+  // Edges first (so cards draw on top).
+  for (const e of layout.edges) {
+    svg.appendChild(renderEdge(e));
   }
 
-  // nodes
-  for (const node of NODES) {
-    svg.appendChild(renderNode(node, state));
+  // Build a stepId → queue-position map for the spinner / badge
+  // overlays (Phase 2 slice 2.4). Walk state.jobs.order; running +
+  // pending jobs each carry an in-flight position counted from 0.
+  const positionByStep = buildQueuePositionMap();
+  const selectedId = (getSelectedStep() && getSelectedStep().id) || null;
+
+  // Spine cards.
+  for (const { step, x, y } of layout.spine) {
+    svg.appendChild(renderCard(step, x, y, NODE_W, NODE_H, /*isSide=*/false, selectedId, positionByStep));
+  }
+  // Side-branch cards.
+  for (const { step, x, y } of layout.side) {
+    svg.appendChild(renderCard(step, x, y, SIDE_W, SIDE_H, /*isSide=*/true, selectedId, positionByStep));
   }
 
   root.appendChild(svg);
 }
 
-function renderEdge(a, b) {
-  const g = svgEl("g");
-
-  const x1 = a.x + NODE_W / 2;
-  const y1 = a.y + NODE_H;
-  const x2 = b.x + NODE_W / 2;
-  const y2 = b.y;
-
-  // Direct path with a small mid-bend for branch edges.
-  let d;
-  if (Math.abs(x1 - x2) < 1) {
-    d = `M ${x1} ${y1} L ${x2} ${y2 - 2}`;
-  } else {
-    const my = (y1 + y2) / 2;
-    d = `M ${x1} ${y1} L ${x1} ${my} L ${x2} ${my} L ${x2} ${y2 - 2}`;
+/**
+ * Walk state.jobs.order, count in-flight (pending + running) jobs,
+ * and emit a Map(stepId → 0-based position) for every job that has
+ * a bound stepId. Position 0 = currently running; 1 = next pending;
+ * etc.
+ *
+ * @returns {Map<string, number>}
+ */
+function buildQueuePositionMap() {
+  const out = new Map();
+  const state = getState();
+  const jobs  = state.jobs;
+  if (!jobs || !jobs.order) return out;
+  let pos = 0;
+  for (const jid of jobs.order) {
+    const j = jobs.byId[jid];
+    if (!j) continue;
+    if (j.status !== "pending" && j.status !== "running") continue;
+    if (j.stepId) out.set(j.stepId, pos);
+    pos++;
   }
-
-  const path = svgEl("path", { d, class: "wf-arrow" });
-  g.appendChild(path);
-  return g;
+  return out;
 }
 
-function renderNode(node, state) {
-  const g = svgEl("g", { transform: `translate(${node.x}, ${node.y})` });
+function renderEdge(e) {
+  // Spine edges have fromX === toX (vertical); side edges go diagonal.
+  let d;
+  if (Math.abs(e.fromX - e.toX) < 1) {
+    d = `M ${e.fromX} ${e.fromY} L ${e.toX} ${e.toY - 2}`;
+  } else {
+    // Right-angle bend so the side-edge reads cleanly against the
+    // vertical spine.
+    const mx = (e.fromX + e.toX) / 2;
+    d = `M ${e.fromX} ${e.fromY} L ${mx} ${e.fromY} L ${mx} ${e.toY} L ${e.toX - 2} ${e.toY}`;
+  }
+  return svgEl("path", { d, class: "wf-arrow" });
+}
 
-  const rect = svgEl("rect", {
-    width: NODE_W,
-    height: NODE_H,
-    class: `wf-node-rect ${node.kind === "input" ? "input" : ""}`,
-  });
-  rect.addEventListener("click", () => {
-    onNodeClick(node);
-  });
+function renderCard(step, x, y, w, h, isSide, selectedId, positionByStep) {
+  const g = svgEl("g", { transform: `translate(${x}, ${y})` });
+
+  const cls = ["wf-node-rect"];
+  if (isSide)                   cls.push("side");
+  if (step.id === selectedId)   cls.push("selected");
+  if (isStepStale(step.id))     cls.push("stale");
+  const rect = svgEl("rect", { width: w, height: h, class: cls.join(" ") });
+  rect.addEventListener("click", () => onCardClick(step));
   g.appendChild(rect);
 
-  // status dot
-  const layerState = state.layerStates[node.id] || "not-run";
-  const dot = svgEl("circle", {
-    cx: 10,
-    cy: NODE_H / 2,
-    r: 4,
-    class: `wf-state-dot ${stateClass(layerState)}`,
-  });
-  g.appendChild(dot);
+  // Status indicator: spinning ring when running, static dot otherwise.
+  // The spinner is a partial-arc circle that rotates via CSS animation;
+  // sits at the same location as the static dot.
+  if (step.status === STEP_STATUS.RUNNING) {
+    const spinnerG = svgEl("g", {
+      class: "wf-spinner",
+      transform: `translate(10, ${h / 2})`,
+    });
+    spinnerG.appendChild(svgEl("circle", {
+      cx: 0, cy: 0, r: 5,
+      class: "wf-spinner-track",
+    }));
+    spinnerG.appendChild(svgEl("circle", {
+      cx: 0, cy: 0, r: 5,
+      class: "wf-spinner-arc",
+    }));
+    g.appendChild(spinnerG);
+  } else {
+    const dot = svgEl("circle", {
+      cx: 10,
+      cy: h / 2,
+      r: 4,
+      class: `wf-state-dot ${statusClass(step.status)}`,
+    });
+    g.appendChild(dot);
+  }
 
-  // The Data node always carries a configured source label too, so
-  // treat it like a method visually (two-line layout).
-  const showSubLabel = node.kind === "method" || node.id === "data";
+  // Queue-position badge for PENDING steps that are bound to a job.
+  // Sits in the top-right corner. Position 0 = currently running (not
+  // shown — handled by the spinner above); 1 = next pending, etc.
+  const queuePos = positionByStep && positionByStep.get(step.id);
+  if (step.status === STEP_STATUS.PENDING && queuePos != null && queuePos > 0) {
+    const badgeR = 7;
+    const badge = svgEl("g", { class: "wf-queue-badge",
+                               transform: `translate(${w - badgeR - 4}, ${badgeR + 4})` });
+    badge.appendChild(svgEl("circle", { cx: 0, cy: 0, r: badgeR }));
+    const t = svgEl("text", { x: 0, y: 0 });
+    t.textContent = String(queuePos);
+    badge.appendChild(t);
+    g.appendChild(badge);
+  }
 
-  // label
+  // Main label.
+  const labelY = isSide ? h / 2 + 4 : h / 2 - 6;
   const label = svgEl("text", {
-    x: NODE_W / 2 + 4,
-    y: showSubLabel ? NODE_H / 2 - 6 : NODE_H / 2,
+    x: w / 2 + (isSide ? -4 : 4),
+    y: labelY,
     class: "wf-node-label",
   });
-  label.textContent = node.label;
+  label.textContent = truncate(step.label, isSide ? 22 : 28);
   g.appendChild(label);
 
-  if (showSubLabel) {
-    const algoId = activeAlgorithmFor(state, node.id);
-    if (algoId) {
+  // Sub-label (algorithm summary) on spine cards only.
+  if (!isSide) {
+    const sub = subLabelFor(step);
+    if (sub) {
       const algoText = svgEl("text", {
-        x: NODE_W / 2 + 4,
-        y: NODE_H / 2 + 7,
+        x: w / 2 + 4,
+        y: h / 2 + 7,
         class: "wf-node-algo",
       });
-      algoText.textContent = algoId;
+      algoText.textContent = truncate(sub, 28);
       g.appendChild(algoText);
     }
   }
@@ -166,63 +352,78 @@ function renderNode(node, state) {
   return g;
 }
 
-// Dispatch a click on a workflow node:
-//   - method nodes with a layer descriptor → call desc.openModal()
-//   - other nodes → log for now (modals for data / citations etc.
-//     come in slice 5)
-function onNodeClick(node) {
-  const desc = getLayerDescriptor(node.id);
+// ── interactions ─────────────────────────────────────────────────────
+
+function onCardClick(step) {
+  selectStep(step.id);
+  // Slice 2.7: swap the legacy state slots (state.dimredResult /
+  // clusterLevels / basePos / etc.) to this card's snapshot, so the
+  // viewer + every panel re-paints to the selected card's data.
+  // Cheap (refs only, no recompute).
+  projectStepIntoLegacyState(step.id);
+
+  // Transitional: if this step type maps to an existing layer
+  // descriptor, also open the modal. Slice 2.5 made these create-step
+  // on Apply, so reopening lets the user edit + fork. Slice 2.8+
+  // will surface a "fork from this card" affordance and the
+  // auto-open will become opt-in.
+  const descriptorId = DESCRIPTOR_BY_TYPE[step.type];
+  if (!descriptorId) return;
+  const desc = getLayerDescriptor(descriptorId);
   if (desc && desc.openModal) {
     desc.openModal();
-    return;
-  }
-  console.log(`[workflow-chart] click on "${node.id}" — no modal yet`);
-}
-
-// Read the active algorithm name for a workflow node from layerParams
-// (the engine's source of truth). Falls back to a placeholder when
-// layerParams hasn't been populated yet (i.e. before first regenerate).
-function activeAlgorithmFor(state, nodeId) {
-  const lp = state.layerParams || {};
-  switch (nodeId) {
-    case "data":       return state.dataSource ? state.dataSource.mode : "—";
-    case "clustering": {
-      if (!lp.clustering) return "—";
-      const lvCount = (lp.clustering.levels || []).length;
-      const suffix = lvCount > 1 ? ` · ${lvCount} levels` : "";
-      return `${lp.clustering.method}${suffix}`;
-    }
-    case "layout":     return lp.layout     ? lp.layout.method     : "—";
-    case "citations":  return state.dataSource.mode === "real"
-                              ? "(observed)"
-                              : "taste-network";
-    case "dimred": {
-      // Layer 1.5 has three stages; summarise compression + viz for the
-      // chart label. Collapsed to a single em-dash when nothing's
-      // doing real work.
-      if (!lp.dimred) return "—";
-      const cs = lp.dimred.compression && lp.dimred.compression.method || "identity";
-      const vs = lp.dimred.viz         && lp.dimred.viz.method         || "identity";
-      if (cs === "identity" && vs === "identity") return "—";
-      return `cluster: ${cs} · viz: ${vs}`;
-    }
-    case "alignment":  return "match-RMS";
-    case "blend":      return "linear";
-    default:           return null;
   }
 }
 
-function stateClass(layerState) {
-  switch (layerState) {
-    case "fresh":  return "fresh";
-    case "stale":  return "stale";
-    case "error":  return "error";
-    default:       return "not-run";
+// ── helpers ──────────────────────────────────────────────────────────
+
+function statusClass(status) {
+  switch (status) {
+    case STEP_STATUS.DONE:      return "fresh";
+    case STEP_STATUS.RUNNING:   return "running";
+    case STEP_STATUS.FAILED:    return "error";
+    case STEP_STATUS.CANCELLED: return "cancelled";
+    case STEP_STATUS.PENDING:   return "pending";
+    default:                    return "not-run";
   }
+}
+
+function subLabelFor(step) {
+  // Provide a small algorithm-summary line for spine cards. Defaults
+  // to the step's params method when present.
+  const p = step.params || {};
+  if (step.type === "data") {
+    return p.mode || (getState().dataSource && getState().dataSource.mode) || null;
+  }
+  if (step.type === "dimred") {
+    const cs = p.compression && p.compression.method;
+    const vs = p.viz         && p.viz.method;
+    if (cs === "identity" && vs === "identity") return "—";
+    return `cluster: ${cs || "?"} · viz: ${vs || "?"}`;
+  }
+  if (step.type === "clustering") {
+    const lvls = (p.levels || []).length;
+    return lvls > 1 ? `${p.method || "?"} · ${lvls} levels` : (p.method || null);
+  }
+  if (step.type === "citations") {
+    const r = step.result && step.result.citationResult;
+    const n = r && r.citations ? r.citations.length : 0;
+    return n > 0 ? `${n} edges` : null;
+  }
+  if (step.type === "citationLayout") return p.method || null;
+  if (step.type === "alignment")      return "match-RMS";
+  if (step.type === "blend")          return `α = ${(p.alpha || 0).toFixed(2)}`;
+  return null;
+}
+
+function truncate(s, max) {
+  if (!s) return "";
+  s = String(s);
+  return s.length <= max ? s : s.slice(0, max - 1) + "…";
 }
 
 function svgEl(tag, attrs = {}) {
-  const el = document.createElementNS("http://www.w3.org/2000/svg", tag);
+  const el = document.createElementNS(SVG_NS, tag);
   for (const [k, v] of Object.entries(attrs)) {
     if (v != null) el.setAttribute(k, v);
   }

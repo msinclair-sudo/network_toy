@@ -17,7 +17,10 @@
 import { openModal } from "./modal.js";
 import { buildConfigureTab } from "./clustering-tabs/configure-tab.js";
 import { buildOptimiseTab }  from "./clustering-tabs/optimise-tab.js";
-import { enqueueBusy }       from "../busy.js";
+// enqueueBusy import removed 2026-05-27 (slice 2.5) — descriptor.applyChange
+// now creates a tree step + enqueues its own job via queue.js, which
+// mirrors lifecycle to state.busy. Wrapping the descriptor call in an
+// outer enqueueBusy would just nest the queues.
 
 const TABS = [
   { id: "configure", label: "Configure" },
@@ -148,7 +151,12 @@ export function openClusteringModal(descriptor) {
         const precomputedCr = row._cr
           ? { algoId: row.algoId, params: row.params, cr: row._cr }
           : null;
-        enqueueBusy("Clustering…", () => descriptor.applyChange(row.algoId, levels, { precomputedCr }))
+        // descriptor.applyChange (slice 2.5) creates a tree step + enqueues
+        // its own job via queue.js. The bottom busy bar lights up via the
+        // queue's mirror; the chart card shows a spinner. No outer
+        // enqueueBusy needed — that would just nest the queues + race
+        // state.busy publishes between the two.
+        descriptor.applyChange(row.algoId, levels, { precomputedCr })
           .catch(e => console.error("[clustering-modal] onApplyRow applyChange failed:", e));
       },
     });
@@ -169,14 +177,14 @@ export function openClusteringModal(descriptor) {
         label: "Apply",
         primary: true,
         onClick: () => {
-          // Apply commits the Configure tab's working state, closes
-          // the modal, and hands the (potentially slow) cascade to
-          // the global busy queue. The bottom bar shows progress with
-          // labels updated by the engine lanes (Clustering… →
-          // Citations…).
+          // Apply commits the Configure tab's working state; the
+          // descriptor (slice 2.5) creates a new clustering tree step
+          // and enqueues a job that runs the cascade. Modal closes
+          // immediately; the spinner shows on the new card; the
+          // bottom busy bar mirrors the running job.
           const w = tabHandles.configure && tabHandles.configure.getWorking();
           if (w) {
-            enqueueBusy("Clustering…", () => descriptor.applyChange(w.algoId, w.levels))
+            descriptor.applyChange(w.algoId, w.levels)
               .catch(e => console.error("[clustering-modal] applyChange failed:", e));
           }
           // returning undefined → modal closes

@@ -32,6 +32,14 @@
 
 import { getState, update } from "./state.js";
 
+// Optional workflow.js coupling for step-bound jobs (Phase 2 slice 2.4).
+// queue.js stays self-contained when stepId isn't used; importing the
+// workflow mirror only triggers when the caller binds a job to a step.
+import {
+  updateStepStatus, setStepResult, updateStepProgress,
+  getStep, STEP_STATUS,
+} from "./workflow.js";
+
 // ── helpers ──────────────────────────────────────────────────────────
 
 let nextSerial = 1;
@@ -159,6 +167,14 @@ async function processNext() {
       // Transition to running.
       patchJob(nextId, { status: "running", startedAt: isoNow() });
       patchJobs({ runningId: nextId });
+      // Mirror status onto a bound step (Phase 2 slice 2.4). Swallow
+      // any error from the mirror — it shouldn't block the job from
+      // running; worst case the chart shows a stale dot.
+      const boundStepId = getJobsSnapshot().byId[nextId] && getJobsSnapshot().byId[nextId].stepId;
+      if (boundStepId) {
+        try { updateStepStatus(boundStepId, STEP_STATUS.RUNNING); }
+        catch (e) { console.warn("[queue] step mirror (running) failed:", e); }
+      }
 
       const ctx = {
         signal: rt.controller.signal,
@@ -168,12 +184,20 @@ async function processNext() {
           const j = getJobsSnapshot().byId[nextId];
           if (!j || j.status !== "running") return;
           patchJob(nextId, { phase: phase || null });
+          if (boundStepId) {
+            try { updateStepProgress(boundStepId, { phase: phase || undefined }); }
+            catch (_) {}
+          }
         },
         setProgress: (fraction) => {
           const j = getJobsSnapshot().byId[nextId];
           if (!j || j.status !== "running") return;
           const f = Math.max(0, Math.min(1, Number(fraction) || 0));
           patchJob(nextId, { progress: f });
+          if (boundStepId) {
+            try { updateStepProgress(boundStepId, { fraction: f }); }
+            catch (_) {}
+          }
         },
       };
 
@@ -184,11 +208,19 @@ async function processNext() {
         if (rt.controller.signal.aborted) {
           patchJob(nextId, { status: "cancelled", endedAt: isoNow() });
           patchJobs({ runningId: null });
+          if (boundStepId) {
+            try { updateStepStatus(boundStepId, STEP_STATUS.CANCELLED); }
+            catch (_) {}
+          }
           // Reject with AbortError so the promise consumer can react.
           rt.reject(abortError());
         } else {
           patchJob(nextId, { status: "done", result, endedAt: isoNow() });
           patchJobs({ runningId: null });
+          if (boundStepId) {
+            try { setStepResult(boundStepId, result); }
+            catch (e) { console.warn("[queue] step mirror (setResult) failed:", e); }
+          }
           rt.resolve(result);
         }
       } catch (err) {
@@ -197,14 +229,23 @@ async function processNext() {
         if (wasAborted) {
           patchJob(nextId, { status: "cancelled", endedAt: isoNow() });
           patchJobs({ runningId: null });
+          if (boundStepId) {
+            try { updateStepStatus(boundStepId, STEP_STATUS.CANCELLED); }
+            catch (_) {}
+          }
           rt.reject(abortError());
         } else {
+          const errMsg = (err && (err.message || err.name)) || String(err);
           patchJob(nextId, {
             status: "failed",
-            error:  (err && (err.message || err.name)) || String(err),
+            error:  errMsg,
             endedAt: isoNow(),
           });
           patchJobs({ runningId: null });
+          if (boundStepId) {
+            try { updateStepStatus(boundStepId, STEP_STATUS.FAILED, { error: errMsg }); }
+            catch (_) {}
+          }
           rt.reject(err);
         }
       } finally {
@@ -240,16 +281,32 @@ function abortError() {
  *                               must propagate (or check `signal.aborted`
  *                               at progress points) for cancel to take
  *                               effect mid-flight.
+ * @param {string} [opts.stepId] Optional workflow-tree step id. When
+ *                               set, the queue runner mirrors job
+ *                               lifecycle onto the bound step:
+ *                                  - running → updateStepStatus(stepId, "running")
+ *                                  - done    → setStepResult(stepId, result)
+ *                                  - failed  → updateStepStatus(stepId, "failed", {error})
+ *                                  - cancel  → updateStepStatus(stepId, "cancelled")
+ *                               Phase/progress are forwarded via
+ *                               updateStepProgress so the chart can
+ *                               render mid-flight feedback per-card.
  * @returns {{id: string, promise: Promise<any>}}
  */
-export function enqueueJob({ type, label, fn }) {
+export function enqueueJob({ type, label, fn, stepId = null }) {
   if (typeof fn !== "function") throw new Error("[queue] enqueueJob: fn must be a function");
   if (!type)  throw new Error("[queue] enqueueJob: type is required");
   if (!label) throw new Error("[queue] enqueueJob: label is required");
+  // Validate the stepId up front (fail fast if the caller passes a bad
+  // id) rather than discovering the issue inside the runner.
+  if (stepId != null && !getStep(stepId)) {
+    throw new Error(`[queue] enqueueJob: unknown stepId "${stepId}"`);
+  }
 
   const id = makeJobId();
   const job = {
     id, type, label,
+    stepId,
     status:    "pending",
     result:    null,
     error:     null,
@@ -306,6 +363,10 @@ export function cancelJob(id) {
     // skips it next iteration because its status is no longer
     // "pending".
     patchJob(id, { status: "cancelled", endedAt: isoNow() });
+    if (job.stepId) {
+      try { updateStepStatus(job.stepId, STEP_STATUS.CANCELLED); }
+      catch (_) {}
+    }
     if (rt) {
       rt.reject(abortError());
       runtime.delete(id);

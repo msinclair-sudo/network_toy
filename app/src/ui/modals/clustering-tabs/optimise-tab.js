@@ -13,6 +13,7 @@
 
 import { getState, update, subscribe, setOptimiseResult, saveValidationRun } from "../../state.js";
 import { enqueueJob }    from "../../queue.js";
+import { createStep, listSteps } from "../../workflow.js";
 import { listAlgorithms } from "../../../clustering-registry.js";
 import { sweepAcrossAlgorithms, runTargetRangeSweep } from "../../../eval/sweep.js";
 import {
@@ -461,10 +462,42 @@ export function buildOptimiseTab(host, opts = {}) {
       : `toy n=${snapshot.genResult.nodes.length}`;
     const label = `Optimise · ${algoTag} · ${modeTag} · ${subsetTag}`;
 
+    // Phase 2 slice 2.4 — create a tree step for this sweep as a child
+    // of the clustering step (its analytical parent). Queue runner
+    // mirrors job lifecycle onto the step; the chart renders a spinner
+    // on running, a position badge on pending.
+    let stepId = null;
+    const clusteringSteps = listSteps({ type: "clustering" });
+    const parentClusteringId = clusteringSteps.length > 0
+      ? clusteringSteps[clusteringSteps.length - 1].id
+      : null;
+    if (parentClusteringId) {
+      try {
+        stepId = createStep({
+          type:     "optimise",
+          label,
+          params: {
+            algorithms:    snapshot.algos.map(a => a.id),
+            scorerId:      snapshot.scorerId,
+            sweepMode:     snapshot.sweepMode,
+            B:             snapshot.B,
+            noiseHandling: snapshot.noiseHandling,
+          },
+          parentId: parentClusteringId,
+        });
+      } catch (e) {
+        // If step creation fails (e.g. workflow not migrated), fall
+        // back to a stepless job — the legacy auto-save still works.
+        console.warn("[optimise-tab] createStep failed; running stepless:", e);
+        stepId = null;
+      }
+    }
+
     const { promise } = enqueueJob({
       type:  "optimise",
       label,
       fn:    (ctx) => runOptimiseJob(snapshot, ctx),
+      stepId,
     });
 
     // Detach handling: on success, auto-save the result. On failure or
