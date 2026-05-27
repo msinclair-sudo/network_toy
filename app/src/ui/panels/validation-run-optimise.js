@@ -16,7 +16,6 @@
 // shows a small empty-state hint rather than crashing.
 
 import { getState, subscribe }  from "../state.js";
-import { enqueueBusy }           from "../busy.js";
 import { getLayerDescriptor }    from "../modals/layer-descriptors.js";
 import { renderResults }         from "../modals/clustering-tabs/optimise-results-renderer.js";
 
@@ -157,8 +156,11 @@ export function mount(container, _state, config = {}) {
       // precomputedCr cache. Re-infer is fast (~one infer per row)
       // vs the original sweep cost (N × infer). The §6.19 follow-up
       // to persist `_cr` would make this instant.
-      enqueueBusy(`Applying ${row.algoLabel || row.algoId}…`,
-                  () => desc.applyChange(row.algoId, levels, { precomputedCr: null }))
+      //
+      // Phase 2 slice 2.9.c — descriptor.applyChange already enqueues a
+      // step-bound job (slice 2.5); wrapping it in enqueueBusy nested
+      // queues. Call directly + surface errors to the console.
+      desc.applyChange(row.algoId, levels, { precomputedCr: null })
         .catch(e => console.error("[optimise-results panel] apply failed:", e));
     };
 

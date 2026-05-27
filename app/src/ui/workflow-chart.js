@@ -452,6 +452,9 @@ function subLabelFor(step) {
     if (dims && seeds) return `${dims}d × ${seeds}s`;
     return "dimsweep";
   }
+  if (step.type === "save" || step.type === "load") {
+    return truncate(p.filename || "", 18) || step.type;
+  }
   return null;
 }
 

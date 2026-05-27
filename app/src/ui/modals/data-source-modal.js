@@ -11,7 +11,8 @@
 // and the modal stays open until the work completes.
 
 import { openModal } from "./modal.js";
-import { enqueueBusy } from "../busy.js";
+// enqueueBusy removed (slice 2.9.c) — descriptor.applyChange runs the
+// engine cascade directly; nesting it in a busy job double-queues.
 
 export function openDataSourceModal(descriptor) {
   const active = descriptor.getActive();
@@ -92,13 +93,11 @@ export function openDataSourceModal(descriptor) {
         label: "Apply",
         primary: true,
         onClick: () => {
-          // Apply commits the source choice, closes the modal, and
-          // hands the (potentially slow) reingest + downstream cascade
-          // to the global busy queue. Real source fetches over the
-          // network can take 10-30 s at BFS-5000; the bottom bar
-          // shows the current step ("Loading data…" → "Dim-reduction…"
-          // → "Clustering…").
-          enqueueBusy("Loading data…", () => descriptor.applyChange(chosenId, chosenParams))
+          // Apply commits the source choice + closes the modal. The
+          // descriptor's applyChange clears the workflow + runs the
+          // reingest cascade; cascade phases publish via setBusyPhase
+          // (engine.js) until slice 2.11 removes the busy bar entirely.
+          descriptor.applyChange(chosenId, chosenParams)
             .catch(e => console.error("[datasource-modal] applyChange failed:", e));
         },
       },
