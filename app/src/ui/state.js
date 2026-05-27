@@ -227,15 +227,6 @@ const state = {
     optimise: null,   // {ranked, top, totalConfigs, completed, settings, scorerLabel, timestamp, runtime}
   },
 
-  // ── Global busy queue (§6.13). ──────────────────────────────────
-  // Drives the bottom status bar. null when idle. When a job runs:
-  //   current: { id, label, since }
-  //   queue:   [{ id, label }, …]  ← jobs waiting their turn
-  // Mutated only through actions in ui/busy.js (enqueueBusy +
-  // setBusyLabel) so the queue stays consistent with the in-memory
-  // pending list.
-  busy: null,
-
   // ── Validation runs (§6.19). ────────────────────────────────────
   // First-class persistent entities for any analytical sweep /
   // validation the user explicitly saves. Each entry self-describes
@@ -267,10 +258,10 @@ const state = {
 
   // ── Typed-job queue (workflow-tree-redesign Phase 1, slice A). ──────
   // First-class jobs with stable ids, types, status transitions, and
-  // per-job cancellation. Coexists with state.busy (legacy display
-  // queue from §6.13); the bridge happens in slice B. Mutated only
-  // through actions in ui/queue.js — direct update({jobs: ...}) calls
-  // outside that module will race the runner.
+  // per-job cancellation. Mutated only through actions in ui/queue.js
+  // — direct update({jobs: ...}) calls outside that module will race
+  // the runner. (Slice 2.11: state.busy + mirroring removed; cards on
+  // the workflow chart carry user-visible job status now.)
   //
   // Shape:
   //   {

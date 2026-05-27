@@ -89,9 +89,7 @@ export function openDimredModal(descriptor) {
           // Apply commits the working state; the descriptor (slice 2.5)
           // creates a new dimred tree step and enqueues a job that
           // runs the cascade. Modal closes immediately; the spinner
-          // shows on the new card; the bottom busy bar mirrors the
-          // running job (no outer enqueueBusy needed — that would
-          // race state.busy publishes with queue.js's mirror).
+          // shows on the new card via the step↔job binding (slice 2.4).
           descriptor.applyChange(working)
             .catch(e => console.error("[dimred-modal] applyChange failed:", e));
           // returning undefined → modal closes via the default handler

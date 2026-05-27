@@ -10,9 +10,9 @@
 //   - a result (populated on done) or error (populated on failed)
 //   - createdAt / startedAt / endedAt timestamps
 //
-// The runner is **FIFO and single-threaded** in this slice (matches
-// busy.js's contract). One job runs at a time; the rest sit pending.
-// Multiple-concurrent execution is a follow-up — out of scope here.
+// The runner is **FIFO and single-threaded**. One job runs at a time;
+// the rest sit pending. Multiple-concurrent execution is a follow-up —
+// out of scope here.
 //
 // Cancellation is per-job:
 //   - Pending: dequeues the job, status → "cancelled".
@@ -21,14 +21,9 @@
 //     for checking `signal.aborted` or wiring it through (e.g.
 //     `runInWorker(..., {signal})`).
 //
-// COEXISTENCE WITH busy.js (slice A):
-// This module is standalone — it runs its own FIFO independently of
-// busy.js. No callers route through it yet, so there's no risk of two
-// queues fighting for the same workers. Slice B will bridge the two
-// (enqueueBusy becomes a wrapper around enqueueJob) and unify the
-// runtime. The bottom bar still reads state.busy in this slice;
-// queue.js's jobs are visible only through getJob / listJobs and the
-// returned promise.
+// Slice 2.11 retired the legacy busy.js queue + bottom busy-bar; the
+// workflow chart's per-card spinner + queue-position badge are the
+// user-visible surface for in-flight work now.
 
 import { getState, update } from "./state.js";
 
@@ -64,7 +59,6 @@ function getJobsSnapshot() {
 function patchJobs(partial) {
   const cur = getJobsSnapshot();
   update({ jobs: { ...cur, ...partial } });
-  mirrorToBusy();
 }
 function patchJob(id, fields) {
   const cur = getJobsSnapshot();
@@ -77,55 +71,6 @@ function patchJob(id, fields) {
       byId: { ...cur.byId, [id]: nextJob },
     },
   });
-  mirrorToBusy();
-}
-
-// Mirror our running job (and pending count) into state.busy so the
-// existing bottom busy-bar lights up for jobs enqueued through this
-// module without busy.js needing to know. Slice B will properly merge
-// the two queues; until then this keeps the user-visible feedback
-// working with zero changes elsewhere.
-//
-// We OVERWRITE state.busy with our snapshot when we have a running job,
-// and clear it back to null when our last job finishes — BUT only if
-// state.busy was last set by us (tracked via lastMirroredId). If
-// busy.js's own queue published in between, we leave it alone so its
-// save/load + Apply cascade feedback stays uninterrupted.
-let lastMirroredId = null;
-
-function mirrorToBusy() {
-  const cur = getJobsSnapshot();
-  if (cur.runningId) {
-    const run = cur.byId[cur.runningId];
-    if (!run) return;
-    const tail = [];
-    for (const id of cur.order) {
-      if (id === cur.runningId) continue;
-      const j = cur.byId[id];
-      if (j && j.status === "pending") tail.push({ id: j.id, label: j.label });
-    }
-    update({
-      busy: {
-        current: {
-          id:    run.id,
-          label: run.label,
-          phase: run.phase || null,
-          since: run.startedAt ? Date.parse(run.startedAt) : Date.now(),
-        },
-        queue: tail,
-      },
-    });
-    lastMirroredId = run.id;
-  } else if (lastMirroredId) {
-    // Our running job just ended. Only clear state.busy if the head
-    // it shows is ours — otherwise busy.js's own queue ran a job
-    // in parallel and we should leave its publish alone.
-    const cs = getState();
-    if (cs.busy && cs.busy.current && cs.busy.current.id === lastMirroredId) {
-      update({ busy: null });
-    }
-    lastMirroredId = null;
-  }
 }
 
 // ── runner ───────────────────────────────────────────────────────────

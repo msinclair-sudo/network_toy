@@ -181,11 +181,10 @@ export function openAlgorithmModal(descriptor) {
         label: "Apply",
         primary: true,
         onClick: () => {
-          // Apply commits the choice, closes the modal, and hands the
-          // descriptor.applyChange (slice 2.5) creates a tree step +
-          // enqueues a job via queue.js; the runner's mirror publishes
-          // to state.busy so the bottom bar still lights up + the
-          // chart card spins. No outer enqueueBusy — that nests queues.
+          // Apply commits the choice, closes the modal. The descriptor's
+          // applyChange (slice 2.5) creates a tree step + enqueues a
+          // job via queue.js; the chart card spins via the step↔job
+          // binding (slice 2.4). No outer wrap — would nest queues.
           descriptor.applyChange(chosenAlgoId, chosenParams)
             .catch(e => console.error("[algorithm-modal] applyChange failed:", e));
         },

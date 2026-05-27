@@ -152,14 +152,9 @@
   <!-- modals mounted here as needed -->
 </div>
 
-<!-- Bottom status bar (§6.13). Hidden when state.busy is null;
-     ui/busy-bar.js shows / updates it as the busy queue moves. -->
-<aside id="busy-bar" hidden>
-  <span class="busy-dot"></span>
-  <span class="busy-label">Running…</span>
-  <span class="busy-queue-count" hidden></span>
-  <span class="busy-elapsed"></span>
-</aside>
+<!-- Phase 2 slice 2.11 removed the §6.13 bottom busy-bar. Per-card
+     spinner + queue-position badge on the workflow chart are the
+     user-visible surface for in-flight jobs now. -->
 
 </body>
 </html>

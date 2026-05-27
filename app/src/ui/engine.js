@@ -29,7 +29,6 @@ import { computeBridgeAnalysis }                                 from "./bridge-
 import { update, getState, setLayerState }                       from "./state.js";
 import { runDAG }                                                from "../workers/dag.js";
 import { slimNodesForClustering }                                from "../clustering-cascade.js";
-import { setBusyPhase }                                          from "./busy.js";
 
 // Worker URLs resolved relative to this module so the runtime path
 // matches the project's served file layout regardless of which page
@@ -158,7 +157,6 @@ function makeUid() {
 // real datasets are mutually exclusive, never co-resident.
 export async function reingest() {
   ensureLayerParams();
-  setBusyPhase("Loading data…");
   const s = getState();
 
   const sourceId = s.activeAlgorithm.dataSource || "toy";
@@ -303,7 +301,6 @@ export async function redimred() {
   // there's no visible progress signal outside the modal's Running…
   // button.
   setLayerState("dimred", "running");
-  setBusyPhase("Dim-reduction…");
 
   // Snapshot what we need from `s` up front. After the await we'll
   // re-read state for the freshest version of any slot that other
@@ -612,7 +609,6 @@ export async function recluster(opts = {}) {
   // orange while the worker crunches (HDBSCAN at BFS-5000 is ~18 s).
   // The matching "fresh" set at the end swaps it back to green.
   setLayerState("clustering", "running");
-  setBusyPhase("Clustering…");
 
   // The clustering algorithms only read .id + .basePos off each node,
   // so we ship a slim view to the worker. Saves ~10× on postMessage
@@ -769,7 +765,6 @@ export function reneighbour() {
   const s = getState();
   if (!s.genResult || !s.clusterResult) return;
 
-  setBusyPhase("Citations…");
   const citAlgo = activeCitationAlgorithm();
 
   // Import-style algorithms: short-circuit straight to a dedicated
@@ -888,7 +883,6 @@ export async function relayoutCitations() {
   // worker-bound stage); alignment + blend stay stale until the
   // worker's result lands and we kick off the main-thread alignment.
   setLayerState("layout", "running");
-  setBusyPhase("Citation layout…");
 
   const layoutAlgo = getCitationLayoutAlgorithm(s.layerParams.layout.method);
   const edges = s.citationResult.citations.map(c => [c.source, c.target]);

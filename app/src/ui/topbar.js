@@ -195,10 +195,8 @@ function saveProject({ promptForName }) {
 
   // Phase 2 slice 2.9.c — save becomes a tree card under the root, so
   // the user's project history records every save. The card carries
-  // {filename, sizeBytes, savedAt} as result; the bottom bar disappears
-  // once 2.11 deletes busy.js. If the workflow has no root yet (boot
-  // before migration), we fall back to a stepless job — same shape as
-  // before, just routed through enqueueJob.
+  // {filename, sizeBytes, savedAt} as result. If the workflow has no
+  // root yet (boot before migration), we fall back to a stepless job.
   const root = getRootStep();
   const label = `Save "${name}"`;
   let stepId = null;
