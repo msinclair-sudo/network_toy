@@ -13,6 +13,12 @@ import { deserialiseFile }  from "../persistence/deserialise.js";
 import { enqueueJob }       from "./queue.js";
 import { createStep, getRootStep } from "./workflow.js";
 
+// Phase 2 slice 2.11.b — disabled stub items removed. The 7 dropped
+// were either subsumed by panels (ARI dim-sweep → Dim sweep panel /
+// card; bootstrap → Bootstrap card) or speculative (presets, method
+// manual, keyboard shortcuts, real-dataset loader, edge/label
+// export). The remaining active stubs are kept until their real
+// targets are designed.
 const MENUS = [
   {
     id: "file",
@@ -28,11 +34,7 @@ const MENUS = [
     label: "Data",
     items: [
       { label: "New toy dataset…",     action: stub("data:new-toy") },
-      { label: "Load real dataset…",   action: stub("data:load-real"), disabled: true },
       { label: "Citation source…",     action: stub("data:citation-source") },
-      { divider: true },
-      { label: "Export labels…",       action: stub("data:export-labels"), disabled: true },
-      { label: "Export edges…",        action: stub("data:export-edges"), disabled: true },
     ],
   },
   {
@@ -40,21 +42,6 @@ const MENUS = [
     label: "Workflow",
     items: [
       { label: "Reset to defaults",    action: stub("workflow:reset") },
-      { label: "Save preset…",         action: stub("workflow:save-preset"), disabled: true },
-      { label: "Load preset…",         action: stub("workflow:load-preset"), disabled: true },
-    ],
-  },
-  {
-    id: "validate",
-    label: "Validate",
-    items: [
-      // Bootstrap-Jaccard lives inside the Clustering modal's Optimise
-      // tab now (richness / stability scorers + target-range
-      // runBootstrap). The remaining two items are legitimate future
-      // work: ARI dim-sweep = §6.9; cluster-vs-cluster disagreement
-      // is the §7 open question on a quantitative disagreement metric.
-      { label: "ARI dim-sweep…",                    action: stub("validate:ari-sweep"), disabled: true },
-      { label: "Cluster-vs-cluster disagreement…",  action: stub("validate:disagreement"), disabled: true },
     ],
   },
   {
@@ -62,8 +49,6 @@ const MENUS = [
     label: "Help",
     items: [
       { label: "About",                action: stub("help:about") },
-      { label: "Method manual",        action: stub("help:manual"), disabled: true },
-      { label: "Keyboard shortcuts",   action: stub("help:shortcuts"), disabled: true },
     ],
   },
 ];
