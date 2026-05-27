@@ -30,6 +30,10 @@ import { openDimredModal }                          from "./dimred-modal.js";
 import { openDataSourceModal }                      from "./data-source-modal.js";
 import { openBootstrapModal, BOOTSTRAP_DEFAULTS }   from "./bootstrap-modal.js";
 import { buildBootstrapJob }                        from "../runners/bootstrap-runner.js";
+import { openDimSweepModal, DIMSWEEP_DEFAULTS,
+         defaultNoiseConfig, defaultCompressionConfig,
+         defaultClusteringConfig }                  from "./dim-sweep-modal.js";
+import { buildDimSweepJob }                         from "../runners/dim-sweep-runner.js";
 import * as engine                                  from "../engine.js";
 
 export function getLayerDescriptor(nodeId) {
@@ -39,6 +43,7 @@ export function getLayerDescriptor(nodeId) {
     case "clustering": return clusteringDescriptor();
     case "layout":     return layoutDescriptor();
     case "bootstrap":  return bootstrapDescriptor();
+    case "dimSweep":   return dimSweepDescriptor();
     default:           return null;
   }
 }
@@ -345,6 +350,14 @@ export function rerunStep(stepId) {
     const settings = step.params || BOOTSTRAP_DEFAULTS;
     return bootstrapDescriptor().applyChange(settings);
   }
+  if (step.type === "dimSweep") {
+    const p = step.params || {};
+    return dimSweepDescriptor().applyChange({
+      dims:             p.dims  || DIMSWEEP_DEFAULTS.dims,
+      seeds:            p.seeds || DIMSWEEP_DEFAULTS.seeds,
+      verdictThreshold: Number.isFinite(p.verdictThreshold) ? p.verdictThreshold : DIMSWEEP_DEFAULTS.verdictThreshold,
+    });
+  }
   throw new Error(`[rerunStep] type "${step.type}" not re-runnable`);
 }
 
@@ -443,6 +456,79 @@ function bootstrapDescriptor() {
       return promise;
     },
     openModal: () => openBootstrapModal(desc),
+  };
+  return desc;
+}
+
+// Dim-sweep — Phase 2 slice 2.9.b.
+//
+// Parents under the SELECTED dimred ancestor. Sweep dims / seeds /
+// verdictThreshold come from the modal; noise / compression /
+// clustering configs default to the validation-script protocol
+// (PCA / UMAP / HDBSCAN) — rerun via the chart's ↻ honours whatever
+// the step recorded.
+function dimSweepDescriptor() {
+  const desc = {
+    label: "Run: Dim sweep",
+    getActive: () => {
+      const parentId = findSelectedAncestorOfType("dimred");
+      const live = getState();
+      const hasStage0Input = !!(
+        (live.embedding && live.embedding.data) ||
+        (live._basePos instanceof Float32Array)
+      );
+      const n = live.genResult ? live.genResult.nodes.length : 0;
+      const d = (live.embedding && live.embedding.d)
+                || (live._basePos ? 3 : 0);
+      return {
+        hasDimred:       parentId != null,
+        hasStage0Input,
+        n, d,
+        summary:         "PCA noise · UMAP compression · HDBSCAN (minClusterSize=15, minSamples=5)",
+        dimsText:        DIMSWEEP_DEFAULTS.dims.join(", "),
+        seedsText:       DIMSWEEP_DEFAULTS.seeds.join(", "),
+        threshold:       DIMSWEEP_DEFAULTS.verdictThreshold,
+        parentId,
+      };
+    },
+    // settings: { dims, seeds, verdictThreshold } — algo defaults
+    // baked here so the modal stays minimal.
+    applyChange: async (settings) => {
+      const parentId = findSelectedAncestorOfType("dimred");
+      if (!parentId) {
+        throw new Error("[dim-sweep-descriptor] no dimred ancestor to sweep against");
+      }
+      const fullSettings = {
+        dims:             settings.dims,
+        seeds:            settings.seeds,
+        verdictThreshold: settings.verdictThreshold,
+        noise:            settings.noise       || defaultNoiseConfig(),
+        compression:      settings.compression || defaultCompressionConfig(),
+        clustering:       settings.clustering  || defaultClusteringConfig(),
+      };
+      const label = `Dim sweep · ${fullSettings.dims.length}d × ${fullSettings.seeds.length}s`;
+      const stepId = createStep({
+        type:   "dimSweep",
+        label,
+        params: { ...fullSettings },
+        parentId,
+      });
+      const { promise } = enqueueJob({
+        type:  "dimSweep",
+        label,
+        stepId,
+        fn:    buildDimSweepJob({
+          parentDimredStepId: parentId,
+          settings: { ...fullSettings },
+        }),
+      });
+      promise.catch((e) => {
+        if (e && e.name === "AbortError") return;
+        console.error("[dim-sweep-descriptor] job failed:", e);
+      });
+      return promise;
+    },
+    openModal: () => openDimSweepModal(desc),
   };
   return desc;
 }

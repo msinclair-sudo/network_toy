@@ -39,6 +39,7 @@ const DESCRIPTOR_BY_TYPE = {
   "clustering":         "clustering",
   "citationLayout":     "layout",
   "bootstrapStability": "bootstrap",
+  "dimSweep":           "dimSweep",
 };
 
 // Layout constants. Cards are smaller than slice 2.3 since branching
@@ -444,6 +445,12 @@ function subLabelFor(step) {
   if (step.type === "bootstrapStability") {
     if (p.B != null) return `B=${p.B}`;
     return "bootstrap";
+  }
+  if (step.type === "dimSweep") {
+    const dims  = (p.dims  || []).length;
+    const seeds = (p.seeds || []).length;
+    if (dims && seeds) return `${dims}d × ${seeds}s`;
+    return "dimsweep";
   }
   return null;
 }

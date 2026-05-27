@@ -2178,74 +2178,8 @@ td.node-table-spread, td.node-table-stab { width: 50px; }
 .panel-ds-meta   { color: var(--text-dim); font-size: 11px; }
 .panel-ds-empty  { color: var(--text-faint); padding: 12px; font-style: italic; }
 
-.panel-ds-section {
-  color: var(--text-dim);
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  margin-top: 4px;
-  border-bottom: 1px solid var(--border);
-  padding-bottom: 3px;
-}
-
-.panel-ds-cfg            { display: flex; flex-direction: column; gap: 4px; }
-.panel-ds-algo-section   { display: flex; flex-direction: column; gap: 4px; padding-left: 6px; border-left: 2px solid var(--border); }
-.panel-ds-algo-params    { display: flex; flex-direction: column; gap: 3px; padding-left: 4px; }
-
-.panel-ds-cfg-row {
-  display: grid;
-  grid-template-columns: 130px 1fr 56px;
-  align-items: center;
-  gap: 6px;
-}
-.panel-ds-cfg-row label    { color: var(--text-dim); font-size: 11px; }
-.panel-ds-cfg-readout      { font-family: var(--font-mono); font-size: 11px; color: var(--text); text-align: right; }
-.panel-ds-cfg-text         {
-  grid-column: 2 / 4;
-  background: var(--bg-3);
-  color: var(--text);
-  border: 1px solid var(--border-light);
-  border-radius: 3px;
-  padding: 3px 6px;
-  font-family: var(--font-mono);
-  font-size: 11px;
-}
-.panel-ds-cfg-hint         { color: var(--text-faint); font-style: italic; font-size: 11px; padding-left: 4px; }
-
-.panel-ds-estimate {
-  background: var(--bg-3);
-  border: 1px solid var(--border);
-  border-radius: 3px;
-  padding: 6px 8px;
-  font-size: 11px;
-  color: var(--text-dim);
-}
-.panel-ds-estimate[data-warn="true"] { color: var(--warning, #d88); }
-
-.panel-ds-runrow { display: flex; gap: 6px; align-items: center; }
-.panel-ds-run    {
-  background: var(--bg-3);
-  color: var(--text);
-  border: 1px solid var(--accent);
-  border-radius: 3px;
-  padding: 4px 12px;
-  cursor: pointer;
-  font-size: 12px;
-}
-.panel-ds-run:hover    { background: var(--accent); }
-.panel-ds-run:disabled { opacity: 0.6; cursor: not-allowed; }
-.panel-ds-cancel {
-  background: transparent;
-  color: var(--text-dim);
-  border: 1px solid var(--border);
-  border-radius: 3px;
-  padding: 3px 8px;
-  cursor: pointer;
-  font-size: 11px;
-}
-.panel-ds-status { color: var(--text-dim); font-size: 11px; font-family: var(--font-mono); }
-
 .panel-ds-results { display: flex; flex-direction: column; gap: 10px; }
+.panel-ds-footer  { color: var(--text-dim); font-size: 11px; margin-top: 6px; }
 
 .panel-ds-verdict-row {
   display: flex;
@@ -2294,18 +2228,48 @@ td.node-table-spread, td.node-table-stab { width: 50px; }
   overflow-x: auto;
 }
 
-.panel-ds-saverow { margin-top: 6px; }
-.panel-ds-save {
+/* dim-sweep config modal (slice 2.9.b) */
+.dim-sweep-modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 460px;
+}
+.dim-sweep-modal-context {
+  font-size: 11px;
+  color: var(--text-dim);
+  padding: 6px 8px;
+  background: var(--bg-2);
+  border-radius: 3px;
+  border-left: 2px solid var(--accent-dim);
+}
+.dim-sweep-modal-cfg { display: flex; flex-direction: column; gap: 8px; }
+.dim-sweep-modal-row {
+  display: grid;
+  grid-template-columns: 140px 1fr;
+  gap: 6px 10px;
+  align-items: center;
+}
+.dim-sweep-modal-row label { font-size: 11px; color: var(--text-dim); }
+.dim-sweep-modal-row input {
   background: var(--bg-3);
   color: var(--text);
-  border: 1px solid var(--accent);
+  border: 1px solid var(--border-light);
   border-radius: 3px;
-  padding: 4px 12px;
-  cursor: pointer;
-  font-size: 12px;
+  padding: 3px 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
 }
-.panel-ds-save:hover    { background: var(--accent); }
-.panel-ds-save:disabled { opacity: 0.7; cursor: default; }
+.dim-sweep-modal-estimate {
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 6px 8px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.dim-sweep-modal-estimate[data-warn="true"] { color: var(--warning, #d88); }
+.dim-sweep-modal-empty { color: var(--text-faint); font-style: italic; padding: 8px 4px; }
 
 /* ── Generic chart helpers (heatmap + bars) ─────────────────────────── */
 
