@@ -34,10 +34,11 @@ import { getLayerDescriptor, rerunStep }   from "./modals/layer-descriptors.js";
 // handler opens that descriptor's modal during the transition;
 // slice 2.5 replaces this with "create a new step" semantics).
 const DESCRIPTOR_BY_TYPE = {
-  "data":           "data",
-  "dimred":         "dimred",
-  "clustering":     "clustering",
-  "citationLayout": "layout",
+  "data":               "data",
+  "dimred":             "dimred",
+  "clustering":         "clustering",
+  "citationLayout":     "layout",
+  "bootstrapStability": "bootstrap",
 };
 
 // Layout constants. Cards are smaller than slice 2.3 since branching
@@ -440,6 +441,10 @@ function subLabelFor(step) {
   if (step.type === "citationLayout") return p.method || null;
   if (step.type === "alignment")      return "match-RMS";
   if (step.type === "blend")          return `α = ${(p.alpha || 0).toFixed(2)}`;
+  if (step.type === "bootstrapStability") {
+    if (p.B != null) return `B=${p.B}`;
+    return "bootstrap";
+  }
   return null;
 }
 

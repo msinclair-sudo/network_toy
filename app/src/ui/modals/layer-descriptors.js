@@ -21,12 +21,15 @@ import { listAlgorithms as listClusteringAlgos,
 import { listAlgorithms as listLayoutAlgos,
          getAlgorithm   as getLayoutAlgo }         from "../../citation-layout/registry.js";
 import { getState, update, setDataSourceMode, setDataSourceConfig } from "../state.js";
-import { createStep, listSteps, clearWorkflow, getStep } from "../workflow.js";
+import { createStep, listSteps, clearWorkflow, getStep,
+         getStepAncestors, getSelectedStep }       from "../workflow.js";
 import { enqueueJob }                              from "../queue.js";
 import { openAlgorithmModal }                       from "./algorithm-modal.js";
 import { openClusteringModal }                      from "./clustering-modal.js";
 import { openDimredModal }                          from "./dimred-modal.js";
 import { openDataSourceModal }                      from "./data-source-modal.js";
+import { openBootstrapModal, BOOTSTRAP_DEFAULTS }   from "./bootstrap-modal.js";
+import { buildBootstrapJob }                        from "../runners/bootstrap-runner.js";
 import * as engine                                  from "../engine.js";
 
 export function getLayerDescriptor(nodeId) {
@@ -35,6 +38,7 @@ export function getLayerDescriptor(nodeId) {
     case "dimred":     return dimredDescriptor();
     case "clustering": return clusteringDescriptor();
     case "layout":     return layoutDescriptor();
+    case "bootstrap":  return bootstrapDescriptor();
     default:           return null;
   }
 }
@@ -70,6 +74,26 @@ function findCanonicalParent(childType) {
   if (childType === "citationLayout") {
     const clust = listSteps({ type: "clustering" });
     if (clust.length > 0) return clust[clust.length - 1].id;
+  }
+  return null;
+}
+
+// Analysis cards (bootstrap / dim-sweep / future) attach to the
+// nearest matching ancestor of the SELECTED step — not "latest of
+// type". The user's mental model is "I'm looking at this clustering;
+// run a bootstrap on it"; with branching, "latest" picks the wrong
+// sibling when the user has scrolled back.
+//
+// Returns the ancestor step id, or null if no ancestor of the target
+// type exists in the selected step's lineage.
+function findSelectedAncestorOfType(targetType) {
+  const sel = getSelectedStep();
+  if (!sel) return null;
+  // Include the selection itself — running a bootstrap from a
+  // clustering card should attach right under that card.
+  const lineage = [...getStepAncestors(sel.id)];
+  for (let i = lineage.length - 1; i >= 0; i--) {
+    if (lineage[i].type === targetType) return lineage[i].id;
   }
   return null;
 }
@@ -317,6 +341,10 @@ export function rerunStep(stepId) {
     const p = step.params || {};
     return layoutDescriptor().applyChange(p.method, p.params || {});
   }
+  if (step.type === "bootstrapStability") {
+    const settings = step.params || BOOTSTRAP_DEFAULTS;
+    return bootstrapDescriptor().applyChange(settings);
+  }
   throw new Error(`[rerunStep] type "${step.type}" not re-runnable`);
 }
 
@@ -346,6 +374,75 @@ function layoutDescriptor() {
       });
     },
     openModal: () => openAlgorithmModal(desc),
+  };
+  return desc;
+}
+
+// Bootstrap stability — Phase 2 slice 2.9.a.
+//
+// Unlike the spine descriptors, this one:
+//   - parents the new card under the SELECTED clustering ancestor (not
+//     "latest clustering"), so the user's mental model "bootstrap THIS
+//     clustering" is honoured;
+//   - doesn't mutate state.layerParams (bootstrap has no spine params);
+//   - uses buildBootstrapJob to wrap the eval engine; the queue runner
+//     auto-publishes setStepResult, so we don't post-process here.
+function bootstrapDescriptor() {
+  const desc = {
+    label: "Run: Bootstrap stability",
+    getActive: () => {
+      const parentId = findSelectedAncestorOfType("clustering");
+      if (!parentId) {
+        return { hasClustering: false, settings: { ...BOOTSTRAP_DEFAULTS } };
+      }
+      const parent = getStep(parentId);
+      const snap = parent && parent.result || {};
+      const lvls = snap.clusterLevels || [];
+      const finest = lvls.length > 0 ? lvls[lvls.length - 1].clusterResult : null;
+      const algoId = (parent && parent.params && parent.params.method) || "(unknown)";
+      let clusterLabel = algoId;
+      try {
+        const a = getClusteringAlgo(algoId);
+        clusterLabel = a && a.label ? a.label : algoId;
+      } catch (_) {}
+      return {
+        hasClustering: true,
+        settings:      { ...BOOTSTRAP_DEFAULTS },
+        clusterLabel,
+        nClusters:     finest ? finest.clusters.length : 0,
+        parentId,
+      };
+    },
+    applyChange: async (settings) => {
+      const parentId = findSelectedAncestorOfType("clustering");
+      if (!parentId) {
+        throw new Error("[bootstrap-descriptor] no clustering ancestor to bootstrap against");
+      }
+      const label = `Bootstrap · B=${settings.B}`;
+      const stepId = createStep({
+        type:   "bootstrapStability",
+        label,
+        params: { ...settings },
+        parentId,
+      });
+      const { promise } = enqueueJob({
+        type:  "bootstrapStability",
+        label,
+        stepId,
+        fn:    buildBootstrapJob({
+          parentClusteringStepId: parentId,
+          settings: { ...settings },
+        }),
+      });
+      // Detach handling — chart shows the spinner; consumers don't
+      // need to await. Surface errors to the console.
+      promise.catch((e) => {
+        if (e && e.name === "AbortError") return;     // cancelled — silent
+        console.error("[bootstrap-descriptor] job failed:", e);
+      });
+      return promise;
+    },
+    openModal: () => openBootstrapModal(desc),
   };
   return desc;
 }

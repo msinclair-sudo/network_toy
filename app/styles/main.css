@@ -1250,47 +1250,8 @@ td.node-table-spread, td.node-table-stab { width: 50px; }
 .panel-bs-meta   { color: var(--text-dim); font-size: 11px; margin-top: 2px; }
 .panel-bs-empty  { color: var(--text-faint); padding: 12px; font-style: italic; }
 
-.panel-bs-cfg {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px 16px;
-  padding: 8px 0;
-  border-top: 1px solid var(--border);
-  border-bottom: 1px solid var(--border);
-}
-.panel-bs-cfg-row {
-  display: grid;
-  grid-template-columns: 110px 1fr auto;
-  align-items: center;
-  gap: 6px;
-}
-.panel-bs-cfg-row label    { color: var(--text-dim); font-size: 11px; }
-.panel-bs-cfg-readout      { font-family: var(--font-mono); font-size: 11px; color: var(--text); text-align: right; min-width: 32px; }
-
-.panel-bs-runrow { display: flex; gap: 6px; align-items: center; }
-.panel-bs-run    {
-  background: var(--accent-dim);
-  color: white;
-  border: none;
-  padding: 5px 12px;
-  border-radius: 3px;
-  cursor: pointer;
-  font-size: 12px;
-}
-.panel-bs-run:hover           { background: var(--accent); }
-.panel-bs-run:disabled        { opacity: 0.6; cursor: not-allowed; }
-.panel-bs-cancel              {
-  background: var(--bg-3);
-  border: 1px solid var(--border-light);
-  color: var(--text);
-  padding: 5px 12px;
-  border-radius: 3px;
-  cursor: pointer;
-  font-size: 12px;
-}
-.panel-bs-status              { color: var(--text-dim); font-size: 11px; }
-
 .panel-bs-results { display: flex; flex-direction: column; gap: 8px; }
+.panel-bs-footer  { color: var(--text-dim); font-size: 11px; margin-top: 6px; }
 .panel-bs-agg {
   display: flex;
   gap: 16px;
@@ -1327,19 +1288,6 @@ td.node-table-spread, td.node-table-stab { width: 50px; }
 .panel-bs-row.class-stable td        { color: var(--text); }
 .panel-bs-row.class-doubtful td      { color: var(--warn, #e6c067); }
 .panel-bs-row.class-unstable td      { color: var(--err,  #c43d3d); }
-
-.panel-bs-saverow { margin-top: 4px; }
-.panel-bs-save {
-  background: var(--bg-3);
-  border: 1px solid var(--border-light);
-  color: var(--text);
-  padding: 5px 12px;
-  border-radius: 3px;
-  font-size: 12px;
-  cursor: pointer;
-}
-.panel-bs-save:hover     { background: var(--accent-dim); color: white; }
-.panel-bs-save:disabled  { opacity: 0.7; cursor: default; }
 
 /* ── §6.19.7 — bridge-analysis panel ────────────────────────────────── */
 
@@ -1476,6 +1424,38 @@ td.node-table-spread, td.node-table-stab { width: 50px; }
   color: var(--text-faint);
   font-style: italic;
 }
+
+/* ── bootstrap-stability config modal (slice 2.9.a) ───────────────── */
+
+.bootstrap-modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 420px;
+}
+.bootstrap-modal-context {
+  font-size: 11px;
+  color: var(--text-dim);
+  padding: 6px 8px;
+  background: var(--bg-2);
+  border-radius: 3px;
+  border-left: 2px solid var(--accent-dim);
+}
+.bootstrap-modal-cfg {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.bootstrap-modal-row {
+  display: grid;
+  grid-template-columns: 130px 1fr 50px;
+  gap: 6px 10px;
+  align-items: center;
+}
+.bootstrap-modal-row label    { font-size: 11px; color: var(--text-dim); }
+.bootstrap-modal-row input[type="range"] { width: 100%; }
+.bootstrap-modal-readout      { font-family: var(--font-mono); font-size: 11px; color: var(--text); text-align: right; }
+.bootstrap-modal-empty        { color: var(--text-faint); font-style: italic; padding: 8px 4px; }
 
 /* ── dim-reduction modal (two-section) ────────────────────────────── */
 
