@@ -400,8 +400,9 @@ Results table:
   when sweep-against = Both.
 - Per-row Apply has a **level picker** (`L0 / L1 / … / + New level`)
   that drops the chosen config into the named slot. The cascade
-  runs in the background via the global busy queue; the modal
-  closes immediately.
+  runs in the background via the typed-job queue (`ui/queue.js`);
+  the modal closes immediately and a spinner appears on the new
+  clustering card.
 - A **Save this run** button appears in the run-row after a
   successful sweep — persists the table as a saved validation run
   (§6.19). Re-openable later from the panel picker's *Validation

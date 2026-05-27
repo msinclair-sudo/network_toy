@@ -39,11 +39,13 @@ app/
                               heavy lane builds a DAG and awaits runDAG (see workers.md)
       bridge-analysis.js    — multi-scale boundary derivation (Layer 2.5)
       gradients.js          — shared colour-stop arrays + interp + linear-gradient CSS
-      busy.js               — global FIFO busy queue (enqueueBusy + setBusyLabel)
-      busy-bar.js           — bottom status bar; renders state.busy (see §12)
-      topbar.js             — Data / Workflow / Validate / Help menus
+      queue.js              — typed FIFO job queue (enqueueJob + cancelJob); see §12
+      workflow.js           — state.workflow CRUD (step nodes + status + revision stamps)
+      workflow-chart.js     — tree-aware SVG renderer of state.workflow (see §4)
+      workflow-migration.js — bootstrap a baseline tree from legacy state slots
+      workflow-projection.js — back-compat: project a selected step's snapshot into legacy slots
+      topbar.js             — File / Data / Workflow / Help menus
       data-panel.js         — top-left data info / toy params
-      workflow-chart.js     — SVG DAG of the pipeline; click → modals
       panel-system.js       — manages primary / secondary / bottom slots; tabs + ± buttons
       viewer-shared/
         colour-modes.js     — shared colour resolver used by both viewer-3d and viewer-2d
@@ -122,11 +124,34 @@ state = {
   // Panels track this to know when to rebuild graphData.
   engineRevision: 0,
 
-  // Per-layer state freshness for the workflow chart's status dots.
+  // Per-layer state freshness — historical; not authoritative since
+  // workflow-tree slice 2.6. The chart computes stale from the tree's
+  // revision stamps now (see §4).
   layerStates: { data: "not-run", clustering: "not-run", … },
 
   // Per-layer params (per-algorithm shape — see "Layer params" below).
   layerParams: { neighbourhood, taste, citations, clustering, layout },
+
+  // ── Workflow tree (Phase 2 of workflow-tree-redesign) ──
+  // Branching DAG of every step the user has run. The chart renders
+  // from this; legacy "current" slots above are read-only projections
+  // from the selected step's ancestry (workflow-projection.js).
+  workflow: {
+    steps:    { [id]: Step },
+    rootId:   string | null,
+    selected: string | null,
+  },
+
+  // ── Typed-job queue (§12) ──
+  jobs: {
+    byId:      { [id]: Job },
+    order:     string[],
+    runningId: string | null,
+  },
+
+  // ── First-class persistent entities (§6.19) ──
+  validationRuns: [],   // saved analytical sweeps; transitional
+                        // duplicate of certain cards' results
 
   // ── UI state ──
   panels: {
@@ -264,9 +289,9 @@ showstopper bugs documented in `RESUMING.md`:
    rebuilds graphData. Without this the clustering DID change but
    the viewer keeps painting the old result.
 
-The lane also calls `setBusyLabel("Dim-reduction…" / "Clustering…"
-/ …)` so the bottom busy bar (§12) updates as the cascade walks
-each phase.
+The lane is wrapped by the descriptor's step-bound queue job
+(slice 2.4 step↔job binding); the workflow chart shows a spinner on
+the bound card while the lane runs (§12).
 
 `recluster()` is multi-level and runs an extra step:
 1. For each level in `layerParams.clustering.levels`, infer either
@@ -286,38 +311,70 @@ metric. Each call also bumps `engineRevision` so panels re-render.
 
 ## 4. Workflow chart (`ui/workflow-chart.js`)
 
-SVG-rendered DAG of the pipeline, fixed in the left rail. One
-node per layer. Clicking a node opens its modal (per
-`ui/modals/layer-descriptors.js`).
+Tree-aware SVG renderer of `state.workflow` — the typed branching
+DAG that lives in `ui/workflow.js`. Phase 2 of the workflow-tree
+redesign turned this from a fixed 7-node chain into the primary
+analysis surface; full design lives in `doc/workflow-tree-redesign.md`.
 
-### Status dots
+### What it renders
 
-Each node shows a small dot whose colour reads from
-`state.layerStates[layer]`:
+Every step in `state.workflow.steps` becomes a card. The renderer
+walks `rootId` and lays out subtrees with a Reingold-Tilford-ish
+algorithm — siblings spread horizontally, depth maps to vertical
+position. Cards carry:
 
-- ✓ green — `"fresh"` (computed, cached)
-- ⚠ yellow — `"stale"` (upstream changed, awaiting recompute)
-- ⏳ orange (pulsing) — `"running"` (engine lane in flight; set by
-  each async lane at start, swapped to `"fresh"` on completion)
-- ⛔ red — `"error"`
-- ◯ grey — `"not-run"`
+- A status dot (one of `not-run` / `pending` / `running` / `fresh` /
+  `cancelled` / `error`).
+- A label (the descriptor's display name) plus a small monospace
+  sub-line (algorithm + key params; e.g. `mutualKNN · 2 levels`,
+  `B=10`, `2d × 1s`).
+- Overlays driven by the bound queue job (slice 2.4):
+  - **Spinner** on running cards.
+  - **Queue-position badge** on pending cards (`2 in queue ahead`).
+- An amber dashed border + ↻ button on stale cards (slice 2.6).
 
-### Algorithm label
+### Stale is computed
 
-Below each method node's title is a small monospace line showing
-the *active* algorithm. The label is read directly from
-`layerParams[layer].method` (single source of truth — there is no
-shadow `activeAlgorithm` slot any more; the workflow chart computes
-the label on the fly via `activeAlgorithmFor(state, nodeId)`).
+A card is `stale` when its `upstreamRevision` ≠ its parent's
+`revision`. The renderer walks the tree on each subscribe-tick.
+Each call to `setStepResult` bumps the card's `revision`, which
+makes every descendant compute as stale until they're re-run.
+(`state.layerStates` still exists for historical reasons; nothing
+reads it as authoritative any more — the chart computes from the
+tree's revision stamps instead.)
 
-For the clustering node, the label is `<method> · N levels` when
-N > 1, plain `<method>` otherwise.
+Clicking the ↻ button calls `rerunStep(stepId)` in
+`ui/modals/layer-descriptors.js`, which reads the stale step's
+stored params and dispatches to the matching descriptor's
+`applyChange` — creates a NEW sibling card under the (now fresh)
+canonical parent.
 
-### Node click → modal
+### Card click → select + modal
 
-`onNodeClick(node)` calls `getLayerDescriptor(node.id).openModal()`.
-The descriptor knows which modal to open (clustering uses the
-multi-level modal; layout uses the single-level algorithm modal).
+`onCardClick(step)` does two things:
+
+1. `selectStep(step.id)` — updates `state.workflow.selected`. The
+   back-compat projection layer (`workflow-projection.js`) then
+   walks the selection's ancestry and populates the legacy state
+   slots (`dimredResult`, `clusterLevels`, `_basePos`, …) from each
+   ancestor's snapshot, so the viewer + every panel re-paint to
+   the selected card's data.
+
+2. If the step type maps to a descriptor (`DESCRIPTOR_BY_TYPE`),
+   opens its modal pre-populated with the step's params. The
+   user's Apply forks a new sibling card with the edited params —
+   the original card is never mutated (§10.D1 immutable-once-done).
+
+Analysis cards (`bootstrapStability` / `dimSweep`) map to their own
+config modals + queue runners (slice 2.9); `save` / `load` cards
+have no modal (they're history markers).
+
+### Auto-migration on mount
+
+If `state.workflow` is empty when the chart mounts, the renderer
+calls `migrateLegacyToWorkflowIfNeeded()` to bootstrap a baseline
+linear tree from the populated legacy state slots. Idempotent;
+subsequent state changes re-render but do NOT re-migrate.
 
 ---
 
@@ -449,9 +506,9 @@ tab is its own module in `modals/clustering-tabs/`:
   `doc/eval.md` §7.2.
 
 Both share the `.cm-tab-*` CSS rhythm. Apply / Run buttons hand
-off to the global busy queue (§12); the modal closes immediately
-and the cascade runs in the background with the bottom bar
-carrying the label.
+off to the typed-job queue (§12); the modal closes immediately
+and the cascade runs in the background with the chart card
+spinning until completion.
 
 > A third **Validate** tab existed until 2026-05-24 (§6.18.1) —
 > bootstrap-Jaccard on the currently-applied clustering. Removed
@@ -626,87 +683,108 @@ Documentation conventions:
 
 ---
 
-## 12. Busy queue + bottom status bar (`ui/busy.js`, `ui/busy-bar.js`)
+## 12. Typed-job queue + per-card status (`ui/queue.js`)
 
-A single-threaded **FIFO queue** drives the bottom status bar.
-Async actions (modal Apply, topbar Save / Load, the engine cascade
-itself) enqueue a job; the queue runs them one at a time; the bar
-shows the head's label + an elapsed timer + a `+N queued` count
-when more are waiting.
+A single-threaded **FIFO queue** runs all async work. Every modal
+Apply, every save / load, every analysis card creates a job; the
+runner picks the head, sets its status to `running`, invokes the
+job's `fn`, then publishes the result. User-visible feedback lives
+on the **workflow chart** — each step's card shows a spinner while
+its job runs and a queue-position badge while it's pending.
 
-### Why a queue, not a slot
+Phase 2 slice 2.11 retired the legacy `busy.js` queue + bottom
+busy-bar. There is no global status strip any more — the chart is
+the single source of truth for in-flight work.
 
-Once workers (`doc/workers.md`) moved heavy compute off the main
-thread, users can fire multiple async actions back to back — open
-the dim-reduction modal, Apply, then open the clustering modal and
-Apply before the first finishes. A single-slot indicator would
-miss the second; a queue covers both. Modal Apply closes
-immediately and all in-flight feedback lives in the bar.
+### Why per-card, not a global bar
+
+A user with three clustering siblings and a bootstrap queued
+against the middle one needs to see *which* card is running, not
+just "something is running". Cards already exist as the unit of
+work (slice 2.4 step↔job binding); spinners on cards
+re-use that surface for the running indicator. Pending jobs that
+haven't started yet show a small position badge on their card
+("2 in queue ahead").
 
 ### State shape
 
 ```js
-state.busy = null | {
-  current: { id, label, since },
-  queue:   [{ id, label }, ...]   // jobs waiting behind the head
+state.jobs = {
+  byId:      { [id]: Job },        // every job ever enqueued this session
+  order:     string[],             // creation order
+  runningId: string | null,        // currently-executing job
+};
+
+type Job = {
+  id, type, label,
+  stepId:    string | null,        // bound chart card, if any
+  status:    "pending" | "running" | "done" | "failed" | "cancelled",
+  result:    any | null,           // populated on done
+  error:     string | null,        // populated on failed
+  phase:     string | null,        // mid-flight phase label
+  progress:  number | null,        // 0..1
+  createdAt, startedAt, endedAt,
 };
 ```
 
-### API (`ui/busy.js`)
+### API (`ui/queue.js`)
 
 ```js
-import { enqueueBusy, setBusyLabel } from "./busy.js";
+import { enqueueJob, cancelJob } from "./queue.js";
 
-// Enqueue an async job. Returns a Promise that resolves with fn's
-// return value once THIS specific job completes (jobs ahead of it
-// in the queue still run first).
-const result = await enqueueBusy("Saving \"foo\"…", async () => {
-  return await saveProject();
+// Enqueue a typed job. When stepId is set, the queue runner
+// MIRRORS lifecycle onto the bound chart card:
+//   running  → updateStepStatus(stepId, "running")
+//   done     → setStepResult(stepId, result)
+//   failed   → updateStepStatus(stepId, "failed", { error })
+//   cancel   → updateStepStatus(stepId, "cancelled")
+// Phase/progress are forwarded via updateStepProgress.
+const { id, promise } = enqueueJob({
+  type:  "bootstrapStability",
+  label: "Bootstrap · B=10",
+  stepId,
+  fn:    async (ctx) => {
+    ctx.setPhase("running");
+    return await runTheJob({ signal: ctx.signal });
+  },
 });
 
-// Update the visible label of the currently-running job without
-// dequeuing it. Used by the engine cascade as it walks each phase:
-//   reingest sets "Loading data…", then redimred sets
-//   "Dim-reduction…", then recluster sets "Clustering…", all
-//   within the same enqueueBusy slot.
-setBusyLabel("Clustering…");
+await promise;          // resolves with fn's return value
+
+// Per-job cancel: aborts the AbortController; the job's fn must
+// observe signal.aborted for the abort to take effect mid-flight.
+cancelJob(id);
 ```
 
-### Failure semantics
+### Failure + cancel semantics
 
-If a job throws, the error propagates out of `enqueueBusy`'s
-returned promise but does NOT poison the queue — the next job
-still runs. Callers handle errors via try/catch (or existing
-`console.error` patterns in modal `applyChange` paths).
+- A throwing `fn` rejects the returned promise + sets job status
+  to `failed`. The queue continues with the next pending job.
+- `cancelJob(id)` on a pending job marks it cancelled and dequeues.
+  On a running job, aborts the controller; the fn must check
+  `ctx.signal.aborted` or wire the signal into its async hops
+  (`runInWorker(..., {signal})`).
+- `AbortError` rejections are conventionally swallowed by callers
+  (cancel is user-initiated; surfacing an error would be noise).
 
 ### Wired into
 
-- **Engine lanes** (`engine.js`): each lane calls `setBusyLabel`
-  on entry so the bar tracks the cascade. The top-level
-  `applyChange` (which the modals call) wraps the cascade in a
-  single `enqueueBusy`.
-- **Topbar Save / Load** (`topbar.js`): `withBusy("Saving…", …)`
-  / `withBusy("Loading…", …)`.
-- **Modal Apply paths** — dim-reduction, clustering, algorithm,
-  data-source modals all enqueue and close immediately rather
-  than blocking on the cascade.
+- **Modal Apply paths** — every layer descriptor's `applyChange`
+  enqueues a step-bound job and returns the promise. Modals close
+  immediately; the chart card spins.
+- **Analysis cards** — bootstrap, dim-sweep, and Optimise sweeps
+  each enqueue their own step-bound job (slice 2.9).
+- **Save / Load** — both create cards under the workflow root and
+  enqueue a job to do the actual serialise / deserialise (slice
+  2.9.c).
 
 ### What we deliberately didn't build
 
+- No global bottom status bar (retired in slice 2.11).
 - No progress bar with %. UMAP is the worst offender; no per-step
   timing model yet. Per-epoch progress reporting is a §6.11 Slice 4
   follow-up.
-- No toast notifications. Success is self-evident; failure already
-  pops `window.alert`.
+- No toast notifications. Failure already pops `window.alert`;
+  success is self-evident from the card going `done`.
 - No `pointer-events: none` lockout — workers + the queue handle
   back-to-back actions gracefully.
-
-### Display rules (`ui/busy-bar.js`)
-
-- Bar is `hidden` when `state.busy === null`.
-- Label renders `state.busy.current.label`.
-- `+N queued` renders when `state.busy.queue.length > 0`.
-- Elapsed timer ticks every 500 ms while a job is running. Format:
-  `""` for < 1 s, `Ns` for 1–59 s, `M:SS` for ≥ 60 s.
-- CSS shimmer animation reuses the modal Apply button's
-  `@keyframes modal-action-running` so visual rhythm matches.

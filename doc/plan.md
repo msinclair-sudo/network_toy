@@ -1102,12 +1102,18 @@ data in tests)
   loaded via the picker. Same n, same edge count as a normal
   `real` reingest.
 
-### 6.13 Global busy indicator + queue ✓ ↻ — shipped 2026-05-24
+### 6.13 Global busy indicator + queue ✓ ↻ — shipped 2026-05-24, **retired by §6.20 slice 2.11 (2026-05-27)**
+
+> **Retired.** The bottom status bar + `busy.js` queue were removed
+> in workflow-tree-redesign slice 2.11; the typed-job queue in
+> `app/src/ui/queue.js` + per-card status overlays on the workflow
+> chart took over. The section below is preserved as the historical
+> record of what `busy.js` did and why.
 
 **Shipped as a bottom status bar + FIFO queue**, not a topbar pill
-as originally sketched. The visual surface lives at the viewport
+as originally sketched. The visual surface lived at the viewport
 bottom (`#busy-bar` in `app/index.html`); the queue + label control
-live in `app/src/ui/busy.js` (`enqueueBusy` + `setBusyLabel`).
+lived in `app/src/ui/busy.js` (`enqueueBusy` + `setBusyLabel`).
 
 Why a queue instead of a single slot: once workers (§6.11) made the
 heavy lanes truly async, users can fire multiple actions back to
@@ -2554,7 +2560,7 @@ Append in `doc/dim-sweep-results.md` documents the full result.
 ### 6.10 `doc/method-manual.md` ☐
 Was item 9. Still too early.
 
-### 6.20 Workflow-tree redesign ✓ ↻ — Phase 1 + Phase 2 slices 2.1-2.8 shipped 2026-05-26→27
+### 6.20 Workflow-tree redesign ✓ ↻ — Phase 1 + Phase 2 slices 2.1-2.9 + 2.11 shipped 2026-05-26→27
 
 The toy's UX shifted from viewer-centric to workflow-centric: every
 analysis is a card on a branching tree; modals fork siblings rather
@@ -2585,25 +2591,40 @@ re-paint to that card's data. Full design + slice list in
   - Back-compat projection layer (selectStep + walk ancestry +
     project each step's snapshot into legacy state slots; viewer
     re-paints to the selected card's data)
+- **Phase 2 slice 2.9 — analysis cards** (bootstrap / dim-sweep /
+  save / load all become first-class cards):
+  - Bootstrap (2.9.a) and dim-sweep (2.9.b) each get a config
+    modal + queue-job runner; panels go saved-mode-only (§10.D5).
+    Bootstrap parents under the selected clustering ancestor;
+    dim-sweep parents under the selected dimred ancestor.
+  - Save / load (2.9.c) migrated off `enqueueBusy` onto `enqueueJob`;
+    each creates a card under the workflow root for project history.
+  - Zero `enqueueBusy` callers remain in product code (structural
+    invariant tested in `tests/test_slice_2_9_step_bindings.py`).
+- **Phase 2 slice 2.11 — dead-UX cleanup**:
+  - `busy.js` + `busy-bar.js` deleted (~457 LOC + the `#busy-bar`
+    DOM element, CSS, `state.busy` slot, `mirrorToBusy` bridge,
+    5 `setBusyPhase` calls in engine.js, the `mountBusyBar` import).
+  - 7 disabled topbar stubs trimmed. Entire Validate menu dropped
+    (its work lives on chart cards now — Dim sweep card replaces
+    the menu's ARI dim-sweep stub).
 - **Test infrastructure** committed alongside — pytest in `tests/`,
   conftest fixtures (page / toy_page / clean_page), BFS-5000 as
   default fixture per user directive 2026-05-26, slow marker for
   real-data tests. scratch/ cleared (32 smokes → 0; high/medium-
   value migrated, rest dropped).
 
-**Remaining Phase 2 work (when next session resumes):**
-- **2.9** migrate bootstrap-stability / dim-sweep / save / load to
-  step-bound jobs (extends 2.4 pattern; ~1-2 days)
+**Remaining Phase 2 work (parallel — pick either next):**
 - **2.10** cross-source comparison steps (fusion-comparison via
   refIds, generalised to any two clusterings)
-- **2.11** dead-UX cleanup + bottom-bar removal (depends on 2.9)
 - **2.12** "what's next?" affordances per card
 
 **Open design questions** (in workflow-tree-redesign.md §10.O*):
 - O1 multi-level clustering presentation (single card vs per-level
-  vs hybrid)
-- O2 viewer behaviour for cross-source cards
-- O4 large-save strategy (defer until pain appears)
+  vs hybrid) — couples to deferred auto-recursion work
+- O2 viewer behaviour for cross-source cards — will surface as
+  2.10 work begins
+- O4 large-save strategy — defer until pain appears
 - O3 stale visual ✓ resolved by 2.6.
 
 See `doc/workflow-tree-redesign.md` for full design + slice list +

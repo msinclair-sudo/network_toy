@@ -450,7 +450,8 @@ Doc highlights:
 - `doc/citation-layout.md` — Layer 4 algorithms (FR, MDS / SMACOF, UMAP-on-graph) + which to pick at which scale
 - `doc/blend.md` — Layer 5 alignment + per-frame blend; covers per-component vs whole-graph (alignGlobal) Procrustes, the nested-lerp formula, and the opt-in cascade policy
 - `doc/multi-level.md` — multi-level clustering + bridge analysis derivation
-- `doc/ui-architecture.md` — the new shell's state container, engine orchestrator, workflow chart, panel system, modals, busy bar
+- `doc/ui-architecture.md` — shell architecture: state container, engine orchestrator, workflow chart (tree-aware renderer), panel system, modals, queue + per-card job status
+- `doc/workflow-tree-redesign.md` — Phase 1 + Phase 2 design + slice list for the workflow-tree restructure (the workflow chart is now the primary analysis surface, with branching cards + step↔job binding)
 - `doc/workers.md` — DAG-orchestrated module workers: runDAG, lane shape, cancellation, transferables
 - `doc/eval.md` — Optimise tab: bootstrap-Jaccard, scorers, the three sweep modes (resolution / full / target-range with LHS), known limitations + audit cross-refs
 - `doc/scaling.md` — toy-vs-real-data scaling analysis (`n ≈ 400` toy, `n = 810 k` real)
@@ -597,7 +598,8 @@ doc/
   citation-layout.md              Layer 4 algorithms (FR / MDS / UMAP-on-graph)
   blend.md                        Layer 5 alignment + per-frame blend
   multi-level.md                  multi-level clustering + bridge analysis
-  ui-architecture.md              shell architecture (incl. workers + busy bar)
+  ui-architecture.md              shell architecture (state, engine, workflow chart, queue, modals)
+  workflow-tree-redesign.md       Phase 1 + Phase 2 design for the workflow-tree restructure
   workers.md                      DAG-orchestrated worker port + cancellation
   eval.md                         Optimise tab: bootstrap, scorers, sweep modes
   scaling.md                      toy-vs-real-data scaling

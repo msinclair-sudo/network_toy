@@ -22,7 +22,10 @@ Section 5 lists the controls and what each one actually drives.
 
 **Engine architecture and execution model:**
 - `doc/ui-architecture.md` — shell, state container, engine
-  orchestrator, panel system, modals, busy queue + bottom bar.
+  orchestrator, workflow chart (tree-aware), panel system,
+  modals, typed-job queue + per-card status.
+- `doc/workflow-tree-redesign.md` — Phase 1 + Phase 2 design for
+  the workflow-tree restructure (cards as the analysis unit).
 - `doc/workers.md` — module workers + the DAG that runs heavy
   lanes in parallel with cancellation.
 - `doc/eval.md` — Validate + Optimise (bootstrap-Jaccard,

@@ -267,8 +267,8 @@ showstopper bugs documented in `RESUMING.md` (parked branch
 
 - **Per-epoch progress reporting** (e.g. "UMAP epoch 124/500").
   umap-js exposes this; the worker protocol currently posts only
-  the final result. Slice 4 follow-up — defer until §6.13's busy
-  bar wants the granularity.
+  the final result. Slice 4 follow-up — defer until the chart's
+  per-card progress overlay wants the granularity.
 - **HDBSCAN producing too many clusters at default
   `min_cluster_size` at large n.** Param-tuning issue, independent
   of workers. Use the §6.17 target-range sweep to find a sensible
@@ -284,8 +284,9 @@ showstopper bugs documented in `RESUMING.md` (parked branch
 ## 10. Cross-references
 
 - `doc/plan.md` §6.11 — slice sequencing + locked decisions.
-- `doc/ui-architecture.md` §3 — engine orchestrator; §12 — busy
-  bar (which the worker lanes feed via `setBusyLabel`).
+- `doc/ui-architecture.md` §3 — engine orchestrator; §12 —
+  typed-job queue (worker lanes run inside step-bound jobs whose
+  status mirrors to the bound chart card).
 - `doc/dimred.md` §4 — Layer 1.5 engine orchestration; the redimred
   DAG above is its parallel-execution overlay.
 - `doc/clustering.md` §5 — pipeline rerun semantics; `recluster()`

@@ -6,8 +6,7 @@
   + auto-save. The original Phase 1 slice C (bottom-bar queued-jobs
   surface) is **dropped** — superseded by per-card overlays in
   Phase 2.
-- **Phase 2 slices 2.1 → 2.8 (excl. 2.7's reverse-7)** ✓ shipped on
-  `main`:
+- **Phase 2 slices 2.1 → 2.9 + 2.11** ✓ shipped:
   - **2.1** state.workflow shape + CRUD actions (workflow.js)
   - **2.2** legacy state → tree migration (workflow-migration.js)
   - **2.3** tree-aware workflow-chart renderer
@@ -17,12 +16,16 @@
   - **2.7** back-compat projection layer (click a card → viewer swaps)
   - **2.8** branching tree layout (multi-card siblings spread
     horizontally with Reingold-Tilford-ish placement)
+  - **2.9** bootstrap-stability + dim-sweep + save/load migrated to
+    step-bound queue jobs. Each runs from the chart, forks a sibling
+    under the right ancestor, panel goes saved-only (§10.D5).
+  - **2.11** dead-UX cleanup — `busy.js` + `busy-bar.js` deleted
+    (last `enqueueBusy` callers removed in 2.9); 7 disabled topbar
+    stubs dropped; entire Validate menu retired (its work lives on
+    chart cards now).
 - **Phase 2 remaining**:
-  - **2.9** migrate bootstrap-stability + dim-sweep + save/load to
-    step-bound jobs (extends 2.4's pattern; ~1-2 days)
   - **2.10** cross-source comparison steps (any two clusterings, not
     just pre/post fusion)
-  - **2.11** dead-UX cleanup + bottom-bar removal (once 2.9 lands)
   - **2.12** "what's next?" affordances per card
 - **§10.O3 stale visual** resolved by 2.6 (amber dashed border +
   re-run button). Remaining open questions: §10.O1 (multi-level
@@ -595,14 +598,30 @@ controls.
 Smoke: create 3 dimred siblings → chart renders all three
 side-by-side; selecting each shows its result.
 
-#### Slice 2.9 — Migrate other long-runners to step-bound jobs
+#### Slice 2.9 — Migrate other long-runners to step-bound jobs ✓ shipped
 
-Bootstrap-stability + dim-sweep + (eventually) save / load all
-become cards via 2.5's pattern. Each creates a new card and binds
-a queue.js job.
+Bootstrap-stability + dim-sweep + save / load all became cards via
+2.5's pattern. Each creates a new card and binds a queue.js job.
 
-Once this slice lands, the bottom busy-bar is empty; we can
-retire it (slice 2.11).
+Sub-slices:
+- **2.9.a** Bootstrap — new `bootstrap-modal.js` + `runners/bootstrap-
+  runner.js`; panel goes saved-mode-only (auto-binds to the latest
+  done card or a legacy validationRun). Parent = selected clustering
+  ancestor.
+- **2.9.b** Dim-sweep — same shape, new `dim-sweep-modal.js` +
+  `runners/dim-sweep-runner.js`. Modal exposes dims/seeds/threshold
+  only; algos pinned to the §6.9 validation-script defaults. Parent
+  = selected dimred ancestor.
+- **2.9.c** Save/load — `topbar.js` save + load + `data-source-
+  modal.js` apply + `validation-run-optimise` apply-row all migrated
+  off `enqueueBusy` onto `enqueueJob`. Save + load create cards
+  under the root; the others piggy-back on existing step-bound jobs
+  via descriptor.applyChange. Zero `enqueueBusy` callers remain.
+- **2.9.d** pytest coverage (`tests/test_slice_2_9_step_bindings.py`)
+  + structural-invariant test that no module imports `enqueueBusy`.
+
+Once this slice landed, the bottom busy-bar had no live consumers;
+slice 2.11 retired it.
 
 #### Slice 2.10 — Cross-source steps (fusion-comparison + future)
 
@@ -614,15 +633,22 @@ Step config picks ref + cand source cards via the tree picker.
 Same pattern unblocks "compare two algorithm choices on the same
 data" — a future cross-algorithm card.
 
-#### Slice 2.11 — Dead-UX cleanup + bottom-bar removal
+#### Slice 2.11 — Dead-UX cleanup + bottom-bar removal ✓ shipped
 
-- Kill the 7 disabled topbar stubs (§2.2 of this doc).
-- Remove `busy.js` + `busy-bar.js` (their callers are all
-  migrated by 2.9; bottom bar is no longer load-bearing).
-- Replace any remaining `enqueueBusy` calls with `enqueueJob`
-  bound to an appropriate step.
-- Restructure topbar menus around tree operations (export tree,
-  import tree, manage selected step, etc.).
+Sub-slices:
+- **2.11.a** Deleted `busy.js` + `busy-bar.js`. Removed the
+  `#busy-bar` element + its CSS, `state.busy` slot, `mirrorToBusy`
+  in queue.js, and the 5 `setBusyPhase` calls in engine.js.
+  `mountBusyBar` import + call in main.js gone.
+- **2.11.b** Trimmed disabled topbar stubs. 7 items dropped (real-
+  dataset loader, label/edge export, presets, ARI dim-sweep menu,
+  disagreement, method manual, keyboard shortcuts). Entire Validate
+  menu removed since both items were subsumed by chart cards
+  (dim-sweep) or deferred (disagreement metric).
+- (No 2.11.c "restructure menus around tree operations" — the
+  menus that remain are small enough that a restructure is
+  premature; we have File / Data / Workflow / Help and that's it
+  now. Re-evaluate when 2.12's "what's next" surface lands.)
 
 #### Slice 2.12 — Next-step affordances
 
@@ -636,23 +662,12 @@ rule table per step type.
 ### Dependency graph
 
 ```
-2.1 (state shape)
-  └─▶ 2.2 (migration)
-        └─▶ 2.3 (renderer)
-              ├─▶ 2.4 (step↔job binding + overlay)
-              │     └─▶ 2.5 (modal-as-step-creator)
-              │           ├─▶ 2.6 (stale propagation)
-              │           ├─▶ 2.7 (back-compat projection layer)
-              │           │     └─▶ 2.8 (multi-card layout)
-              │           │           └─▶ 2.10 (cross-source steps)
-              │           └─▶ 2.9 (migrate other long-runners)
-              │                 └─▶ 2.11 (dead-UX + bottom-bar removal)
-              │                       └─▶ 2.12 (next-step affordances)
+2.1 ✓ ─▶ 2.2 ✓ ─▶ 2.3 ✓ ─▶ 2.4 ✓ ─▶ 2.5 ✓ ──┬─▶ 2.6 ✓
+                                              ├─▶ 2.7 ✓ ─▶ 2.8 ✓ ─▶ 2.10  (parallel)
+                                              └─▶ 2.9 ✓ ─▶ 2.11 ✓ ─▶ 2.12 (parallel)
 ```
 
-2.1–2.4 must land in order. 2.5 + 2.7 can ship in either order
-(2.7 keeps panels working while 2.5 changes how modals create
-steps). 2.6 / 2.8 / 2.9 / 2.10 are parallel once 2.5 + 2.7 are in.
+Only 2.10 + 2.12 remain. Both are parallel — pick either next.
 
 ## 8. Migration / back-compat
 
@@ -848,7 +863,7 @@ Defer until pain appears.
 
 ---
 
-**Sign-off status (2026-05-26):** §1–3 architecture + §10.D1–D7
-decisions locked. Phase 1 slices A + B shipped (queue.js foundation
-+ Optimise non-blocking). Phase 2 is now the next chunk of work —
-see §7 for the sub-slice sequence.
+**Sign-off status (2026-05-27):** §1–3 architecture + §10.D1–D7
+decisions locked. Phase 1 + Phase 2 slices 2.1 → 2.9 + 2.11 shipped.
+Only 2.10 (cross-source comparison) + 2.12 (next-step affordances)
+remain — both parallel, neither blocking the other.
