@@ -64,41 +64,54 @@ def test_bridge_analysis_empty_with_one_level(page):
 # ── bootstrap-stability ────────────────────────────────────────────────
 
 
-def test_bootstrap_stability_live_run(page):
-    """Mount in live mode, run a small bootstrap (B=5 to keep it
-    fast), verify per-cluster table + aggregates appear. Save-this-run
-    button shows after a successful run."""
+def test_bootstrap_stability_panel_saved_mode(page):
+    """Saved-mode render: slice 2.9.a removed the panel's live tab —
+    bootstrap is now kicked off from the workflow chart and the panel
+    renders a bound run/card. Inject a synthetic bootstrapStability
+    ValidationRun and verify the aggregate strip + per-cluster table
+    render (the actual compute + card-binding path is covered by
+    test_slice_2_9_step_bindings.test_bootstrap_descriptor_*)."""
     out = page.evaluate(
         '''async () => {
+            const state = await import("/app/src/ui/state.js");
+            const id = state.saveValidationRun({
+                type: "bootstrapStability",
+                label: "synthetic bootstrap run",
+                inputs: { dataSourceId: "real", dataSourceConfig: { subset: "dev_subset_bfs_5000" } },
+                settings: { B: 5 },
+                results: {
+                    bootstrapResult: {
+                        aggregate: {
+                            meanJaccard_macro: 0.71, meanJaccard_unweighted: 0.68,
+                            nClusters: 3, noiseFraction: 0.04, noiseHandling: "exclude",
+                            nStable: 2, nDoubtful: 1, nUnstable: 0,
+                        },
+                        perCluster: [
+                            { clusterId: 0, memberCount: 120, meanJaccard: 0.91, classification: "stable" },
+                            { clusterId: 1, memberCount: 80,  meanJaccard: 0.74, classification: "stable" },
+                            { clusterId: 2, memberCount: 40,  meanJaccard: 0.58, classification: "doubtful" },
+                        ],
+                    },
+                    cluster: { label: "hdbscan", nClusters: 3 },
+                },
+                scoreVersion: 3, runtimeSec: 4.0, branchId: null,
+            });
+
             const host = document.createElement("div");
             document.body.appendChild(host);
             const { mount } = await import("/app/src/ui/panels/bootstrap-stability.js");
-            const state = await import("/app/src/ui/state.js");
-            mount(host, state.getState(), {});
+            mount(host, state.getState(), { runId: id });
             await new Promise(r => setTimeout(r, 100));
-            // Lower B to 5 for speed; bootstrap-Jaccard at n=5000 ~5s/iter.
-            const bSlider = host.querySelectorAll('input[type="range"]')[0];
-            bSlider.value = "5"; bSlider.dispatchEvent(new Event("input"));
-            // Click Run.
-            host.querySelector(".panel-bs-run").click();
-            // Poll for completion.
-            for (let i = 0; i < 200; i++) {
-                await new Promise(r => setTimeout(r, 500));
-                const status = host.querySelector(".panel-bs-status")?.textContent || "";
-                if (status.includes("iters")) break;
-            }
             return {
-                statusText: host.querySelector(".panel-bs-status")?.textContent,
-                aggStrip:   !!host.querySelector(".panel-bs-agg"),
-                tableRows:  host.querySelectorAll(".panel-bs-row").length,
-                saveBtn:    !!host.querySelector(".panel-bs-save"),
+                title:     host.querySelector(".panel-bs-title")?.textContent,
+                aggStrip:  !!host.querySelector(".panel-bs-agg"),
+                tableRows: host.querySelectorAll(".panel-bs-row").length,
             };
         }'''
     )
-    assert "iters" in (out["statusText"] or "")
+    assert out["title"] == "synthetic bootstrap run"
     assert out["aggStrip"] is True
-    assert out["tableRows"] > 0
-    assert out["saveBtn"] is True
+    assert out["tableRows"] == 3
 
 
 # ── fusion-comparison helpers ──────────────────────────────────────────
@@ -302,6 +315,11 @@ def test_dim_sweep_runner_tiny(page):
 
 
 def test_dim_sweep_panel_mounts(page):
+    """Empty-state smoke: slice 2.9.b removed the panel's live tab, so
+    mounting with no bound run/card renders the title + the hint that
+    points at the workflow chart's Dim sweep card. No run button or
+    live estimate any more (saved-mode render is covered by
+    test_dim_sweep_panel_saved_mode)."""
     out = page.evaluate(
         '''async () => {
             const host = document.createElement("div");
@@ -311,17 +329,18 @@ def test_dim_sweep_panel_mounts(page):
             mount(host, state.getState(), {});
             await new Promise(r => setTimeout(r, 100));
             return {
-                title:        host.querySelector(".panel-ds-title")?.textContent,
-                sections:     host.querySelectorAll(".panel-ds-section").length,
-                runBtn:       !!host.querySelector(".panel-ds-run"),
-                estimate:     !!host.querySelector(".panel-ds-estimate"),
+                title:     host.querySelector(".panel-ds-title")?.textContent,
+                emptyText: host.querySelector(".panel-ds-empty")?.textContent,
+                runBtn:    !!host.querySelector(".panel-ds-run"),
+                estimate:  !!host.querySelector(".panel-ds-estimate"),
             };
         }'''
     )
-    assert out["title"] == "Dim sweep — live"
-    assert out["sections"] >= 3
-    assert out["runBtn"] is True
-    assert out["estimate"] is True
+    assert out["title"] == "Dim sweep"
+    assert out["emptyText"] is not None
+    assert "Dim sweep card" in out["emptyText"]
+    assert out["runBtn"] is False
+    assert out["estimate"] is False
 
 
 def test_dim_sweep_panel_saved_mode(page):

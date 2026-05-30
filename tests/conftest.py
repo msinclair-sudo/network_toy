@@ -222,6 +222,30 @@ def bfs5000_page(playwright_browser):
     # Re-check errors after the long ingest+cascade.
     setup_errs = relevant_errors(page)
     assert not setup_errs, f"setup errors after bfs5000 cascade: {setup_errs}"
+
+    # Snapshot the pristine real-data geometry slots (references — the
+    # arrays themselves are never mutated in place, only the slot is
+    # reassigned). The per-test `page` reset restores them so a test
+    # that clobbers state.clusterLevels / dimredResult / _basePos (e.g.
+    # the projection tests, which project synthetic length-2 cards into
+    # the legacy slots) can't corrupt the shared session for tests that
+    # run after it.
+    page.evaluate(
+        '''async () => {
+            const s = (await import("/app/src/ui/state.js")).getState();
+            window.__pristineSlots = {
+                dimredResult:           s.dimredResult,
+                dimredResultPreFusion:  s.dimredResultPreFusion,
+                _basePos:               s._basePos,
+                _basePos2d:             s._basePos2d,
+                _basePosPreFusion:      s._basePosPreFusion,
+                clusterLevels:          s.clusterLevels,
+                clusterLevelsPreFusion: s.clusterLevelsPreFusion,
+                clusterResult:          s.clusterResult,
+                clusterResultPreFusion: s.clusterResultPreFusion,
+            };
+        }'''
+    )
     page.errors.clear()                                  # tests start with a clean slate
 
     yield page
@@ -244,6 +268,9 @@ def page(bfs5000_page):
             const wf    = await import("/app/src/ui/workflow.js");
             wf.clearWorkflow();
             state.clearValidationRuns();
+            // Restore the pristine real-data geometry slots in case a
+            // prior test clobbered them (see bfs5000_page snapshot).
+            if (window.__pristineSlots) state.update({ ...window.__pristineSlots });
             // Clear in-flight jobs cleanly: cancel runnings, drop all.
             const cur = state.getState();
             const q = await import("/app/src/ui/queue.js");
