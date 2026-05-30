@@ -24,8 +24,8 @@ Section 5 lists the controls and what each one actually drives.
 - `doc/ui-architecture.md` — shell, state container, engine
   orchestrator, workflow chart (tree-aware), panel system,
   modals, typed-job queue + per-card status.
-- `doc/workflow-tree-redesign.md` — Phase 1 + Phase 2 design for
-  the workflow-tree restructure (cards as the analysis unit).
+- `doc/plan.md` §8 — the workflow-tree redesign (Phase 1 + 2, shipped):
+  cards as the analysis unit. §9 is the active multi-level plan.
 - `doc/workers.md` — module workers + the DAG that runs heavy
   lanes in parallel with cancellation.
 - `doc/eval.md` — Validate + Optimise (bootstrap-Jaccard,

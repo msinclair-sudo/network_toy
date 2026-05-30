@@ -314,7 +314,7 @@ metric. Each call also bumps `engineRevision` so panels re-render.
 Tree-aware SVG renderer of `state.workflow` — the typed branching
 DAG that lives in `ui/workflow.js`. Phase 2 of the workflow-tree
 redesign turned this from a fixed 7-node chain into the primary
-analysis surface; full design lives in `doc/workflow-tree-redesign.md`.
+analysis surface; full design lives in `doc/plan.md` §8.
 
 ### What it renders
 
