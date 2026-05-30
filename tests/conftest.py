@@ -300,14 +300,18 @@ def toy_page(playwright_browser):
     """
     ctx, page = _boot_page(playwright_browser)
     # UI #2: boot no longer auto-runs the pipeline, so toy-mode tests
-    # trigger it explicitly. regenerate() populates the legacy slots and
-    # the chart's migration retry builds the baseline data→dimred→
-    # clustering tree; the explicit migrate call makes that deterministic.
+    # trigger it explicitly. regenerate() runs the full cascade; the
+    # chart's migration retry may build a partial (data-only) tree from
+    # the transient mid-cascade state, so we clear it and migrate once
+    # from the COMPLETE post-cascade state to get the full
+    # data→dimred→clustering(→citations) baseline tree.
     page.evaluate(
         '''async () => {
             const engine = await import("/app/src/ui/engine.js");
             await engine.regenerate();
+            const wf  = await import("/app/src/ui/workflow.js");
             const mig = await import("/app/src/ui/workflow-migration.js");
+            wf.clearWorkflow();
             mig.migrateLegacyToWorkflowIfNeeded();
         }'''
     )

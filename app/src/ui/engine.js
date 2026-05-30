@@ -155,7 +155,13 @@ function makeUid() {
 // On a mode switch, every downstream output (clusterLevels, citations,
 // layout, alignment, embedding, dimredResult) is wiped — the toy and
 // real datasets are mutually exclusive, never co-resident.
-export async function reingest() {
+// Ingest the data source ONLY — produce the dataset + reset downstream
+// slots, WITHOUT cascading into dim-reduction. UI #2's granular build-
+// out uses this so "add data source" creates just a data card; the user
+// then adds dim-reduction (redimred) + clustering (recluster) via the
+// per-card + buttons. reingest() = ingestDataOnly() + redimred() and
+// keeps the original full-cascade behaviour for every existing caller.
+export async function ingestDataOnly() {
   ensureLayerParams();
   const s = getState();
 
@@ -246,6 +252,12 @@ export async function reingest() {
     engineRevision:         s.engineRevision + 1,
   });
   setLayerState("data", "fresh");
+}
+
+// Full data cascade: ingest + dim-reduce (which in turn cascades into
+// clustering). Unchanged behaviour for all existing callers + tests.
+export async function reingest() {
+  await ingestDataOnly();
   await redimred();
 }
 
@@ -277,7 +289,7 @@ export const regenerate = reingest;
 //     default) on 768-d input would yield 768-d, which can't render —
 //     so we leave _basePos null. User has to pick a 3-d viz reduction
 //     (e.g. UMAP-3) to populate the viewer.
-export async function redimred() {
+export async function redimred({ cascade = true } = {}) {
   const s = getState();
   if (!s.genResult) return;
   const cfg = s.layerParams.dimred;
@@ -489,7 +501,11 @@ export async function redimred() {
     engineRevision:        sNow.engineRevision + 1,
   });
   setLayerState("dimred", "fresh");
-  await recluster();
+  // UI #2 granular build-out: the dimred descriptor calls
+  // redimred({cascade:false}) so adding a dim-reduction card doesn't
+  // auto-run clustering — the user adds clustering via the + button.
+  // reingest()/full-pipeline callers keep cascade=true.
+  if (cascade) await recluster();
 }
 
 // 2-d analogue of normaliseToViewerScale. Same centre + isotropic

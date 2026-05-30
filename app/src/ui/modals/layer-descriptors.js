@@ -199,24 +199,22 @@ function dataDescriptor() {
       const params = (s.dataSource.configs && s.dataSource.configs[mode]) || getDataSource(mode).defaultParams();
       return { method: mode, params: { ...params } };
     },
-    // Switching data sources rebuilds everything. Rather than fork a
-    // new data sibling (§10.D1 says only one root), we wipe the
-    // workflow + reingest. Migration on the next state change
-    // rebuilds the tree under the new data root.
+    // UI #2 granular build-out: adding/switching a data source ingests
+    // the data ONLY (no dimred/clustering cascade) and creates just the
+    // data card. The user then adds dim-reduction + clustering via the
+    // per-card + buttons. Single root (§10.D1), so we wipe the tree and
+    // rebuild from the fresh data.
     applyChange: async (sourceId, params) => {
       setDataSourceMode(sourceId);
       for (const k of Object.keys(params)) {
         setDataSourceConfig(k, params[k], sourceId);
       }
-      // Clear the tree so migration rebuilds cleanly. Without this,
-      // findCanonicalParent would return the OLD data root, and the
-      // new dimred/clustering cards would attach to a root whose
-      // data no longer matches.
+      // Clear the tree so migration rebuilds a fresh data root (the old
+      // root's data no longer matches).
       clearWorkflow();
-      await engine.reingest();
-      // Re-trigger migration so the new tree appears immediately.
-      // (workflow-chart.js's one-shot migration already ran on boot;
-      // this explicit call rebuilds the tree on the new data.)
+      await engine.ingestDataOnly();
+      // Migration now emits only the cards whose result slots exist —
+      // after a data-only ingest that's just the data card.
       const { migrateLegacyToWorkflowIfNeeded } =
         await import("../workflow-migration.js");
       migrateLegacyToWorkflowIfNeeded();
@@ -271,7 +269,10 @@ function dimredDescriptor() {
         engineFn: async () => {
           const s = getState();
           update({ layerParams: { ...s.layerParams, dimred: dimredParams } });
-          try { await engine.redimred(); }
+          // cascade:false — adding a dimred card doesn't auto-run
+          // clustering (UI #2 granular build-out); the user adds a
+          // clustering card via the + button.
+          try { await engine.redimred({ cascade: false }); }
           catch (e) { console.error("[dimred-descriptor] redimred failed:", e); throw e; }
         },
       });

@@ -108,40 +108,50 @@ export function inferBaselineTree(state) {
     },
   });
 
-  // ── dimred card — always emitted (status reflects whether work has run).
   const lp = state.layerParams || {};
-  const dimredCfg = lp.dimred || {};
-  plan.push({
-    ref:       "dimred",
-    type:      "dimred",
-    label:     describeDimredLabel(dimredCfg),
-    params:    dimredCfg,
-    parentRef: "data",
-    refRefs:   [],
-    // Result is the materialised reduction. We carry refs to the
-    // existing state slots rather than deep-copy — the projection
-    // layer (Slice 2.7) will read these back into the legacy slots
-    // when this card is selected.
-    result:    state.dimredResult ? {
-      dimredResult: state.dimredResult,
-      basePos:      state._basePos,
-      basePos2d:    state._basePos2d,
-    } : null,
-  });
 
-  // ── clustering card — always emitted.
-  const clusteringCfg = lp.clustering || {};
-  plan.push({
-    ref:       "clustering",
-    type:      "clustering",
-    label:     describeClusteringLabel(clusteringCfg, state.clusterLevels),
-    params:    clusteringCfg,
-    parentRef: "dimred",
-    refRefs:   [],
-    result:    state.clusterLevels ? {
-      clusterLevels: state.clusterLevels,
-    } : null,
-  });
+  // ── dimred card — emitted only once a dim-reduction result exists.
+  // UI #2 granular build-out: a data-only ingest has no dimred yet, so
+  // the data card stands alone until the user adds dim-reduction via the
+  // per-card + button. (Pre-UI-#2 the cascade always ran, so genResult
+  // never existed without dimredResult — this gate is a no-op for full-
+  // cascade callers, which still get all three spine cards.)
+  let dimredEmitted = false;
+  if (state.dimredResult) {
+    const dimredCfg = lp.dimred || {};
+    plan.push({
+      ref:       "dimred",
+      type:      "dimred",
+      label:     describeDimredLabel(dimredCfg),
+      params:    dimredCfg,
+      parentRef: "data",
+      refRefs:   [],
+      // Result carries refs to the existing state slots (not a deep
+      // copy) — the projection layer (Slice 2.7) reads these back into
+      // the legacy slots when this card is selected.
+      result:    {
+        dimredResult: state.dimredResult,
+        basePos:      state._basePos,
+        basePos2d:    state._basePos2d,
+      },
+    });
+    dimredEmitted = true;
+  }
+
+  // ── clustering card — only when a clustering result exists AND a
+  // dimred card is present to parent it.
+  if (dimredEmitted && state.clusterLevels) {
+    const clusteringCfg = lp.clustering || {};
+    plan.push({
+      ref:       "clustering",
+      type:      "clustering",
+      label:     describeClusteringLabel(clusteringCfg, state.clusterLevels),
+      params:    clusteringCfg,
+      parentRef: "dimred",
+      refRefs:   [],
+      result:    { clusterLevels: state.clusterLevels },
+    });
+  }
 
   // ── toy-only branch (or real-with-imported-citations).
   // Conditional: only when the corresponding state slot carries a
