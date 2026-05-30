@@ -34,6 +34,9 @@ import { openDimSweepModal, DIMSWEEP_DEFAULTS,
          defaultNoiseConfig, defaultCompressionConfig,
          defaultClusteringConfig }                  from "./dim-sweep-modal.js";
 import { buildDimSweepJob }                         from "../runners/dim-sweep-runner.js";
+import { openFusionComparisonModal }                from "./fusion-comparison-modal.js";
+import { buildFusionComparisonJob }                 from "../runners/fusion-comparison-runner.js";
+import { listComparableClusterings }                from "./step-tree-picker.js";
 import * as engine                                  from "../engine.js";
 
 export function getLayerDescriptor(nodeId) {
@@ -44,6 +47,7 @@ export function getLayerDescriptor(nodeId) {
     case "layout":     return layoutDescriptor();
     case "bootstrap":  return bootstrapDescriptor();
     case "dimSweep":   return dimSweepDescriptor();
+    case "fusionComparison": return fusionComparisonDescriptor();
     default:           return null;
   }
 }
@@ -358,6 +362,13 @@ export function rerunStep(stepId) {
       verdictThreshold: Number.isFinite(p.verdictThreshold) ? p.verdictThreshold : DIMSWEEP_DEFAULTS.verdictThreshold,
     });
   }
+  if (step.type === "fusionComparison") {
+    const p = step.params || {};
+    return fusionComparisonDescriptor().applyChange({
+      refStepId:  p.refStepId,
+      candStepId: p.candStepId,
+    });
+  }
   throw new Error(`[rerunStep] type "${step.type}" not re-runnable`);
 }
 
@@ -529,6 +540,75 @@ function dimSweepDescriptor() {
       return promise;
     },
     openModal: () => openDimSweepModal(desc),
+  };
+  return desc;
+}
+
+// Fusion / cross-source comparison — Phase 2 slice 2.10.
+//
+// Compares ANY two clustering cards (a reference + a candidate) of the
+// same network, generalising the original pre/post-fusion comparison.
+// Both source clusterings are wired as refIds (the DAG fan-in edges,
+// §10.D4); the comparison card parents under the SELECTED clustering
+// ancestor (analysis-card convention, §10.O2). The viewer shows the
+// candidate's geometry via the projection special-case.
+function fusionComparisonDescriptor() {
+  const desc = {
+    label: "Run: Compare clusterings",
+    getActive: () => {
+      const options = listComparableClusterings();
+      const selClust = findSelectedAncestorOfType("clustering");
+      const defaultRefId  = (selClust && options.some(o => o.id === selClust))
+        ? selClust
+        : (options[0] && options[0].id) || null;
+      const defaultCandId = (options.find(o => o.id !== defaultRefId) || {}).id || null;
+      return {
+        hasEnough:     options.length >= 2,
+        options,
+        defaultRefId,
+        defaultCandId,
+      };
+    },
+    applyChange: async ({ refStepId, candStepId }) => {
+      if (!refStepId || !candStepId) {
+        throw new Error("[fusion-comparison-descriptor] both ref and cand cluster cards are required");
+      }
+      if (refStepId === candStepId) {
+        throw new Error("[fusion-comparison-descriptor] ref and cand must be different cards");
+      }
+      const ref  = getStep(refStepId);
+      const cand = getStep(candStepId);
+      if (!ref  || ref.type  !== "clustering") {
+        throw new Error("[fusion-comparison-descriptor] ref must be an existing clustering card");
+      }
+      if (!cand || cand.type !== "clustering") {
+        throw new Error("[fusion-comparison-descriptor] cand must be an existing clustering card");
+      }
+      // Parent = selected clustering ancestor (the branch the user is on);
+      // fall back to the ref card so there's always a valid parent. Both
+      // clusterings are refIds, not the parent.
+      const parentId = findSelectedAncestorOfType("clustering") || refStepId;
+      const label = `compare · ${ref.label} vs ${cand.label}`;
+      const stepId = createStep({
+        type:   "fusionComparison",
+        label,
+        params: { refStepId, candStepId },
+        parentId,
+        refIds: [refStepId, candStepId],
+      });
+      const { promise } = enqueueJob({
+        type:  "fusionComparison",
+        label,
+        stepId,
+        fn:    buildFusionComparisonJob({ refStepId, candStepId }),
+      });
+      promise.catch((e) => {
+        if (e && e.name === "AbortError") return;
+        console.error("[fusion-comparison-descriptor] job failed:", e);
+      });
+      return promise;
+    },
+    openModal: () => openFusionComparisonModal(desc),
   };
   return desc;
 }

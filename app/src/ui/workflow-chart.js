@@ -40,6 +40,7 @@ const DESCRIPTOR_BY_TYPE = {
   "citationLayout":     "layout",
   "bootstrapStability": "bootstrap",
   "dimSweep":           "dimSweep",
+  "fusionComparison":   "fusionComparison",
 };
 
 // Layout constants. Cards are smaller than slice 2.3 since branching
@@ -171,6 +172,28 @@ function computeLayout(rootStep) {
   }
   place(rootStep.id, LEFT_PAD, TOP_PAD);
 
+  // Ref (cross-DAG) edges — slice 2.10, §10.D4. parentId is the primary
+  // solid edge; refIds are drawn as dashed cross-edges from each source
+  // card to the referencing card (e.g. a fusionComparison card's two
+  // source clusterings). Computed after placement since a refId can
+  // point anywhere in the already-laid-out tree.
+  const posById = new Map(positions.map(p => [p.step.id, p]));
+  const refEdges = [];
+  for (const p of positions) {
+    const refIds = p.step.refIds || [];
+    for (const rid of refIds) {
+      const src = posById.get(rid);
+      if (!src) continue;
+      refEdges.push({
+        fromX:  src.x + NODE_W / 2,
+        fromY:  src.y + NODE_H / 2,
+        toX:    p.x + NODE_W / 2,
+        toY:    p.y + NODE_H / 2,
+        dashed: true,
+      });
+    }
+  }
+
   // Compute viewport from the placed positions.
   const maxX = positions.length > 0
     ? Math.max(...positions.map(p => p.x + NODE_W)) + RIGHT_PAD
@@ -179,7 +202,7 @@ function computeLayout(rootStep) {
     ? Math.max(...positions.map(p => p.y + NODE_H)) + BOTTOM_PAD
     : TOP_PAD + NODE_H + BOTTOM_PAD;
 
-  return { positions, edges, viewboxW: maxX, viewboxH: maxY };
+  return { positions, edges, refEdges, viewboxW: maxX, viewboxH: maxY };
 }
 
 // Wraps getStep with a null-safe lookup; used during the recursive
@@ -220,7 +243,11 @@ function renderSvg(root, layout) {
   defs.appendChild(marker);
   svg.appendChild(defs);
 
-  // Edges first (so cards draw on top).
+  // Dashed ref cross-edges first (drawn behind solid edges + cards).
+  for (const e of (layout.refEdges || [])) {
+    svg.appendChild(renderEdge(e));
+  }
+  // Solid parentId edges next (so cards draw on top).
   for (const e of layout.edges) {
     svg.appendChild(renderEdge(e));
   }
@@ -265,6 +292,14 @@ function buildQueuePositionMap() {
 }
 
 function renderEdge(e) {
+  // Ref cross-edges (slice 2.10): a gentle quadratic curve between two
+  // arbitrary cards, drawn dashed so it reads as a non-spine link.
+  if (e.dashed) {
+    const mx = (e.fromX + e.toX) / 2;
+    const my = (e.fromY + e.toY) / 2 - 18;   // bow upward for legibility
+    const d = `M ${e.fromX} ${e.fromY} Q ${mx} ${my} ${e.toX} ${e.toY}`;
+    return svgEl("path", { d, class: "wf-arrow wf-arrow-ref" });
+  }
   // Spine edges have fromX === toX (vertical); side edges go diagonal.
   let d;
   if (Math.abs(e.fromX - e.toX) < 1) {
@@ -451,6 +486,14 @@ function subLabelFor(step) {
     const seeds = (p.seeds || []).length;
     if (dims && seeds) return `${dims}d × ${seeds}s`;
     return "dimsweep";
+  }
+  if (step.type === "fusionComparison") {
+    const r = step.result;
+    if (r && r.comparison && r.comparison.perLevel && r.comparison.perLevel[0]) {
+      const ari = r.comparison.perLevel[0].aggregate.ari;
+      return Number.isFinite(ari) ? `ARI ${ari.toFixed(2)}` : "compare";
+    }
+    return "compare";
   }
   if (step.type === "save" || step.type === "load") {
     return truncate(p.filename || "", 18) || step.type;

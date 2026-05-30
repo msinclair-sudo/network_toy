@@ -1,87 +1,184 @@
-// Panel: fusion comparison (§6.19 step 8).
+// Panel: fusion / cross-source partition comparison (§6.19 step 8 +
+// workflow-tree slice 2.10).
 //
-// Quantifies how much Layer 1.5's citation-aware fusion stage
-// reorganises the topic map vs. the pre-fusion (noise-only)
-// embedding. Reads `state.clusterLevels` (post-fusion) +
-// `state.clusterLevelsPreFusion` (pre-fusion); when the latter is
-// null (toy mode, or fusion=identity) the panel shows an empty hint.
+// Quantifies how much two clusterings of the same network disagree.
+// Two binding modes:
 //
-// Surface:
+//   - **Saved** (slice 2.10): bound to a `fusionComparison` card
+//     (config.stepId) or a saved validationRun (config.runId). The
+//     runner precomputed the comparison per level into
+//     result.comparison.perLevel; the panel just renders it. The two
+//     sources are an arbitrary ref + cand clustering (labelA / labelB).
+//
+//   - **Live** (the original §6.19 path): no binding → compares the
+//     current post-fusion clustering (`state.clusterLevels`) against the
+//     pre-fusion one (`state.clusterLevelsPreFusion`). When the latter
+//     is null (toy mode, or fusion=identity) it shows an empty hint.
+//     This is the pre/post-fusion special case; "ref" = pre, "cand" =
+//     post.
+//
+// Surface (both modes):
 //   - Level picker (when multiple levels exist).
 //   - Aggregate metric strip: ARI · NMI · macro Jaccard ·
-//     n clusters pre/post · noise pre/post · n reorganised.
-//   - Sortable per-pre-cluster table: pre-id → best-matched post-id
-//     + Jaccard + member count + retained / lost + biggest-share
-//     post-cluster (where most of pre's members ended up).
-//   - Top-N movers list: papers with lowest retention (their
-//     pre-cluster peers were most thoroughly dispersed by fusion).
+//     n clusters A/B · noise A/B · n reorganised.
+//   - Sortable per-cluster table: ref-id → best-matched cand-id +
+//     Jaccard + member count + retained / lost + biggest-share cand.
+//   - Top-N movers list: papers whose ref-cluster peers were most
+//     thoroughly dispersed in the cand partition.
 //
-// Live-only for now. The plan §6.19 step 8 notes a future
-// `type: "fusionComparison"` ValidationRun once cross-view metrics
-// stabilise; this panel currently re-derives on every state change.
+// The comparison maths lives in eval/fusion-compare.js
+// (compareFusionPartitions) and is source-agnostic — it takes any two
+// equal-length ClusterResults.
 
 import { getState, subscribe, setSelection } from "../state.js";
+import { getStep, listSteps }                from "../workflow.js";
 import { compareFusionPartitions }            from "../../eval/fusion-compare.js";
 
 export const ID          = "fusion-comparison";
 export const LABEL       = "Fusion comparison";
-export const DESCRIPTION = "How much does Layer 1.5 fusion reorganise the topic map? ARI / NMI / macro Jaccard between pre- and post-fusion partitions, per-cluster best-match table, biggest-mover papers.";
+export const DESCRIPTION = "How much do two clusterings of the same network disagree? ARI / NMI / macro Jaccard between a reference and candidate partition, per-cluster best-match table, biggest-mover papers. Pre/post-fusion live, or any two cluster cards via a fusionComparison card.";
 export const SINGLETON   = true;
 
-export function mount(container, _state, _config = {}) {
+export function mount(container, _state, config = {}) {
   container.innerHTML = "";
   const wrap = document.createElement("div");
   wrap.className = "panel-fc";
   container.appendChild(wrap);
 
-  // Memoise the heavy comparison across irrelevant state ticks. The
-  // (preCr, postCr, level) triple identifies a comparison uniquely;
-  // any selection / blend / viewer change shouldn't re-run it.
+  const stepId = (config && config.stepId) || null;
+  const runId  = (config && config.runId)  || null;
+
+  // Memoise the heavy LIVE comparison across irrelevant state ticks. The
+  // (preUid, postUid, level) triple identifies a comparison uniquely;
+  // any selection / blend / viewer change shouldn't re-run it. Saved
+  // mode is already precomputed so it doesn't use this cache.
   let cachedKey  = null;
   let cachedFC   = null;
   let selectedLevel = 0;
   let sortKey    = "preId";
   let sortDir    = "asc";
 
+  // Resolve the binding: explicit stepId/runId win; else auto-pick the
+  // latest done fusionComparison card / saved run; else fall to the live
+  // pre/post-fusion comparison. Auto-pick keeps the panel useful when
+  // dropped in without config but never overrides an explicit binding.
+  function resolveSource() {
+    if (stepId) {
+      const s = getStep(stepId);
+      if (s && s.type === "fusionComparison" && s.result && s.result.comparison) {
+        return savedSource(s.label, s.result);
+      }
+      return { kind: "missing", id: stepId };
+    }
+    if (runId) {
+      const r = (getState().validationRuns || []).find(x => x.id === runId);
+      if (r && r.results && r.results.comparison) return savedSource(r.label, r.results);
+      return { kind: "missing", id: runId };
+    }
+    const cards = listSteps({ type: "fusionComparison" })
+      .filter(s => s.status === "done" && s.result && s.result.comparison);
+    if (cards.length > 0) {
+      const c = cards[cards.length - 1];
+      return savedSource(c.label, c.result);
+    }
+    const runs = (getState().validationRuns || [])
+      .filter(r => r.type === "fusionComparison" && r.results && r.results.comparison);
+    if (runs.length > 0) {
+      const r = runs[runs.length - 1];
+      return savedSource(r.label, r.results);
+    }
+    return { kind: "live" };
+  }
+
+  function savedSource(label, blob) {
+    const cmp = blob.comparison || {};
+    return {
+      kind:     "saved",
+      label:    label || "fusion comparison",
+      perLevel: Array.isArray(cmp.perLevel) ? cmp.perLevel : [],
+      labelA:   blob.refLabel  || "ref",
+      labelB:   blob.candLabel || "cand",
+    };
+  }
+
   function render() {
     wrap.innerHTML = "";
-    const s = getState();
-    const levels    = s.clusterLevels || [];
-    const levelsPre = s.clusterLevelsPreFusion;
+    const src = resolveSource();
 
     // ── Header ──
     const header = document.createElement("div");
     header.className = "panel-fc-header";
     const title = document.createElement("div");
     title.className = "panel-fc-title";
-    title.textContent = "Fusion comparison";
+    title.textContent = src.kind === "saved" ? src.label : "Fusion comparison";
     header.appendChild(title);
     wrap.appendChild(header);
 
-    // Empty state. Either pre-fusion isn't populated, or shapes
-    // don't line up. Most common in toy mode + fusion=identity.
-    if (!levelsPre || !Array.isArray(levelsPre) || levelsPre.length === 0 || levels.length === 0) {
+    // Missing binding (a stepId/runId that no longer resolves).
+    if (src.kind === "missing") {
       const empty = document.createElement("div");
       empty.className = "panel-fc-empty";
-      empty.textContent = "Fusion comparison needs a non-identity fusion stage. Open the Dim-reduction modal → Fusion → graph-diffusion → Apply (real-data mode only — toy citations are generated downstream and can't feed fusion on the first pass).";
+      empty.textContent = `Bound comparison "${src.id}" no longer exists. Open the panel picker (+) to choose another.`;
       wrap.appendChild(empty);
       return;
     }
 
-    if (selectedLevel >= Math.min(levels.length, levelsPre.length)) {
-      selectedLevel = 0;
+    // Determine the level count + a getter for the FusionCompareResult
+    // at a given level, abstracting saved vs live.
+    let nLevels, getFc, labelA, labelB;
+    if (src.kind === "saved") {
+      nLevels = src.perLevel.length;
+      labelA  = src.labelA;
+      labelB  = src.labelB;
+      getFc   = (lvl) => src.perLevel[lvl] || null;
+      if (nLevels === 0) {
+        const empty = document.createElement("div");
+        empty.className = "panel-fc-empty";
+        empty.textContent = "(comparison has no levels)";
+        wrap.appendChild(empty);
+        return;
+      }
+    } else {
+      // Live pre/post-fusion comparison.
+      const s         = getState();
+      const levels    = s.clusterLevels || [];
+      const levelsPre = s.clusterLevelsPreFusion;
+      if (!levelsPre || !Array.isArray(levelsPre) || levelsPre.length === 0 || levels.length === 0) {
+        const empty = document.createElement("div");
+        empty.className = "panel-fc-empty";
+        empty.textContent = "Fusion comparison needs a non-identity fusion stage. Open the Dim-reduction modal → Fusion → graph-diffusion → Apply (real-data mode only — toy citations are generated downstream and can't feed fusion on the first pass). Or open a Fusion comparison card on the workflow chart to compare any two clusterings.";
+        wrap.appendChild(empty);
+        return;
+      }
+      nLevels = Math.min(levels.length, levelsPre.length);
+      labelA  = "pre";
+      labelB  = "post";
+      getFc   = (lvl) => {
+        const preLvl  = levelsPre[lvl];
+        const postLvl = levels[lvl];
+        if (!preLvl || !postLvl) return null;
+        const preCr  = preLvl.clusterResult;
+        const postCr = postLvl.clusterResult;
+        const key = `${lvl}:${preLvl.uid || lvl}:${postLvl.uid || lvl}`;
+        if (cachedKey !== key) {
+          cachedFC = compareFusionPartitions(preCr, postCr, { topMoversN: 25 });
+          cachedKey = key;
+        }
+        return cachedFC;
+      };
     }
 
+    if (selectedLevel >= nLevels) selectedLevel = 0;
+
     // Level picker (only when multiple levels exist).
-    if (Math.min(levels.length, levelsPre.length) > 1) {
+    if (nLevels > 1) {
       const picker = document.createElement("div");
       picker.className = "panel-fc-levelpicker";
       const lbl = document.createElement("label");
       lbl.textContent = "Level:";
       picker.appendChild(lbl);
       const sel = document.createElement("select");
-      const maxLvl = Math.min(levels.length, levelsPre.length);
-      for (let i = 0; i < maxLvl; i++) {
+      for (let i = 0; i < nLevels; i++) {
         const o = document.createElement("option");
         o.value = String(i); o.textContent = `L${i}`;
         if (i === selectedLevel) o.selected = true;
@@ -95,34 +192,24 @@ export function mount(container, _state, _config = {}) {
       header.appendChild(picker);
     }
 
-    const preLvl  = levelsPre[selectedLevel];
-    const postLvl = levels[selectedLevel];
-    if (!preLvl || !postLvl) {
+    let fc;
+    try {
+      fc = getFc(selectedLevel);
+    } catch (e) {
+      console.error("[fusion-comparison] compare failed:", e);
+      const err = document.createElement("div");
+      err.className = "panel-fc-empty";
+      err.textContent = `Comparison error: ${e.message || e}`;
+      wrap.appendChild(err);
+      return;
+    }
+    if (!fc) {
       const empty = document.createElement("div");
       empty.className = "panel-fc-empty";
       empty.textContent = `(no cluster data at L${selectedLevel})`;
       wrap.appendChild(empty);
       return;
     }
-    const preCr  = preLvl.clusterResult;
-    const postCr = postLvl.clusterResult;
-
-    // Compute (with cache).
-    const key = `${selectedLevel}:${preLvl.uid || preLvl}:${postLvl.uid || postLvl}`;
-    if (cachedKey !== key) {
-      try {
-        cachedFC = compareFusionPartitions(preCr, postCr, { topMoversN: 25 });
-      } catch (e) {
-        console.error("[fusion-comparison] compare failed:", e);
-        const err = document.createElement("div");
-        err.className = "panel-fc-empty";
-        err.textContent = `Comparison error: ${e.message || e}`;
-        wrap.appendChild(err);
-        return;
-      }
-      cachedKey = key;
-    }
-    const fc = cachedFC;
 
     // ── Aggregate strip ──
     const aggRow = document.createElement("div");
@@ -139,13 +226,13 @@ export function mount(container, _state, _config = {}) {
 
     const interpretation = document.createElement("div");
     interpretation.className = "panel-fc-interpretation";
-    interpretation.textContent = interpretMetrics(fc.aggregate);
+    interpretation.textContent = interpretMetrics(fc.aggregate, labelA, labelB);
     wrap.appendChild(interpretation);
 
     // ── Per-cluster table ──
     const tableTitle = document.createElement("div");
     tableTitle.className = "panel-fc-section";
-    tableTitle.textContent = "Per pre-fusion cluster · best match → post-fusion";
+    tableTitle.textContent = `Per ${labelA} cluster · best match → ${labelB}`;
     wrap.appendChild(tableTitle);
 
     const table = document.createElement("table");
@@ -153,14 +240,14 @@ export function mount(container, _state, _config = {}) {
     wrap.appendChild(table);
 
     const cols = [
-      { key: "preId",       label: "pre",       align: "right", value: r => r.preId },
-      { key: "postId",      label: "→ post",    align: "right", value: r => r.postId },
+      { key: "preId",       label: labelA,            align: "right", value: r => r.preId },
+      { key: "postId",      label: `→ ${labelB}`,     align: "right", value: r => r.postId },
       { key: "jaccard",     label: "Jaccard",   align: "right", value: r => r.jaccard,
         fmt: v => fmtScalar(v) },
       { key: "memberCount", label: "size",      align: "right", value: r => r.memberCount },
       { key: "retainedCount", label: "kept",    align: "right", value: r => r.retainedCount },
       { key: "lostCount",   label: "lost",      align: "right", value: r => r.lostCount },
-      { key: "biggestPostShare", label: "biggest → post", align: "right",
+      { key: "biggestPostShare", label: `biggest → ${labelB}`, align: "right",
         value: r => r.biggestPostShare.postId,
         fmt: (_v, r) => r.biggestPostShare.count > 0
           ? `${r.biggestPostShare.postId} (${r.biggestPostShare.count})`
@@ -232,8 +319,8 @@ export function mount(container, _state, _config = {}) {
       const thead = document.createElement("thead");
       thead.innerHTML = `<tr>
         <th class="r">idx</th>
-        <th class="r">pre L${selectedLevel}</th>
-        <th class="r">→ post L${selectedLevel}</th>
+        <th class="r">${labelA} L${selectedLevel}</th>
+        <th class="r">→ ${labelB} L${selectedLevel}</th>
         <th class="r">retention</th>
       </tr>`;
       moversTable.appendChild(thead);
@@ -281,13 +368,17 @@ function fmtScalar(v) {
   return v.toFixed(3);
 }
 
-function interpretMetrics(agg) {
+function interpretMetrics(agg, labelA = "pre", labelB = "post") {
   if (!Number.isFinite(agg.ari)) return "(insufficient data for interpretation)";
   if (agg.ari > 0.85) {
-    return "Pre- and post-fusion partitions agree strongly. Fusion is doing little — either citations carry the same signal as the embedding, or α is too low.";
+    return `${cap(labelA)} and ${labelB} partitions agree strongly — little reorganisation between them.`;
   }
   if (agg.ari > 0.5) {
-    return "Moderate disagreement. Fusion is moving the clustering somewhere genuinely different but the high-level structure is preserved.";
+    return `Moderate disagreement. The ${labelB} partition moves the clustering somewhere genuinely different but the high-level structure is preserved.`;
   }
-  return "Substantial reorganisation. Citations are pulling clusters into a meaningfully different topology than the embedding alone produces.";
+  return `Substantial reorganisation. The ${labelB} partition produces a meaningfully different topology than ${labelA} alone.`;
+}
+
+function cap(s) {
+  return s && s.length ? s[0].toUpperCase() + s.slice(1) : s;
 }

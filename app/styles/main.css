@@ -408,6 +408,16 @@ html, body {
   marker-end: url(#wf-arrowhead);
 }
 
+/* Ref (cross-DAG) edges — slice 2.10. Dashed + dimmer + no arrowhead so
+   they read as a secondary link distinct from the solid parentId spine. */
+#workflow-chart .wf-arrow-ref {
+  stroke: var(--accent, #7c8aa5);
+  stroke-width: 1.25;
+  stroke-dasharray: 3 3;
+  opacity: 0.6;
+  marker-end: none;
+}
+
 #workflow-chart .wf-state-dot {
   pointer-events: none;
 }

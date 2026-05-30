@@ -17,7 +17,7 @@
 //   - No reads outside workflow.js + state.js.
 
 import { getState, update }    from "./state.js";
-import { getStepAncestors }    from "./workflow.js";
+import { getStep, getStepAncestors } from "./workflow.js";
 
 // Each step type knows which legacy state slots to project. The walk
 // applies these projectors from root to selected step in order, so
@@ -106,7 +106,19 @@ function projectBlend(step, patch) {
  *                    actually changed), false otherwise.
  */
 export function projectStepIntoLegacyState(stepId) {
-  const ancestors = getStepAncestors(stepId);
+  // Cross-source comparison cards (slice 2.10) have no geometry of their
+  // own — their parent is the *selected* card, not a geometry ancestor.
+  // Show the CANDIDATE clustering's geometry instead (§10.O2): walk the
+  // candidate refId's ancestry rather than the comparison card's parent
+  // chain. refIds convention is [refStepId, candStepId].
+  let walkId = stepId;
+  const target = getStep(stepId);
+  if (target && target.type === "fusionComparison") {
+    const refIds = target.refIds || [];
+    const candId = refIds[1] || refIds[0];
+    if (candId && getStep(candId)) walkId = candId;
+  }
+  const ancestors = getStepAncestors(walkId);
   if (ancestors.length === 0) return false;
   const patch = {};
   for (const step of ancestors) {
