@@ -1,9 +1,11 @@
 # Multi-level clustering + tree scoring + bridge clusters — plan
 
-**Status (2026-05-30): draft for review.** This is a design plan, not
-shipped work. It collects the feature request from `pending_changes.md`
-(Features §1) into a concrete, phased plan grounded in the existing
-machinery. Decisions the user needs to make are flagged **[DECIDE]**.
+**Status (2026-05-30): decisions incorporated — ready to slice.** This is
+a design plan, not shipped work. It collects the feature request from
+`pending_changes.md` (Features §1) into a concrete, phased plan grounded
+in the existing machinery. The user's decisions (originally flagged
+**[DECIDE]**, answered inline as **[USER]**) are now folded into each
+section as **Decided**.
 
 This addresses the deferred open question **§10.O1** in
 `doc/workflow-tree-redesign.md` (how the workflow tree presents
@@ -92,7 +94,28 @@ algorithms.
 Goal: from the 100-d embedding, output an ordered list of target
 cluster-count ranges — coarsest first — without the user guessing.
 
-**[DECIDE] Which discovery signal?** Candidates, cheapest first:
+**Decided: HDBSCAN — and extract ALL layers from a single stored run's
+hierarchy, not from repeated range-sweeps** (per [USER] below). One good
+HDBSCAN run already builds a condensed cluster tree; the layers are
+*cuts* of that one tree at different stability levels. This is far more
+elegant (and cheaper) than running `runTargetRangeSweep` once per layer.
+It becomes a new **"Optimise multi-layer"** mode in the Optimise modal;
+the existing modes (single-config, target-range, full sweep) stay as-is.
+See §4 for how the single-run extraction works and the **one caveat**:
+the toy's HDBSCAN result must expose the condensed-tree / per-λ cluster
+counts (today it stores flat labels + per-cluster `stability`; we likely
+need to surface the condensed tree from the worker).
+
+> [USER] note answering "is the full sweep the same results?": a *full
+> sweep* is many independent flat partitions at different params — useful
+> as a fallback source of "what cluster counts are achievable," but it is
+> **not** the same as one run's hierarchy. The elegant path is the single
+> run's condensed tree; the stored sweep is a Plan-B input for the
+> algorithm-agnostic fallback (§3.B).
+
+The candidate signals considered (cheapest first):
+
+**[USER] i agree that HDBSCAN is a good choice here**. using these results we can maybe also avoid having to use teh range optimisation. if we do one good soil run of HDBSCAN and store resutls (we alerady do this) we can simply find the layers from that. this is much more elegant than running range optisation runs over and over again. we'll include this in the optimize modal, when optimize multilayers is selected this is the apraoch. the other options can remain as they are. for intance is the full sweep is used. thoes stored results can techinally be used for the multilayerd part. it's teh same results isn't it?
 
 - **A. HDBSCAN condensed-tree persistence (recommended).** HDBSCAN
   already builds a condensed cluster tree with per-cluster stability
@@ -127,33 +150,44 @@ discoverLayers(input100d, opts) → [
 The top layer's range should match the user's empirical ~8–12 for the
 current dataset — a useful validation check for whichever signal we pick.
 
-**[DECIDE] Cap on layer count?** Data-derived, but we likely want a sane
-ceiling (e.g. ≤ 5 layers) so the scoring workflow stays tractable.
+**Decided: cap = 5 layers.** Data-derived count, hard-capped at 5 — more
+than that and the scoring workflow becomes bloated.
 
-## 4. The layer cascade (orchestration)
+**[USER] 5 is a good sounding cap.** any larger and it becomes bloated and un nessacery.
 
-Once `discoverLayers` yields N ranges, build `clusterLevels[]` coarsest
-→ finest:
+## 4. The layer cascade (single-run extraction)
+
+**Decided (§3): extract the layers from ONE HDBSCAN run's condensed
+tree** — no per-layer range-sweep. The condensed tree is already a
+hierarchy; each layer is a horizontal cut at a different stability (λ)
+level, yielding progressively finer partitions.
 
 ```
-for each discovered range [lo, hi] (coarse → fine):
-    sweep = runTargetRangeSweep({ targetMin: lo, targetMax: hi,
-                                  algorithms, scorer: richness, ... })
-    pick sweep.ranked[0]            // best in-range config
-    infer that config → ClusterResult
-    push { uid, scope: "global", clusterResult } onto clusterLevels
+run = runHDBSCANWithTree(input100d)        // one run; emits condensed tree
+counts = clusterCountAtEachLambdaCut(run)  // how many survive vs λ
+shelves = stablePlateaus(counts, capLayers = 5)   // the natural layers
+for each shelf (coarse → fine):
+    partition = flattenTreeAtLambda(run, shelf.lambda)   // global labels
+    push { uid, scope: "global", clusterResult: partition } onto clusterLevels
 ```
 
 Notes:
-- **Global scope** per the user's stated preference (so fine clusters
-  can bridge coarse parents — that's the whole point of §6). We do *not*
-  use `within-parent` scope here.
-- The scorer for "best in range" is **[DECIDE]** — `clusterRichness`
-  (nClusters × macro-Jaccard) is the current real-data default and
-  rewards a stable-but-rich partition; `numClusters`-closest-to-midpoint
-  is simpler. Recommend richness.
-- This is a long-running, multi-stage job → a **workflow card** with a
-  queue job (mirrors the dim-sweep / optimise runners). See §6.
+
+- **Global scope** (so fine clusters can bridge coarse parents — the
+  whole point of §6). We do *not* use `within-parent` scope; the cuts are
+  of the same global tree, so a fine cluster can straddle two coarse
+  ones naturally.
+- **No per-range scorer needed** for the HDBSCAN path — the tree gives
+  the partitions directly. (The old [DECIDE] "best-in-range scorer" only
+  applies to the §3.B algorithm-agnostic *fallback*, where richness
+  remains the recommended ranker.)
+- **Caveat / prerequisite:** the toy's HDBSCAN currently stores flat
+  labels + per-cluster `stability` but not the full condensed tree.
+  MLC-1/MLC-2 must surface the condensed tree (parent/λ/child) from the
+  HDBSCAN worker so the cuts can be computed. This is the main new
+  engine work; everything downstream is orchestration.
+- This is a long-running job → a **workflow card** with a queue job
+  (mirrors the dim-sweep / optimise runners). See §6.
 
 ## 5. Tree scoring (replace the old scoring app)
 
@@ -169,10 +203,10 @@ score = { levelUid, clusterId, value: 1..5, scoredAt }
 state.workflow ... scores: { [levelUid]: { [clusterId]: value } }
 ```
 
-(Exact home **[DECIDE]**: on the multi-level clustering card's result,
-or a sibling "scoring" card so the user can keep multiple scorings of the
-same clustering as branches. The branch story argues for a **scoring
-card** bound to a clustering card via `refIds`.)
+**Decided: a dedicated "scoring" card** bound to the multi-level
+clustering card via `refIds`, so the user can keep multiple scorings of
+the same clustering as separate branches (the tree-branch story the user
+wants). Scores are not stored on the clustering card itself.
 
 ### 5.2 Interaction
 
@@ -200,9 +234,13 @@ card** bound to a clustering card via `refIds`.)
   - Rendered in a **separate "Bridges" section** beneath the
     encapsulated clusters, so the two are explored independently.
 
-**[DECIDE] Dominance cutoff τ** for "encapsulated vs bridge" (e.g.
-`dominantFraction ≥ 0.7` → encapsulated). `bridge-analysis.js` already
-computes `dominantFraction`; we just threshold it.
+**Decided: dominance cutoff τ defaults to 0.8, adjustable in the scoring
+modal.** A fine cluster with `dominantFraction ≥ 0.8` is *encapsulated*;
+below that it's a *bridge*. `bridge-analysis.js` already computes
+`dominantFraction`; we threshold it, and expose τ as a slider so the
+user can tighten/loosen the encapsulated-vs-bridge split live.
+
+**[USER] agree on using threshold** set the defult to 0.8, with the threshold changable within the scoring modal.
 
 ## 6. Bridge-cluster panel + workflow-tree fit
 
@@ -210,6 +248,7 @@ computes `dominantFraction`; we just threshold it.
 
 A new saved-mode panel rendering `bridge-analysis.js` output for a
 selected multi-level clustering, with:
+
 - a parent-level picker + the dominance threshold τ slider,
 - two sections: **Encapsulated** and **Bridges**,
 - per bridge row: fine id, member count, each parent id + share + parent
@@ -227,9 +266,15 @@ layer-specific work (re-optimise a single layer, score a layer). A
 **scoring card** binds to the multi-level card; a **bridge card** binds
 to it too.
 
-**[DECIDE]** Confirm hybrid vs. one-card-per-level. Hybrid keeps "this
-clustering grew to N layers" legible while making per-layer scoring
-first-class; it also matches the new per-card `+` add-step UX (UI #2).
+**Decided: hybrid card shape** (one multi-level clustering card +
+per-layer sub-cards; scoring + bridge cards bind via `refIds`). Keeps
+"this clustering grew to N layers" legible while making per-layer work
+first-class, and matches the per-card `+` add-step UX (UI #2). Note the
+viewer already has a **colour-by-layer** mode, so visualising the
+clusters at any level is already supported — selecting a layer sub-card
+(or a scoring threshold) just drives which level the viewer colours by.
+
+**[USER] agree** we have the colour by layer in the veiwer anyway, so if the user wants to visulize the clusters at lower levels and surface that data we already have that included.
 
 ## 7. Labelling (TF-IDF and alternatives)
 
@@ -238,7 +283,22 @@ numeric ids. Labels are a **real-data** concern (papers have
 titles/abstracts; the toy's synthetic nodes have none). The user notes
 TF-IDF "might not be the best method."
 
-**[DECIDE] Labelling method (real-data only):**
+**Decided: labelling is its own module that can run MULTIPLE methods and
+combine/compare them** (real-data only). KeyBERT is the preferred method,
+but all of them are worth shipping — computing several and showing them
+side-by-side adds defensibility: for a cluster that's interesting or
+hard to score, the user compares the different methods' labels. The
+module contract returns labels per method so the scoring surface can
+show one or many:
+
+```
+label(clusterMembers) → { byMethod: { keyBERT: {...}, cTfidf: {...},
+                                      tfidf: {...}, exemplar: {...} },
+                          combined: {...} }
+```
+
+**[USER] agree on this being it's own module**, i favour the keyBERT method, but shiping, each of these method is a good choice, and being able to combine the labels will add in defensability. for example we decide to compute all of the methods, and we cherry pick some clusters that are of interest or we're having troubling score and compare the differnt labels.
+
 - **TF-IDF over cluster member titles/abstracts** — cheap, interpretable,
   the conventional baseline; weak on multi-word concepts and stopword-ish
   domain terms.
@@ -250,45 +310,65 @@ TF-IDF "might not be the best method."
 - **Representative-paper** — just show the paper nearest the centroid as
   the "label." Zero NLP; surprisingly legible.
 
-Recommend shipping **representative-paper + c-TF-IDF keywords** together
-(one is a sanity check on the other) and treating richer labelling as
-swappable. Labelling should be its **own small module** with a stable
-contract `label(clusterMembers) → {keywords[], exemplar}` so the scoring
-surface doesn't care which method produced it.
+Per the decision above, ship **KeyBERT (preferred) + c-TF-IDF +
+representative-paper** behind the one module, computed together so the
+scoring surface can show/compare them. Plain TF-IDF is the cheap
+baseline. The module stays swappable — adding a method is one registry
+entry, like the clustering / scorer registries.
 
 ## 8. Phasing
 
 Each phase is independently shippable and testable (pytest + a browser
 smoke), mirroring the workflow-tree slices.
 
-- **MLC-1 Layer discovery.** `discoverLayers()` (HDBSCAN persistence +
-  resolution-sweep fallback) → ordered target ranges. Pure function +
-  tests; validate top range ≈ 8–12 on the current dataset.
-- **MLC-2 Layer cascade card.** A multi-level clustering card + runner
-  that calls `runTargetRangeSweep` per range and assembles
-  `clusterLevels[]`. Hybrid card shape (§6.2).
+- **MLC-0 Surface the HDBSCAN condensed tree.** Extend the HDBSCAN
+  worker/result to emit the condensed tree (parent / λ / child / size)
+  alongside the flat labels. Prerequisite for single-run extraction
+  (§4 caveat). Pure-ish engine work + tests.
+- **MLC-1 Layer discovery.** `discoverLayers()` reads MLC-0's tree,
+  finds the stable λ-shelves (cap 5), returns ordered layer cuts.
+  Algorithm-agnostic fallback (§3.B) for mutual-kNN reuses the stored
+  sweep. Validate top range ≈ 8–12 on the current dataset.
+- **MLC-2 Layer cascade card + Optimise modal mode.** A multi-level
+  clustering card + runner that flattens the tree at each discovered
+  λ-cut into `clusterLevels[]`. Add the "Optimise multi-layer" mode to
+  the Optimise modal (other modes unchanged). Hybrid card shape (§6.2).
 - **MLC-3 Bridge panel.** Saved-mode panel over `bridge-analysis.js`
-  with τ threshold + Encapsulated/Bridges sections.
-- **MLC-4 Labelling module.** `label(members)` contract +
-  representative-paper + c-TF-IDF; real-data only, guarded.
-- **MLC-5 Tree scoring.** Scoring card + 1–5 controls + parent-score
-  threshold propagation + bridge transparency. Replaces the old scoring
-  app's role inside the toy.
+  with τ=0.8 threshold (adjustable) + Encapsulated/Bridges sections.
+- **MLC-4 Labelling module.** Multi-method `label(members)` (KeyBERT +
+  c-TF-IDF + representative-paper); real-data only, guarded.
+- **MLC-5 Tree scoring.** Scoring card (refIds-bound) + 1–5 controls +
+  parent-score threshold propagation + bridge transparency. Replaces the
+  old scoring app's role inside the toy.
 
-Dependencies: MLC-1 → MLC-2 → {MLC-3, MLC-5}; MLC-4 feeds MLC-5's labels
-(scoring can ship with numeric-id placeholders first, then gain labels).
+Dependencies: MLC-0 → MLC-1 → MLC-2 → {MLC-3, MLC-5}; MLC-4 feeds MLC-5's
+labels (scoring can ship with numeric-id / exemplar placeholders first,
+then gain richer labels).
 
-## 9. Open questions (collected)
+## 9. Decisions (resolved)
 
-- **[DECIDE] §3** discovery signal (lean: HDBSCAN persistence + sweep
-  fallback) and **layer-count cap**.
-- **[DECIDE] §4** per-range "best config" scorer (lean: richness).
-- **[DECIDE] §5.1** scores live on the clustering card vs a dedicated
-  scoring card (lean: scoring card, for branching).
-- **[DECIDE] §5.3** dominance cutoff τ for encapsulated-vs-bridge.
-- **[DECIDE] §6.2** confirm hybrid card shape (§10.O1).
-- **[DECIDE] §7** labelling method(s) and whether it's in-scope now
-  (real-data only).
+All originally-open points are now decided (per the user's inline
+answers):
+
+- **§3 discovery signal** → HDBSCAN, extracting layers from a single
+  run's condensed tree (not repeated range-sweeps); algorithm-agnostic
+  sweep-plateau fallback for non-HDBSCAN. **Layer cap = 5.**
+- **§4 cascade** → flatten one HDBSCAN tree at each λ-shelf; no per-range
+  scorer for the HDBSCAN path (richness only for the fallback).
+- **§5.1 scores home** → a dedicated scoring card bound via `refIds`
+  (enables multiple scorings as branches).
+- **§5.3 dominance cutoff τ** → default 0.8, adjustable in the scoring
+  modal.
+- **§6.2 card shape** → hybrid (multi-level card + per-layer sub-cards);
+  viewer reuses the existing colour-by-layer mode.
+- **§7 labelling** → its own multi-method module (KeyBERT preferred,
+  plus c-TF-IDF + representative-paper), computed together and
+  comparable; real-data only.
+
+Remaining genuinely-open item: **the condensed-tree surfacing (MLC-0)** —
+confirm the HDBSCAN worker can expose the tree without a heavy rewrite
+before committing to single-run extraction. That's the first thing to
+prototype.
 
 ## 10. Explicitly NOT in this plan
 
