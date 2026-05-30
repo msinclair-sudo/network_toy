@@ -38,6 +38,10 @@ via an import map.
 The current shell is at `http://localhost:8000/app/`. The original
 v3 demo shell is preserved at `http://localhost:8000/app/legacy.html`.
 
+The app **starts empty** — there's no data until you add it. Begin at
+the workflow chart's **+ Add data source** (left rail) and build out
+from there; see *Workflow chart* below.
+
 ### Topbar: **File ▾**
 
 Save / Save as… / Load… write or read a `.zip` archive of the
@@ -48,8 +52,40 @@ pick up exactly where you left off without re-running anything.
 
 ### Workflow chart (left rail)
 
-A small SVG of the pipeline. Click any node to open its
-configuration modal:
+The **primary surface**: a branching tree of analysis cards you grow
+yourself. It starts **empty** — the toy no longer auto-runs a pipeline
+on boot. You build it up one step at a time:
+
+1. Click **+ Add data source** → pick toy or real → Apply. A single
+   **data card** appears (spinning blue while it loads, then a green
+   dot). For real data the viewer stays empty until you add a viz
+   reduction.
+2. Each card has a **+** at its base → an "Add step" menu of the valid
+   next steps (e.g. from data → dim-reduction; from dim-reduction →
+   clustering / dim-sweep; from clustering → bootstrap / compare / dim
+   sweep / citation layout). Picking one opens its modal; Apply forks a
+   **new child card**.
+3. So you build out granularly: data → dim-reduction → clustering, each
+   an explicit step. Adding dim-reduction does **not** auto-run
+   clustering — you stay in control of each layer.
+
+Per card:
+
+- **Click** a card → selects it; the 3D viewer + every panel switch to
+  that card's result. (Click no longer opens the modal.)
+- **⚙ gear** (bottom-right) → opens the card's config modal. Apply forks
+  a new sibling with the new params (the old card stays browsable —
+  cards are immutable once done).
+- **+** (base) → add a downstream step.
+- **↻** (appears on stale cards, amber dashed border) → re-run with the
+  same params when an upstream card changed.
+
+Branching is native: fork two clusterings from the same dim-reduction
+and compare them with a **cross-source comparison** card (dashed edges
+link it to the two clusterings it compares). A **Next steps** panel
+mirrors the per-card "+" menu for the selected card.
+
+The card types and what each configures:
 
 - **Data** — pick between the toy Gaussian-mixture generator and
   the real SPECTER2 paper subset (random 1000-paper or BFS-carved
@@ -80,8 +116,8 @@ configuration modal:
   modal, pick an algorithm, hit Apply. The status dot shows
   orange (stale) until you do.
 
-Status dots on each node: green (fresh) / orange (stale) /
-orange-pulse (running) / grey (not-run) / red (error).
+Status indicator on each card: green dot (done) / amber dashed border
+(stale) / **blue spinner** (running) / grey (pending) / red (error).
 
 ### Data sources
 
@@ -175,6 +211,11 @@ also have a scope toggle:
 
 Mix freely. Add levels with **+ Add level**, remove with **×**.
 Same algorithm shared across all levels.
+
+*Planned:* an **auto multi-layer** mode that discovers the natural
+resolution layers from one HDBSCAN run (no manual level-stacking), with
+layer-by-layer 1–5 scoring and a bridge-cluster panel. Design + locked
+decisions in `doc/plan.md` §9 — not built yet.
 
 ### Optimise tab
 
@@ -343,27 +384,14 @@ lives in `state.view` and persists across project save/load.
   `structureEdges` set the active clustering algorithm produced
   (mutual-k-NN: reciprocal-k-NN edges; HDBSCAN: MST projection).
 
-### Bottom status bar
+### In-flight feedback (per-card)
 
-A thin pulsing strip across the viewport bottom shows what the
-engine is currently doing. Two-tier text:
-
-- **Headline** — what the user actually triggered ("Loading
-  'foo.zip'…", "Clustering…", "Saving 'project.zip'…"). Stays the
-  same for the lifetime of the job.
-- **Phase** (italic, dimmer, next to the headline) — what the
-  engine is doing right now as the cascade walks each lane:
-  `Loading data…` → `Dim-reduction…` → `Clustering…` →
-  `Citations…`. Updates as each phase fires.
-
-When multiple actions are queued (e.g. you Apply in the
-dim-reduction modal then immediately Apply in the clustering
-modal), the bar shows `+N queued` next to the running label, and
-processes them FIFO. Each job displays an elapsed timer once it's
-been running for more than a second. The bar hides when idle.
-
-Modals close immediately on Apply — they don't block waiting for
-the cascade — so all in-flight feedback lives in this bar.
+Modals close immediately on Apply — they don't block waiting for the
+work — and feedback lives **on the cards** themselves (the old bottom
+busy-bar was retired). A running card shows a **blue spinner** in place
+of its status dot; queued cards show a small **position badge** (1, 2,
+…). Jobs run one at a time, FIFO. Cancel a running job and the card goes
+to a cancelled state.
 
 ### Multi-tab panels
 
@@ -451,7 +479,7 @@ Doc highlights:
 - `doc/blend.md` — Layer 5 alignment + per-frame blend; covers per-component vs whole-graph (alignGlobal) Procrustes, the nested-lerp formula, and the opt-in cascade policy
 - `doc/multi-level.md` — multi-level clustering + bridge analysis derivation
 - `doc/ui-architecture.md` — shell architecture: state container, engine orchestrator, workflow chart (tree-aware renderer), panel system, modals, queue + per-card job status
-- `doc/workflow-tree-redesign.md` — Phase 1 + Phase 2 design + slice list for the workflow-tree restructure (the workflow chart is now the primary analysis surface, with branching cards + step↔job binding)
+- `doc/plan.md` — the single plan/roadmap. §0 status, §8 the (shipped) workflow-tree redesign, §9 the active multi-level-clustering plan
 - `doc/workers.md` — DAG-orchestrated module workers: runDAG, lane shape, cancellation, transferables
 - `doc/eval.md` — Optimise tab: bootstrap-Jaccard, scorers, the three sweep modes (resolution / full / target-range with LHS), known limitations + audit cross-refs
 - `doc/scaling.md` — toy-vs-real-data scaling analysis (`n ≈ 400` toy, `n = 810 k` real)
@@ -537,9 +565,12 @@ app/                              static page + ES modules
       workflow-chart.js
       panel-system.js
       data-panel.js
-      topbar.js                   File / Data / Workflow / Validate / Help menus
-      busy.js                     global FIFO busy queue (enqueueBusy + setBusyLabel)
-      busy-bar.js                 bottom status bar — renders state.busy
+      topbar.js                   File / Data / Workflow / Help menus
+      workflow.js                 state.workflow tree — card CRUD, stale, selection
+      workflow-projection.js      project a selected card into the legacy state slots
+      workflow-migration.js       legacy state -> baseline tree (load path)
+      queue.js                    typed-job queue (enqueueJob; per-card status)
+      next-steps-rules.js         per-type "what's next" rule table (panel + card +)
       bridge-analysis.js
       gradients.js
       viewer-shared/
@@ -599,7 +630,7 @@ doc/
   blend.md                        Layer 5 alignment + per-frame blend
   multi-level.md                  multi-level clustering + bridge analysis
   ui-architecture.md              shell architecture (state, engine, workflow chart, queue, modals)
-  workflow-tree-redesign.md       Phase 1 + Phase 2 design for the workflow-tree restructure
+  plan.md                         single plan/roadmap: §0 status, §8 workflow-tree, §9 multi-level plan
   workers.md                      DAG-orchestrated worker port + cancellation
   eval.md                         Optimise tab: bootstrap, scorers, sweep modes
   scaling.md                      toy-vs-real-data scaling
