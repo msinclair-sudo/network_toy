@@ -25,12 +25,14 @@
     chart cards now).
 - **Phase 2 remaining**:
   - **2.10** cross-source comparison steps (any two clusterings, not
-    just pre/post fusion)
+    just pre/post fusion) — **scoped 2026-05-30** (sub-slices a–d +
+    locked parent/viewer decisions in §7); ready to build.
   - **2.12** "what's next?" affordances per card
 - **§10.O3 stale visual** resolved by 2.6 (amber dashed border +
-  re-run button). Remaining open questions: §10.O1 (multi-level
-  clustering shape), §10.O2 (viewer behaviour for cross-source
-  cards), §10.O4 (large-save strategy).
+  re-run button); **§10.O2 viewer-for-comparison-cards resolved**
+  2026-05-30 (show the candidate) during 2.10 scoping. Remaining open
+  questions: §10.O1 (multi-level clustering shape), §10.O4 (large-save
+  strategy).
 
 **Test infrastructure (committed alongside Phase 2 work):**
 
@@ -633,6 +635,50 @@ Step config picks ref + cand source cards via the tree picker.
 Same pattern unblocks "compare two algorithm choices on the same
 data" — a future cross-algorithm card.
 
+**Scoping (2026-05-30).** The comparison engine is already
+source-agnostic: `compareFusionPartitions(refCr, candCr, …)` in
+`app/src/eval/fusion-compare.js` takes two arbitrary `ClusterResult`s
+(ARI / NMI / macro-Jaccard / per-cluster best-match / top movers). The
+pre/post-fusion framing lives only in `panels/fusion-comparison.js`,
+which hard-reads `state.clusterLevels` + `state.clusterLevelsPreFusion`.
+So 2.10 is mostly plumbing two user-chosen cards into a function that
+already works — not new analysis. `createStep` already supports +
+validates `refIds` (`workflow.js`); acyclicity is moot because refIds
+are set only at create-time on a childless node, which can't close a
+cycle.
+
+Locked decisions:
+
+- **Parent edge** = the currently-*selected* card (via
+  `findSelectedAncestorOfType`, same as the bootstrap / dim-sweep
+  analysis cards). Both source clusterings come in as `refIds`, not
+  `parentId`.
+- **Viewer** = show the *candidate* clustering's geometry (§10.O2,
+  now resolved). Because `parentId` isn't a geometry ancestor, the
+  slice-2.7 projection layer needs a `fusionComparison` special-case
+  that projects from the **candidate refId's** ancestry.
+
+Sub-slices (mirror the 2.9 modal+runner pattern):
+
+- **2.10.a** `runners/fusion-comparison-runner.js`
+  (`buildFusionComparisonJob({refStepId, candStepId})`, snapshots both
+  cards' cluster results per level → `result.comparison`) + refactor
+  the panel to render saved-mode from `step.result` (live mode retires
+  per §10.D5). Projection special-case for the candidate viewer.
+- **2.10.b** `step-tree-picker.js` (reusable; clustering cards with
+  lineage labels, non-clustering greyed out) + `fusion-comparison-
+  modal.js` (ref + cand pickers, validate distinct + both clustering)
+  + `fusionComparisonDescriptor()` in `layer-descriptors.js`, registered
+  in `getLayerDescriptor` + `DESCRIPTOR_BY_TYPE`. Start with a flat
+  lineage-labelled `<select>` before a full tree widget.
+- **2.10.c** Render `refIds` as dashed cross-edges in
+  `workflow-chart.js` (§10.D4 — solid `parentId`, dashed `refIds`) +
+  CSS.
+- **2.10.d** `tests/test_fusion_comparison.py` + extend
+  `test_workflow.py`: comparison card with two real clustering cards as
+  refIds → runner populates `result` → chart draws dashed edges →
+  stale propagates when a ref card is re-run.
+
 #### Slice 2.11 — Dead-UX cleanup + bottom-bar removal ✓ shipped
 
 Sub-slices:
@@ -829,17 +875,15 @@ naturally a new child card.
 
 Decide when the auto-recursion slice gets queued for actual work.
 
-#### 10.O2 What does "current viewer" mean for a fusion-comparison step?
+#### 10.O2 What does "current viewer" mean for a fusion-comparison step? ✓ resolved 2026-05-30
 
-A fusion-comparison card has no geometry of its own. Three options:
-
-- **Show nothing** (empty viewer + hint).
-- **Show the candidate** (the post-fusion side, by convention).
-- **Show a side-by-side** (twin scatters in viewer-2d).
-
-**Lean**: show the candidate, with the fusion-comparison panel
-making the difference visible. Side-by-side viewers could be a
-future viewer panel.
+**Resolved (slice 2.10 scoping).** Show the **candidate** clustering's
+geometry; the fusion-comparison panel carries the actual diff. Because
+a comparison card's `parentId` is the *selected* card (not a geometry
+ancestor), the slice-2.7 projection layer needs a `fusionComparison`
+special-case: project geometry from the **candidate refId's** ancestry,
+not the parent chain. Side-by-side twin scatters in viewer-2d remain a
+possible future viewer panel, not part of 2.10.
 
 #### 10.O3 What's the visual for "stale upstream"? ✓ resolved 2026-05-27
 
@@ -854,6 +898,7 @@ descriptor's `applyChange` with the stale step's stored params.
 
 If a project has 50+ cards each carrying TypedArray results, the
 save zip could balloon. Options:
+
 - Lazy-rehydrate (already done): only revive when read.
 - Compress per-card.
 - Garbage-collect cancelled/failed cards on save.
@@ -863,7 +908,9 @@ Defer until pain appears.
 
 ---
 
-**Sign-off status (2026-05-27):** §1–3 architecture + §10.D1–D7
+**Sign-off status (2026-05-30):** §1–3 architecture + §10.D1–D7
 decisions locked. Phase 1 + Phase 2 slices 2.1 → 2.9 + 2.11 shipped.
 Only 2.10 (cross-source comparison) + 2.12 (next-step affordances)
-remain — both parallel, neither blocking the other.
+remain — both parallel, neither blocking the other. 2.10 is scoped
+(sub-slices a–d in §7; parent = selected card, viewer = candidate,
+§10.O2 resolved) and ready to build.
