@@ -221,7 +221,24 @@ function renderEmptyHint(root) {
   root.innerHTML = "";
   const div = document.createElement("div");
   div.className = "wf-empty-hint";
-  div.textContent = "Workflow tree appears once data is loaded.";
+
+  const msg = document.createElement("div");
+  msg.className = "wf-empty-msg";
+  msg.textContent = "Empty workflow.";
+  div.appendChild(msg);
+
+  // UI #2: the tree starts empty (no boot auto-run). The user begins by
+  // adding a data source; everything else grows from the per-card +.
+  const btn = document.createElement("button");
+  btn.className = "wf-add-data-btn";
+  btn.type = "button";
+  btn.textContent = "+ Add data source";
+  btn.addEventListener("click", () => {
+    const desc = getLayerDescriptor("data");
+    if (desc && desc.openModal) desc.openModal();
+  });
+  div.appendChild(btn);
+
   root.appendChild(div);
 }
 

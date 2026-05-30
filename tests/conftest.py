@@ -299,6 +299,18 @@ def toy_page(playwright_browser):
     Boots fresh per test (cheap — no ingest).
     """
     ctx, page = _boot_page(playwright_browser)
+    # UI #2: boot no longer auto-runs the pipeline, so toy-mode tests
+    # trigger it explicitly. regenerate() populates the legacy slots and
+    # the chart's migration retry builds the baseline data→dimred→
+    # clustering tree; the explicit migrate call makes that deterministic.
+    page.evaluate(
+        '''async () => {
+            const engine = await import("/app/src/ui/engine.js");
+            await engine.regenerate();
+            const mig = await import("/app/src/ui/workflow-migration.js");
+            mig.migrateLegacyToWorkflowIfNeeded();
+        }'''
+    )
     yield page
     errs = relevant_errors(page)
     assert not errs, f"console errors during toy_page test: {errs}"

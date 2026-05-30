@@ -16,7 +16,6 @@ import { mountDataPanel }      from "./data-panel.js";
 import { mountWorkflowChart }  from "./workflow-chart.js";
 import { mountPanelSystem }    from "./panel-system.js";
 import { setBlend, setFusionBlend, setView, getState, subscribe } from "./state.js";
-import * as engine             from "./engine.js";
 
 export function boot() {
   mountTopbar();
@@ -27,16 +26,12 @@ export function boot() {
   mountFusionBlendSlider();
   mountEdgeControls();
 
-  // Run the toy pipeline once so the 3D viewer has data on first
-  // paint. Wrapped in rAF so the panel system has finished mounting
-  // its initial DOM (the viewer-3d panel queries its container size
-  // from layout).
-  requestAnimationFrame(() => {
-    try { engine.regenerate(); }
-    catch (e) { console.error("[ui] initial pipeline run failed:", e); }
-  });
-
-  console.log("[ui] shell mounted; engine wired.");
+  // UI #2: the workflow no longer auto-runs the pipeline on boot. The
+  // tree + viewer start empty; the user grows the tree explicitly,
+  // starting from the chart's "+ Add data source" affordance. (Tests
+  // that need data trigger engine.regenerate()/reingest() themselves;
+  // see tests/conftest.py.)
+  console.log("[ui] shell mounted; engine wired (idle — add a data source to begin).");
 }
 
 function mountBlendSlider() {
