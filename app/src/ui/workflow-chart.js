@@ -226,8 +226,15 @@ function renderEmptyHint(root) {
 function renderSvg(root, layout) {
   root.innerHTML = "";
 
+  // Render at the tree's NATURAL pixel size (width/height = viewBox
+  // dims) so cards are a constant ~120px regardless of how few there
+  // are. CSS caps width at 100% (scale DOWN to fit a wide tree) but
+  // never scales UP — a 1-2 card tree no longer balloons to fill the
+  // rail (which was magnifying the running spinner; UI fix).
   const svg = svgEl("svg", {
     viewBox: `0 0 ${layout.viewboxW} ${layout.viewboxH}`,
+    width:  layout.viewboxW,
+    height: layout.viewboxH,
     preserveAspectRatio: "xMidYMin meet",
   });
 
@@ -413,6 +420,27 @@ function renderCard(step, x, y, w, h, selectedId, positionByStep) {
     g.appendChild(algoText);
   }
 
+  // Gear icon — opens the card's config modal (UI change: clicking the
+  // card body only selects; editing is explicit via the gear). Only on
+  // cards whose type maps to a layer descriptor. Bottom-right corner so
+  // it clears the top-right queue badge / re-run button.
+  if (DESCRIPTOR_BY_TYPE[step.type]) {
+    const gear = svgEl("g", {
+      class: "wf-gear-btn",
+      transform: `translate(${w - 11}, ${h - 10})`,
+    });
+    // Transparent hit area for an easier click target than the glyph.
+    gear.appendChild(svgEl("circle", { cx: 0, cy: 1, r: 8, class: "wf-gear-hit" }));
+    const glyph = svgEl("text", { x: 0, y: 0, class: "wf-gear-glyph" });
+    glyph.textContent = "⚙";   // ⚙
+    gear.appendChild(glyph);
+    gear.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      openStepModal(step);
+    });
+    g.appendChild(gear);
+  }
+
   return g;
 }
 
@@ -423,20 +451,20 @@ function onCardClick(step) {
   // Slice 2.7: swap the legacy state slots (state.dimredResult /
   // clusterLevels / basePos / etc.) to this card's snapshot, so the
   // viewer + every panel re-paints to the selected card's data.
-  // Cheap (refs only, no recompute).
+  // Cheap (refs only, no recompute). Clicking the card body ONLY
+  // selects + projects — opening the config modal is the gear icon's
+  // job now (UI change: click ≠ edit).
   projectStepIntoLegacyState(step.id);
+}
 
-  // Transitional: if this step type maps to an existing layer
-  // descriptor, also open the modal. Slice 2.5 made these create-step
-  // on Apply, so reopening lets the user edit + fork. Slice 2.8+
-  // will surface a "fork from this card" affordance and the
-  // auto-open will become opt-in.
+// Open the config modal for a card (the gear-icon action). Cards whose
+// type maps to a layer descriptor get an editable modal; Apply forks a
+// new sibling per the slice 2.5 modal-as-step-creator semantics.
+function openStepModal(step) {
   const descriptorId = DESCRIPTOR_BY_TYPE[step.type];
   if (!descriptorId) return;
   const desc = getLayerDescriptor(descriptorId);
-  if (desc && desc.openModal) {
-    desc.openModal();
-  }
+  if (desc && desc.openModal) desc.openModal();
 }
 
 // ── helpers ──────────────────────────────────────────────────────────

@@ -128,22 +128,19 @@ def test_branching_layout_siblings_have_distinct_x(page):
 
             const root = document.getElementById("workflow-chart");
             const svg = root.querySelector("svg");
-            // Collect every card g's transform (translate x y).
+            // Collect each CARD group's transform. A card group is the
+            // one with a direct .wf-node-rect child — this excludes the
+            // nested gear / spinner / badge / rerun-btn groups, which
+            // also carry transforms but aren't cards.
             const groups = svg.querySelectorAll("g[transform]");
-            const positions = [];
+            const cards = [];
             for (const g of groups) {
+                if (!g.querySelector(":scope > .wf-node-rect")) continue;
                 const t = g.getAttribute("transform");
                 const m = /translate\\((-?\\d+(?:\\.\\d+)?),\\s*(-?\\d+(?:\\.\\d+)?)\\)/.exec(t || "");
                 if (!m) continue;
-                positions.push({ x: parseFloat(m[1]), y: parseFloat(m[2]) });
+                cards.push({ x: parseFloat(m[1]), y: parseFloat(m[2]) });
             }
-            // Filter to cards (not spinner / badge / rerun-btn groups).
-            const cards = positions.filter(p => {
-                // Card transforms have integer x positions in our layout
-                // and y values >= TOP_PAD. Spinner/badge groups have
-                // very small offsets like (10, h/2).
-                return p.x > 5 && p.y >= 10;
-            });
             // Three siblings at the same y (depth = 2 from root).
             const yValues = cards.map(p => p.y);
             const siblingYSet = new Set(yValues.filter(y => yValues.filter(z => z === y).length === 3));
