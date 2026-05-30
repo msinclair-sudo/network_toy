@@ -6,7 +6,7 @@
   + auto-save. The original Phase 1 slice C (bottom-bar queued-jobs
   surface) is **dropped** — superseded by per-card overlays in
   Phase 2.
-- **Phase 2 slices 2.1 → 2.9 + 2.11** ✓ shipped:
+- **Phase 2 slices 2.1 → 2.12 ✓ shipped (all of Phase 2):**
   - **2.1** state.workflow shape + CRUD actions (workflow.js)
   - **2.2** legacy state → tree migration (workflow-migration.js)
   - **2.3** tree-aware workflow-chart renderer
@@ -23,16 +23,18 @@
     (last `enqueueBusy` callers removed in 2.9); 7 disabled topbar
     stubs dropped; entire Validate menu retired (its work lives on
     chart cards now).
-- **Phase 2 remaining**:
-  - **2.10** cross-source comparison steps (any two clusterings, not
-    just pre/post fusion) — **scoped 2026-05-30** (sub-slices a–d +
-    locked parent/viewer decisions in §7); ready to build.
-  - **2.12** "what's next?" affordances per card
+  - **2.10** cross-source comparison steps — `fusionComparison`
+    generalised to compare any two clustering cards (refIds fan-in,
+    dashed chart edges, candidate-geometry projection); runner + saved-
+    mode panel + tree picker + modal (2026-05-30).
+  - **2.12** next-step affordances — `panels/next-steps.js`, a static
+    per-type rule table of follow-on actions that doubles as the
+    launcher for net-new analysis cards (2026-05-30).
 - **§10.O3 stale visual** resolved by 2.6 (amber dashed border +
   re-run button); **§10.O2 viewer-for-comparison-cards resolved**
-  2026-05-30 (show the candidate) during 2.10 scoping. Remaining open
+  2026-05-30 (show the candidate) during 2.10. Remaining open
   questions: §10.O1 (multi-level clustering shape), §10.O4 (large-save
-  strategy).
+  strategy) — both deferred, neither blocking.
 
 **Test infrastructure (committed alongside Phase 2 work):**
 
@@ -696,24 +698,35 @@ Sub-slices:
   premature; we have File / Data / Workflow / Help and that's it
   now. Re-evaluate when 2.12's "what's next" surface lands.)
 
-#### Slice 2.12 — Next-step affordances
+#### Slice 2.12 — Next-step affordances ✓ shipped
 
-Per-card "what's next?" panel showing valid follow-ons based on
-the selected step's type and result state. Could surface as a
-right-rail panel that subscribes to `state.workflow.selected`.
+Per-card "what's next?" panel (`panels/next-steps.js`) subscribing to
+the selected step. A **static rule table per step type** (no ML-driven
+suggestions, no compute-time estimation) maps `step.type` → valid
+follow-on actions; each button opens the relevant layer-descriptor
+modal (or `rerunStep` for analysis cards). e.g. a clustering card
+offers bootstrap stability, compare-with-another-clustering, dim sweep,
+and citation layout.
 
-Out of scope for first cut: ML-driven suggestions. Just a static
-rule table per step type.
+This panel doubles as the **discoverable launcher for net-new analysis
+cards** (bootstrap / dim-sweep / fusion-comparison) — before 2.12 those
+were only reachable via migration of legacy validationRuns or by
+clicking an already-existing card.
+
+Registered in `panels/registry.js` (picker-added, singleton). Tests in
+`tests/test_next_steps.py`.
 
 ### Dependency graph
 
 ```
 2.1 ✓ ─▶ 2.2 ✓ ─▶ 2.3 ✓ ─▶ 2.4 ✓ ─▶ 2.5 ✓ ──┬─▶ 2.6 ✓
-                                              ├─▶ 2.7 ✓ ─▶ 2.8 ✓ ─▶ 2.10  (parallel)
-                                              └─▶ 2.9 ✓ ─▶ 2.11 ✓ ─▶ 2.12 (parallel)
+                                              ├─▶ 2.7 ✓ ─▶ 2.8 ✓ ─▶ 2.10 ✓
+                                              └─▶ 2.9 ✓ ─▶ 2.11 ✓ ─▶ 2.12 ✓
 ```
 
-Only 2.10 + 2.12 remain. Both are parallel — pick either next.
+All Phase 2 slices shipped (2.1 → 2.12). The workflow-tree redesign is
+feature-complete; remaining items are the deferred open questions
+(§10.O1 multi-level clustering, §10.O4 large-save strategy).
 
 ## 8. Migration / back-compat
 
@@ -909,8 +922,8 @@ Defer until pain appears.
 ---
 
 **Sign-off status (2026-05-30):** §1–3 architecture + §10.D1–D7
-decisions locked. Phase 1 + Phase 2 slices 2.1 → 2.9 + 2.11 shipped.
-Only 2.10 (cross-source comparison) + 2.12 (next-step affordances)
-remain — both parallel, neither blocking the other. 2.10 is scoped
-(sub-slices a–d in §7; parent = selected card, viewer = candidate,
-§10.O2 resolved) and ready to build.
+decisions locked. Phase 1 + **all of Phase 2 (slices 2.1 → 2.12)
+shipped** — the workflow-tree redesign is feature-complete. §10.O2 + O3
+resolved; the only remaining open questions (§10.O1 multi-level
+clustering shape, §10.O4 large-save strategy) are deferred-until-pain
+and don't block anything.
