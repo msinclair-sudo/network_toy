@@ -485,14 +485,19 @@ html, body {
   fill: none;
   stroke: var(--border-light);
   stroke-width: 1.5;
+  opacity: 0.5;
 }
 #workflow-chart .wf-spinner-arc {
   fill: none;
-  stroke: var(--accent);
+  stroke: #3b82f6;                 /* blue loading indicator */
   stroke-width: 1.5;
   stroke-linecap: round;
   stroke-dasharray: 8 24;
   stroke-dashoffset: 0;
+  /* fill-box makes transform-origin resolve to the arc's OWN centre, so
+     it spins in place. Without it, SVG's default (view-box) origin makes
+     the little arc orbit the whole chart's centre. */
+  transform-box: fill-box;
   transform-origin: center;
   animation: wf-spinner-rotate 0.9s linear infinite;
 }
