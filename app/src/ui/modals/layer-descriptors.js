@@ -22,7 +22,7 @@ import { listAlgorithms as listLayoutAlgos,
          getAlgorithm   as getLayoutAlgo }         from "../../citation-layout/registry.js";
 import { getState, update, setDataSourceMode, setDataSourceConfig } from "../state.js";
 import { createStep, listSteps, clearWorkflow, getStep,
-         getStepAncestors, getSelectedStep }       from "../workflow.js";
+         getStepAncestors, getSelectedStep, selectStep } from "../workflow.js";
 import { enqueueJob }                              from "../queue.js";
 import { openAlgorithmModal }                       from "./algorithm-modal.js";
 import { openClusteringModal }                      from "./clustering-modal.js";
@@ -203,21 +203,57 @@ function dataDescriptor() {
     // the data ONLY (no dimred/clustering cascade) and creates just the
     // data card. The user then adds dim-reduction + clustering via the
     // per-card + buttons. Single root (§10.D1), so we wipe the tree and
-    // rebuild from the fresh data.
+    // create a fresh data root.
+    //
+    // The data card is created UP FRONT and bound to a queue job that
+    // runs the ingest. That way a card appears immediately (with a
+    // spinner) during a possibly-slow real-data load, the card surfaces
+    // a failed status if the ingest throws (instead of failing
+    // silently), and we don't depend on the migration-retry race firing
+    // mid-ingest. Mirrors the bootstrap / dim-sweep runner pattern.
     applyChange: async (sourceId, params) => {
       setDataSourceMode(sourceId);
       for (const k of Object.keys(params)) {
         setDataSourceConfig(k, params[k], sourceId);
       }
-      // Clear the tree so migration rebuilds a fresh data root (the old
-      // root's data no longer matches).
       clearWorkflow();
-      await engine.ingestDataOnly();
-      // Migration now emits only the cards whose result slots exist —
-      // after a data-only ingest that's just the data card.
-      const { migrateLegacyToWorkflowIfNeeded } =
-        await import("../workflow-migration.js");
-      migrateLegacyToWorkflowIfNeeded();
+
+      const cfg = (getState().dataSource.configs && getState().dataSource.configs[sourceId]) || {};
+      const label = sourceId === "real"
+        ? `Real · ${cfg.subset || "real"}`
+        : "Toy data";
+      const stepId = createStep({
+        type:     "data",
+        label,
+        params:   { mode: sourceId, ...cfg },
+        parentId: null,                       // data is always the root
+      });
+      selectStep(stepId);
+
+      const { promise } = enqueueJob({
+        type:  "data",
+        label: `Load · ${label}`,
+        stepId,
+        fn: async (_ctx) => {
+          await engine.ingestDataOnly();
+          const s = getState();
+          const n = s.genResult && s.genResult.nodes ? s.genResult.nodes.length : 0;
+          // Result slot for the data card — informational; projectData
+          // is a no-op (genResult etc. already live in the legacy slots).
+          return {
+            capturedAt:   new Date().toISOString(),
+            n,
+            hasEmbedding: !!s.embedding,
+            hasCitations: !!(s.rawCitationEdges && s.rawCitationEdges.length),
+            hasBasePos:   !!s._basePos,
+          };
+        },
+      });
+      promise.catch((e) => {
+        if (e && e.name === "AbortError") return;
+        console.error("[data-descriptor] ingest failed:", e);
+      });
+      return promise;
     },
     openModal: () => openDataSourceModal(desc),
   };
