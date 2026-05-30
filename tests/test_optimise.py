@@ -11,7 +11,10 @@ default HDBSCAN (per conftest.py's bfs5000_page session fixture).
 def test_run_enqueues_and_closes_modal(page):
     """Clicking Run enqueues an "optimise" job in state.jobs and fires
     the closeModal callback within the same tick. The job carries the
-    expected metadata (type, label) and the busy mirror lights up.
+    expected metadata (type, label).
+
+    Slice 2.11 retired state.busy + the busy-bar mirror; the job's own
+    state.jobs entry is now the single source of truth for what's running.
     """
     snapshot = page.evaluate(
         '''async () => {
@@ -28,7 +31,6 @@ def test_run_enqueues_and_closes_modal(page):
             host.querySelector(".cm-tab-run").click();
             const state = await import("/app/src/ui/state.js");
             const jobs = state.getState().jobs;
-            const busy = state.getState().busy;
             const runningId = jobs.runningId;
             const running = runningId ? jobs.byId[runningId] : null;
             return {
@@ -36,7 +38,6 @@ def test_run_enqueues_and_closes_modal(page):
                 runningId,
                 runningType:  running ? running.type : null,
                 runningLabel: running ? running.label : null,
-                busyMirrored: !!(busy && busy.current && busy.current.id === runningId),
             };
         }'''
     )
@@ -44,7 +45,6 @@ def test_run_enqueues_and_closes_modal(page):
     assert snapshot["runningId"] is not None
     assert snapshot["runningType"] == "optimise"
     assert snapshot["runningLabel"].startswith("Optimise · ")
-    assert snapshot["busyMirrored"] is True
     # Cancel the job so the next test starts clean.
     page.evaluate(
         '''async () => {
