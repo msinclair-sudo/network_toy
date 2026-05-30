@@ -29,6 +29,8 @@ import {
 import { migrateLegacyToWorkflowIfNeeded } from "./workflow-migration.js";
 import { projectStepIntoLegacyState }      from "./workflow-projection.js";
 import { getLayerDescriptor, rerunStep }   from "./modals/layer-descriptors.js";
+import { openAddStepModal }                from "./modals/add-step-modal.js";
+import { addStepRulesFor }                 from "./next-steps-rules.js";
 
 // Map step.type → existing layer-descriptor id (the chart's click
 // handler opens that descriptor's modal during the transition;
@@ -439,6 +441,26 @@ function renderCard(step, x, y, w, h, selectedId, positionByStep) {
       openStepModal(step);
     });
     g.appendChild(gear);
+  }
+
+  // "+" add-step button at the base of the card (UI #2). Opens a menu of
+  // valid downstream steps; picking one forks a new child card. Only on
+  // cards that have at least one downstream option.
+  if (addStepRulesFor(step.type).length > 0) {
+    const plus = svgEl("g", {
+      class: "wf-add-btn",
+      transform: `translate(${w / 2}, ${h + 1})`,
+    });
+    plus.appendChild(svgEl("circle", { cx: 0, cy: 0, r: 7, class: "wf-add-circle" }));
+    plus.appendChild(svgEl("path", {
+      d: "M -3 0 L 3 0 M 0 -3 L 0 3",
+      class: "wf-add-glyph",
+    }));
+    plus.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      openAddStepModal(step);
+    });
+    g.appendChild(plus);
   }
 
   return g;

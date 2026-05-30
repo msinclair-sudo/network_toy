@@ -84,6 +84,34 @@ def test_next_steps_empty_without_selection(clean_page):
     assert "Select a card" in (out["emptyText"] or "")
 
 
+def test_add_step_modal_lists_downstream_options(clean_page):
+    """The per-card '+' add-step modal (UI #2) lists the downstream
+    options for a clustering card — bootstrap, compare, dim sweep,
+    citation layout — and excludes 'rerun this card' actions."""
+    out = clean_page.evaluate(
+        '''async () => {
+            ''' + _BUILD_TREE + '''
+            wf.selectStep(cluA);
+            const { openAddStepModal } = await import("/app/src/ui/modals/add-step-modal.js");
+            openAddStepModal(wf.getStep(cluA));
+            await new Promise(r => setTimeout(r, 30));
+            const options = [...document.querySelectorAll(".add-step-option-label")]
+                .map(n => n.textContent);
+            const title = document.querySelector(".modal-title")?.textContent;
+            document.querySelectorAll(".modal-backdrop").forEach(m => m.remove());
+            return { options, title };
+        }'''
+    )
+    joined = " | ".join(out["options"]).lower()
+    assert "bootstrap stability" in joined
+    assert "compare with another clustering" in joined
+    assert "dim sweep" in joined
+    assert "citation layout" in joined
+    # No 'rerun this card' option in the add-step menu.
+    assert "re-run" not in joined
+    assert 'clustering A' in (out["title"] or "")
+
+
 def test_next_steps_action_opens_modal(clean_page):
     """Clicking the 'Compare with another clustering' action opens the
     fusion-comparison modal (the panel is the launcher for net-new

@@ -15,45 +15,12 @@
 
 import { getState, subscribe }            from "../state.js";
 import { getSelectedStep, isStepStale }   from "../workflow.js";
-import { getLayerDescriptor, rerunStep }  from "../modals/layer-descriptors.js";
+import { nextStepsFor, runNextStepAction } from "../next-steps-rules.js";
 
 export const ID          = "next-steps";
 export const LABEL       = "Next steps";
 export const DESCRIPTION = "Suggested follow-on actions for the selected workflow card — run a clustering, bootstrap its stability, compare two clusterings, sweep dimensions. Each opens the relevant modal and forks a new card.";
 export const SINGLETON   = true;
-
-// Static rule table: step.type → follow-on actions. Each action either
-// opens a layer descriptor's modal ("modal") or re-runs the selected
-// card ("rerun"). `needs` is an optional predicate on (step) gating the
-// action on result state.
-const RULES = {
-  data: [
-    { label: "Configure dim-reduction", hint: "PCA / UMAP / fusion → a dimred card", modal: "dimred" },
-  ],
-  dimred: [
-    { label: "Configure clustering",    hint: "HDBSCAN / mutual-kNN → a clustering card", modal: "clustering" },
-    { label: "Run dim sweep",           hint: "ARI stability across embedding dimensions", modal: "dimSweep" },
-  ],
-  clustering: [
-    { label: "Run bootstrap stability", hint: "Per-cluster Jaccard via resampling", modal: "bootstrap" },
-    { label: "Compare with another clustering", hint: "ARI / NMI / movers vs a second clustering", modal: "fusionComparison" },
-    { label: "Run dim sweep",           hint: "ARI stability across embedding dimensions", modal: "dimSweep" },
-    { label: "Configure citation layout", hint: "Force-directed layout from citation edges", modal: "layout" },
-  ],
-  citationLayout: [
-    { label: "Reconfigure layout",      hint: "Tune the citation-layout algorithm", modal: "layout" },
-  ],
-  bootstrapStability: [
-    { label: "Re-run this bootstrap",   hint: "Fork a fresh run with the same settings", rerun: true },
-  ],
-  dimSweep: [
-    { label: "Re-run this dim sweep",   hint: "Fork a fresh sweep with the same settings", rerun: true },
-  ],
-  fusionComparison: [
-    { label: "Re-run this comparison",  hint: "Fork a fresh comparison of the same pair", rerun: true },
-    { label: "Compare a different pair", hint: "Pick two clusterings to compare", modal: "fusionComparison" },
-  ],
-};
 
 export function mount(container, _state, _config = {}) {
   container.innerHTML = "";
@@ -85,7 +52,7 @@ export function mount(container, _state, _config = {}) {
     ctx.textContent = `Selected: ${step.label} (${step.type})${staleTag}`;
     wrap.appendChild(ctx);
 
-    const rules = RULES[step.type] || [];
+    const rules = nextStepsFor(step.type);
     if (rules.length === 0) {
       empty(wrap, "No follow-on actions for this card type yet.");
       return;
@@ -118,13 +85,7 @@ export function mount(container, _state, _config = {}) {
 
     row.addEventListener("click", () => {
       try {
-        if (rule.rerun) {
-          rerunStep(step.id).catch(e => console.error("[next-steps] rerun failed:", e));
-          return;
-        }
-        const desc = getLayerDescriptor(rule.modal);
-        if (desc && desc.openModal) desc.openModal();
-        else console.warn(`[next-steps] no descriptor/openModal for "${rule.modal}"`);
+        runNextStepAction(step, rule);
       } catch (e) {
         console.error("[next-steps] action failed:", e);
       }

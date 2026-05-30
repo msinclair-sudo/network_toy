@@ -531,6 +531,67 @@ html, body {
   fill: var(--accent);
 }
 
+/* "+" add-step button at the base of a card (UI #2). */
+#workflow-chart .wf-add-btn {
+  cursor: pointer;
+}
+#workflow-chart .wf-add-circle {
+  fill: var(--bg-2);
+  stroke: var(--border-light);
+  stroke-width: 1;
+}
+#workflow-chart .wf-add-btn:hover .wf-add-circle {
+  fill: var(--accent);
+  stroke: var(--accent);
+}
+#workflow-chart .wf-add-glyph {
+  stroke: var(--text-dim);
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  pointer-events: none;
+}
+#workflow-chart .wf-add-btn:hover .wf-add-glyph {
+  stroke: var(--bg-1);
+}
+
+/* Add-step modal — list of next-step options. */
+.add-step-modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 280px;
+}
+.add-step-modal-empty {
+  color: var(--text-faint);
+  font-style: italic;
+  padding: 6px 0;
+}
+.add-step-option {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  text-align: left;
+  padding: 8px 10px;
+  background: var(--panel-2, rgba(255, 255, 255, 0.03));
+  border: 1px solid var(--border-light);
+  border-radius: 4px;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+}
+.add-step-option:hover {
+  border-color: var(--accent);
+  background: rgba(124, 138, 165, 0.12);
+}
+.add-step-option-label {
+  font-weight: 600;
+}
+.add-step-option-hint {
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
 /* ── blend control (bottom of left rail) ─────────────────────────────── */
 /* Compact stack. Each section is a small uppercase title plus one or
    two single-line rows. Rows mirror the toy-data row grid
