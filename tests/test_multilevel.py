@@ -134,6 +134,52 @@ def test_multilevel_engine_toy(toy_page):
     assert out["hasTree"] is True
 
 
+def test_multilevel_card_and_projection_toy(toy_page):
+    """The multiLevel descriptor creates a card under the dimred ancestor,
+    the job lands clusterLevels in the card result, and selecting the card
+    projects them into legacy state."""
+    out = toy_page.evaluate(r'''async () => {
+        const ld = await import("/app/src/ui/modals/layer-descriptors.js");
+        const wf = await import("/app/src/ui/workflow.js");
+        const proj = await import("/app/src/ui/workflow-projection.js");
+        const st = await import("/app/src/ui/state.js");
+
+        // ensure a dimred card is in the selected lineage (toy_page yields
+        // data→dimred→clustering; select the clustering leaf).
+        const steps = wf.listSteps();
+        const clust = steps.filter(s => s.type === "clustering").pop();
+        wf.selectStep(clust.id);
+
+        const desc = ld.getLayerDescriptor("multiLevel");
+        const active = desc.getActive();
+        await desc.applyChange({
+            minSamples: active.defaults.minSamples,
+            minClusterSize: active.defaults.minClusterSize,
+            capLayers: active.defaults.capLayers,
+        });
+
+        const card = wf.listSteps().filter(s => s.type === "multiLevel").pop();
+        // select the card and project it
+        wf.selectStep(card.id);
+        proj.projectStepIntoLegacyState(card.id);
+        const s = st.getState();
+        return {
+            cardExists: !!card,
+            status: card.status,
+            cardLevels: card.result ? card.result.clusterLevels.length : 0,
+            nLayers: card.result ? card.result.layers.length : 0,
+            projectedLevels: (s.clusterLevels || []).length,
+            parentType: wf.getStep(card.parentId).type,
+        };
+    }''')
+    assert out["cardExists"] is True
+    assert out["status"] == "done"
+    assert out["cardLevels"] >= 2
+    assert out["nLayers"] == out["cardLevels"]
+    assert out["projectedLevels"] == out["cardLevels"]
+    assert out["parentType"] == "dimred"
+
+
 @pytest.mark.slow
 def test_multilevel_engine_real(page):
     """Real BFS-5000: the nested-worker distance fan-out runs inside the

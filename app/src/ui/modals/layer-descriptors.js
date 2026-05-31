@@ -36,6 +36,8 @@ import { openDimSweepModal, DIMSWEEP_DEFAULTS,
 import { buildDimSweepJob }                         from "../runners/dim-sweep-runner.js";
 import { openFusionComparisonModal }                from "./fusion-comparison-modal.js";
 import { buildFusionComparisonJob }                 from "../runners/fusion-comparison-runner.js";
+import { openMultiLevelModal }                      from "./multi-level-modal.js";
+import { buildMultiLevelJob }                       from "../runners/multi-level-runner.js";
 import { listComparableClusterings }                from "./step-tree-picker.js";
 import * as engine                                  from "../engine.js";
 
@@ -48,6 +50,7 @@ export function getLayerDescriptor(nodeId) {
     case "bootstrap":  return bootstrapDescriptor();
     case "dimSweep":   return dimSweepDescriptor();
     case "fusionComparison": return fusionComparisonDescriptor();
+    case "multiLevel": return multiLevelDescriptor();
     default:           return null;
   }
 }
@@ -406,6 +409,14 @@ export function rerunStep(stepId) {
       candStepId: p.candStepId,
     });
   }
+  if (step.type === "multiLevel") {
+    const p = step.params || {};
+    return multiLevelDescriptor().applyChange({
+      minSamples:     p.minSamples,
+      minClusterSize: p.minClusterSize,
+      capLayers:      p.capLayers,
+    });
+  }
   throw new Error(`[rerunStep] type "${step.type}" not re-runnable`);
 }
 
@@ -646,6 +657,61 @@ function fusionComparisonDescriptor() {
       return promise;
     },
     openModal: () => openFusionComparisonModal(desc),
+  };
+  return desc;
+}
+
+// Multi-level ("Optimise multi-layer") clustering — MLC §9.
+//
+// One HDBSCAN run, a coarse→fine ladder of partitions extracted from the
+// condensed tree. Parents under the SELECTED dimred ancestor (like a
+// clustering card, since the ladder is itself a clustering output). The
+// `multiLevel` card lands its clusterLevels[] in the legacy slots so the
+// viewer's colour-by-layer mode + the bridge/scoring panels read it.
+function multiLevelDescriptor() {
+  const desc = {
+    label: "Optimise: Multi-layer clustering",
+    getActive: () => {
+      const parentId = findSelectedAncestorOfType("dimred");
+      const live = getState();
+      const n = live.genResult ? live.genResult.nodes.length : 0;
+      const isReal = !!(live.dataSource && live.dataSource.mode === "real");
+      return {
+        hasDimred: parentId != null,
+        n,
+        defaults: { minSamples: 5, minClusterSize: isReal ? 15 : 5, capLayers: 5 },
+        parentId,
+      };
+    },
+    applyChange: async ({ minSamples, minClusterSize, capLayers }) => {
+      const parentId = findSelectedAncestorOfType("dimred");
+      if (!parentId) {
+        throw new Error("[multi-level-descriptor] no dimred ancestor to cluster against");
+      }
+      const params = { minSamples, minClusterSize };
+      const label = `Multi-layer · mcs=${minClusterSize} · ≤${capLayers}`;
+      const stepId = createStep({
+        type:   "multiLevel",
+        label,
+        params: { ...params, capLayers },
+        parentId,
+      });
+      selectStep(stepId);
+      const { promise } = enqueueJob({
+        type:  "multiLevel",
+        label,
+        stepId,
+        // uidPrefix = stepId keeps each card's level uids globally unique
+        // (scoring keys scores by levelUid across the whole workflow).
+        fn:    buildMultiLevelJob({ params, capLayers, uidPrefix: stepId }),
+      });
+      promise.catch((e) => {
+        if (e && e.name === "AbortError") return;
+        console.error("[multi-level-descriptor] job failed:", e);
+      });
+      return promise;
+    },
+    openModal: () => openMultiLevelModal(desc),
   };
   return desc;
 }

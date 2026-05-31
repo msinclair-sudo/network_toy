@@ -43,6 +43,7 @@ const DESCRIPTOR_BY_TYPE = {
   "bootstrapStability": "bootstrap",
   "dimSweep":           "dimSweep",
   "fusionComparison":   "fusionComparison",
+  "multiLevel":         "multiLevel",
 };
 
 // Layout constants. Cards are smaller than slice 2.3 since branching

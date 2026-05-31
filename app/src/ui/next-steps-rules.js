@@ -14,6 +14,7 @@ export const NEXT_STEP_RULES = {
   ],
   dimred: [
     { label: "Configure clustering",    hint: "HDBSCAN / mutual-kNN → a clustering card", modal: "clustering" },
+    { label: "Optimise multi-layer clustering", hint: "One HDBSCAN run → a coarse→fine layer ladder", modal: "multiLevel" },
     { label: "Run dim sweep",           hint: "ARI stability across embedding dimensions", modal: "dimSweep" },
   ],
   clustering: [
@@ -34,6 +35,9 @@ export const NEXT_STEP_RULES = {
   fusionComparison: [
     { label: "Re-run this comparison",  hint: "Fork a fresh comparison of the same pair", rerun: true },
     { label: "Compare a different pair", hint: "Pick two clusterings to compare", modal: "fusionComparison" },
+  ],
+  multiLevel: [
+    { label: "Re-run multi-layer",      hint: "Fork a fresh run with the same settings", rerun: true },
   ],
 };
 

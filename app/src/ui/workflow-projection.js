@@ -29,6 +29,7 @@ const PROJECTORS = {
   data:           (step, patch) => projectData(step, patch),
   dimred:         (step, patch) => projectDimred(step, patch),
   clustering:     (step, patch) => projectClustering(step, patch),
+  multiLevel:     (step, patch) => projectMultiLevel(step, patch),
   citations:      (step, patch) => projectCitations(step, patch),
   citationLayout: (step, patch) => projectCitationLayout(step, patch),
   alignment:      (step, patch) => projectAlignment(step, patch),
@@ -67,6 +68,20 @@ function projectClustering(step, patch) {
   if (r.clusterLevelsPreFusion !== undefined) patch.clusterLevelsPreFusion = r.clusterLevelsPreFusion;
   if (r.clusterResultPreFusion !== undefined) patch.clusterResultPreFusion = r.clusterResultPreFusion;
   if (r.bridgeAnalysis         !== undefined) patch.bridgeAnalysis = r.bridgeAnalysis;
+}
+
+// Multi-level clustering card (MLC §9) — projects the same legacy slots
+// as a clustering card (clusterLevels / clusterResult / bridgeAnalysis),
+// so the viewer's colour-by-layer mode + bridge/scoring panels read it.
+// No pre-fusion sibling (multi-level is a single ladder).
+function projectMultiLevel(step, patch) {
+  const r = step.result;
+  if (!r) return;
+  if (r.clusterLevels)             patch.clusterLevels  = r.clusterLevels;
+  if (r.clusterResult)             patch.clusterResult  = r.clusterResult;
+  if (r.bridgeAnalysis !== undefined) patch.bridgeAnalysis = r.bridgeAnalysis;
+  patch.clusterLevelsPreFusion = null;
+  patch.clusterResultPreFusion = null;
 }
 
 function projectCitations(step, patch) {
