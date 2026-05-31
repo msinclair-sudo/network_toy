@@ -97,6 +97,12 @@ const state = {
   // table panels surface dropdowns that write to this slice.
   bridgeConfig:          { fineLevel: null, coarseLevel: null },
 
+  // Tree scoring (MLC §5). 1–5 scores per cluster, keyed by the LEVEL UID
+  // (card-unique — multi-level cards use uidPrefix = stepId), so each
+  // clustering branch keeps its own scores and they survive a save/load.
+  //   clusterScores: { [levelUid]: { [clusterId]: 1..5 } }
+  clusterScores:         {},
+
   // Bumps every time the pipeline runs (full or partial).
   // Panels watch this to know when to rebuild their cached views.
   engineRevision:        0,
@@ -566,6 +572,24 @@ export function setBridgeConfig(partial) {
   update({
     bridgeConfig: { ...state.bridgeConfig, ...(partial || {}) },
   });
+}
+
+// Tree scoring (MLC §5). Set / clear a cluster's 1–5 score, keyed by the
+// level UID so it follows the clustering (and persists). value=null clears.
+export function setClusterScore(levelUid, clusterId, value) {
+  if (!levelUid) return;
+  const all = { ...(state.clusterScores || {}) };
+  const forLevel = { ...(all[levelUid] || {}) };
+  if (value == null) delete forLevel[clusterId];
+  else forLevel[clusterId] = value;
+  all[levelUid] = forLevel;
+  update({ clusterScores: all });
+}
+
+export function getClusterScore(levelUid, clusterId) {
+  const all = state.clusterScores || {};
+  const forLevel = all[levelUid];
+  return forLevel ? forLevel[clusterId] : undefined;
 }
 
 // Patch the viewer-3d display flags (which edge layers + their styling).

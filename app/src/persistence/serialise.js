@@ -193,6 +193,11 @@ export function serialiseState(state) {
     );
   }
 
+  // 10b. Tree scoring (MLC §5) — plain nested numbers keyed by level uid.
+  if (state.clusterScores && Object.keys(state.clusterScores).length > 0) {
+    out.clusterScores = state.clusterScores;
+  }
+
   // 11. Project name (display only — used by Save vs Save-as).
   if (state.projectName) out.projectName = state.projectName;
 

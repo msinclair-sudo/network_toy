@@ -16,6 +16,7 @@ import * as BootstrapStability     from "./bootstrap-stability.js";
 import * as BridgeAnalysis         from "./bridge-analysis.js";
 import * as DimSweep               from "./dim-sweep.js";
 import * as FusionComparison       from "./fusion-comparison.js";
+import * as ClusterScoring         from "./cluster-scoring.js";
 import * as NextSteps              from "./next-steps.js";
 
 const entries = new Map();
@@ -46,6 +47,7 @@ register(BootstrapStability);
 register(BridgeAnalysis);
 register(DimSweep);
 register(FusionComparison);
+register(ClusterScoring);
 register(NextSteps);
 
 // Future entries (mounted as their modules come online):
