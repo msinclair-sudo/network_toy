@@ -38,8 +38,10 @@
 
 import { getAlgorithm as getClusteringAlgorithm } from "../clustering-registry.js";
 import { runClusterLevels }                        from "../clustering-cascade.js";
+import { inferHdbscanMultiLevel }                  from "../clustering-hdbscan.js";
+import { validateClusterResult }                   from "../contracts/cluster.js";
 
-self.addEventListener("message", (ev) => {
+self.addEventListener("message", async (ev) => {
   const data = ev.data || {};
   const mode = data.mode || "cascade";
 
@@ -67,6 +69,30 @@ self.addEventListener("message", (ev) => {
         if (buf) transfer.push(buf);
       }
       self.postMessage({ ok: true, result: levels }, transfer);
+      return;
+    }
+
+    if (mode === "multilevel") {
+      // One HDBSCAN run → a coarse→fine ladder of partitions extracted
+      // from the condensed tree (MLC §9). The distance matrix fans out to
+      // nested distance-workers inside inferHdbscanMultiLevel.
+      const { nodesSlim, dimredResult, params, opts, n } = data;
+      if (!Array.isArray(nodesSlim)) {
+        throw new Error("clustering-worker: payload.nodesSlim must be an array");
+      }
+      const genStub = { nodes: nodesSlim };
+      const out = await inferHdbscanMultiLevel(genStub, params || {}, dimredResult, opts || {});
+      // Each layer is a global partition with no noise (absorption fills
+      // every point) — validate against the contract.
+      for (const lvl of out.levels) {
+        validateClusterResult(lvl.clusterResult, n | 0, { allowNoise: false });
+      }
+      const transfer = [];
+      for (const lvl of out.levels) {
+        const b = lvl.clusterResult.nodeCluster && lvl.clusterResult.nodeCluster.buffer;
+        if (b) transfer.push(b);
+      }
+      self.postMessage({ ok: true, result: out }, transfer);
       return;
     }
 

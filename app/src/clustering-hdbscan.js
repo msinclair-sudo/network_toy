@@ -23,6 +23,9 @@
 // shared cluster-output contract — the caller can swap this with
 // mutual-k-NN with no other code changes.
 
+import { pairwiseDistancesParallel } from "./workers/parallel-distance.js";
+import { buildMultiLevel }           from "./clustering-multilevel.js";
+
 const TABLEAU10 = [
   "#4e79a7", "#f28e2b", "#e15759", "#76b7b2", "#59a14f",
   "#edc948", "#b07aa1", "#ff9da7", "#9c755f", "#bab0ab",
@@ -181,6 +184,52 @@ export function inferHdbscan(genResult, params = {}, dimredResult) {
     noiseFlags,
     condensedTree,
   };
+}
+
+// Multi-level HDBSCAN (MLC §9 / §4). ONE run — one distance matrix, one
+// MST, one condensed tree — from which we extract a coarse→fine ladder of
+// partitions by cutting the tree at the discovered λ-shelves. Async
+// because the distance matrix fans out across cores
+// (pairwiseDistancesParallel); the per-layer frontier + MST-absorption is
+// O(n log n) and pure (clustering-multilevel.js), so the layers add almost
+// nothing over a single HDBSCAN run.
+//
+// Returns { method, multiLevel, layers, levels } where `levels` is the
+// clusterLevels[] shape the cascade/state expect ([{uid, scope, clusterResult}],
+// coarse→fine). The coarsest level carries the condensedTree for surfacing
+// + persistence. Empty levels for a degenerate (too-small / structureless)
+// input — the caller reports that.
+export async function inferHdbscanMultiLevel(genResult, params = {}, dimredResult, opts = {}) {
+  const nodes = genResult.nodes;
+  const n = nodes.length;
+  const minSamples     = Math.max(1, Math.min(Math.max(1, n - 1), (params.minSamples ?? 5) | 0));
+  const minClusterSize = Math.max(2, Math.min(Math.max(2, n), (params.minClusterSize ?? 5) | 0));
+
+  if (n < 3) return { method: "hdbscan", multiLevel: true, layers: [], levels: [] };
+  if (!dimredResult) dimredResult = packBasePos(nodes);
+
+  // Build the model once (parallel distance matrix → coreDist → MST →
+  // dendrogram → condensed tree → stabilities).
+  const dist     = await pairwiseDistancesParallel(dimredResult, n, opts);
+  const coreDist = computeCoreDistances(dist, n, minSamples);
+  const mstEdges = primMSTMutualReach(dist, coreDist, n);
+  const mstAsc   = mstEdges.slice().sort((a, b) => a.w - b.w);
+  const dendro   = buildDendrogram(mstAsc, n);
+  const condensed = condenseDendrogram(dendro, n, minClusterSize);
+  computeStabilities(condensed);
+
+  const tree = serializeCondensedTree(condensed, n, minClusterSize);
+  const { layers, levels } = buildMultiLevel(tree, mstEdges, nodes, {
+    capLayers:   opts.capLayers,
+    minClusters: opts.minClusters,
+    uidPrefix:   opts.uidPrefix,
+  });
+
+  // Surface the tree on the coarsest level (mirrors the single-level path
+  // where L0 carries it) so the bridge/scoring work + save/load have it.
+  if (levels[0]) levels[0].clusterResult.condensedTree = tree;
+
+  return { method: "hdbscan", multiLevel: true, layers, levels };
 }
 
 function countDistinct(labels) {

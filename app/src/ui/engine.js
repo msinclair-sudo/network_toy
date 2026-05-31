@@ -733,6 +733,73 @@ export async function recluster(opts = {}) {
   reneighbour();
 }
 
+// Multi-level clustering lane (MLC §9). ONE HDBSCAN run in the worker
+// extracts a coarse→fine ladder of partitions from the condensed tree
+// (the worker's "multilevel" mode). Lands them in state.clusterLevels in
+// exactly the same shape recluster() produces, so bridge analysis,
+// projection, and the viewer's colour-by-layer mode all work unchanged.
+//
+// opts: { params?, capLayers?, minClusters?, uidPrefix? }. Returns the
+// worker output { layers, levels } (levels empty if the tree was
+// structureless) so the runner can snapshot it into the card.
+export async function recomputeMultiLevel(opts = {}) {
+  const s = getState();
+  if (!s.genResult || !s.dimredResult) return { layers: [], levels: [] };
+  const n = s.genResult.nodes.length;
+  const params = opts.params || { minSamples: 5, minClusterSize: 5 };
+
+  setLayerState("clustering", "running");
+  const nodesSlim = slimNodesForClustering(s.genResult.nodes);
+
+  const dag = {
+    ml: {
+      workerUrl: CLUSTERING_WORKER_URL,
+      deps: [],
+      buildPayload: () => ({
+        mode:         "multilevel",
+        nodesSlim,
+        dimredResult: s.dimredResult,
+        params,
+        n,
+        opts: {
+          capLayers:   opts.capLayers,
+          minClusters: opts.minClusters,
+          uidPrefix:   opts.uidPrefix,
+        },
+      }),
+    },
+  };
+
+  const r = await runDAG(dag);
+  const out = r.ml || { layers: [], levels: [] };
+  const levels = out.levels || [];
+
+  if (levels.length === 0) {
+    setLayerState("clustering", "fresh");
+    return out;
+  }
+
+  const finest = levels[levels.length - 1].clusterResult;
+  const cfgBridge = clampedBridgeConfig(s.bridgeConfig, levels);
+  const bridgeAnalysis = computeBridgeAnalysis(levels, cfgBridge);
+
+  update({
+    clusterLevels:          levels,
+    clusterResult:          finest,
+    // multi-level is a single (post-fusion) ladder — no pre-fusion sibling.
+    clusterLevelsPreFusion: null,
+    clusterResultPreFusion: null,
+    bridgeAnalysis,
+    bridgeConfig:    cfgBridge,
+    multiLevelLayers: out.layers || [],
+    evalResults:     { validate: null, optimise: null },
+    engineRevision:  s.engineRevision + 1,
+  });
+  setLayerState("clustering", "fresh");
+  reneighbour();
+  return out;
+}
+
 // Re-run only the bridge analysis lane — used when the user changes
 // the (fineLevel, coarseLevel) pair via the bridge-table panel without
 // touching upstream clustering. Cheap (single pass over n).
