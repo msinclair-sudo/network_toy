@@ -234,6 +234,16 @@ function serialiseClusterResult(cr, arrays, levelIdx) {
       cr.noiseFlags,
     );
   }
+  // condensedTree (HDBSCAN / MLC-0) — a bag of node-parallel + per-leaf
+  // typed arrays. Stash generically so the multi-level extraction survives
+  // a save/load round-trip; the deserialiser's reviveBinaries restores it.
+  if (cr.condensedTree && typeof cr.condensedTree === "object") {
+    out.condensedTree = stashBinariesIn(
+      cr.condensedTree,
+      arrays,
+      `arrays/clusterLevels/${levelIdx}.condensedTree`,
+    );
+  }
   return out;
 }
 

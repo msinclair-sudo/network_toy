@@ -124,6 +124,64 @@ export function validateClusterResult(result, n, opts = {}) {
            `noiseFlags[${i}] must be 0 or 1, got ${v}`);
     }
   }
+
+  // Optional condensedTree: surfaced by HDBSCAN (MLC-0) for multi-level
+  // extraction. Present only on algorithms that build a stability tree.
+  // Compact projection — node-parallel typed arrays + per-leaf home.
+  if (result.condensedTree !== undefined) {
+    validateCondensedTree(result.condensedTree, n);
+  }
+}
+
+// Validate the compact condensed-tree projection (doc/clustering.md §4.2,
+// serialised in clustering-hdbscan.js). Cheap structural checks only —
+// the heavy correctness invariant (deepest-selected-ancestor reproduces
+// the flat labels) lives in the pytest suite, not the hot path.
+function validateCondensedTree(t, n) {
+  fail(t && typeof t === "object", "condensedTree must be an object");
+  const m = t.numNodes;
+  fail(Number.isInteger(m) && m >= 0,
+       `condensedTree.numNodes must be a non-negative integer, got ${m}`);
+  fail(t.n === n, `condensedTree.n must equal n (${n}), got ${t.n}`);
+  fail(t.root === (m > 0 ? 0 : -1),
+       `condensedTree.root must be ${m > 0 ? 0 : -1} for ${m} nodes, got ${t.root}`);
+
+  const nodeArrays = [
+    ["parent",        Int32Array],
+    ["birthLambda",   Float64Array],
+    ["stability",     Float64Array],
+    ["size",          Int32Array],
+    ["selectedLabel", Int32Array],
+  ];
+  for (const [key, Ctor] of nodeArrays) {
+    fail(t[key] instanceof Ctor,
+         `condensedTree.${key} must be a ${Ctor.name}`);
+    fail(t[key].length === m,
+         `condensedTree.${key}.length must equal numNodes (${m}), got ${t[key].length}`);
+  }
+  for (let i = 0; i < m; i++) {
+    const p = t.parent[i];
+    fail(p === -1 || (p >= 0 && p < m && p < i),
+         `condensedTree.parent[${i}] = ${p}: must be -1 or an ancestor id in [0, ${i})`);
+  }
+  fail(m === 0 || t.parent[0] === -1,
+       "condensedTree.parent[root] must be -1");
+
+  const leafArrays = [
+    ["leafHome",   Int32Array],
+    ["leafLambda", Float64Array],
+  ];
+  for (const [key, Ctor] of leafArrays) {
+    fail(t[key] instanceof Ctor,
+         `condensedTree.${key} must be a ${Ctor.name}`);
+    fail(t[key].length === n,
+         `condensedTree.${key}.length must equal n (${n}), got ${t[key].length}`);
+  }
+  for (let p = 0; p < n; p++) {
+    const home = t.leafHome[p];
+    fail(m === 0 || (home >= 0 && home < m),
+         `condensedTree.leafHome[${p}] = ${home}: must be a valid node id in [0, ${m})`);
+  }
 }
 
 function fail(cond, msg) {

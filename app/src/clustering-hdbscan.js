@@ -162,6 +162,16 @@ export function inferHdbscan(genResult, params = {}, dimredResult) {
   //     visualise now that K is no longer a user knob.
   const structureEdges = mstEdges.map(e => [Math.min(e.i, e.j), Math.max(e.i, e.j)]);
 
+  // 11. Surface the condensed tree (MLC-0). The condensed clusters +
+  //     their stabilities are the hierarchy multi-level extraction
+  //     (doc/plan.md §9 / §4) cuts at different λ. We ship a COMPACT,
+  //     structured-clone-safe projection — node-parallel typed arrays +
+  //     a per-leaf "home" membership — not the bulky internal leafEvents
+  //     (which are O(n·depth)). `selectedNodes` carry their EOM label by
+  //     now (assignStableLabels set it at step 8), so the serialised tree
+  //     records which condensed node became which flat cluster.
+  const condensedTree = serializeCondensedTree(condensed, n, minClusterSize);
+
   return {
     method: "hdbscan",
     params: echoParams,
@@ -169,6 +179,7 @@ export function inferHdbscan(genResult, params = {}, dimredResult) {
     nodeCluster,
     structureEdges,
     noiseFlags,
+    condensedTree,
   };
 }
 
@@ -560,6 +571,76 @@ function computeStabilities(condensed) {
     }
     cn.stability = s;
   }
+}
+
+// Project the internal condensed tree into a compact, structured-clone-
+// safe shape for downstream multi-level extraction (MLC-0 → MLC-1).
+//
+// Node-parallel typed arrays (index = condensed node id, root = 0):
+//   parent[i]        condensed-tree parent id, -1 for the root cluster
+//   birthLambda[i]   λ at which cluster i came into existence (lower λ =
+//                    coarser / earlier; the root is born at λ = 0)
+//   stability[i]     EOM stability Σ_p (λ_fall − λ_birth)
+//   size[i]          number of leaves ever under cluster i
+//   selectedLabel[i] the flat cluster id this node became if EOM-selected,
+//                    else -1. Lets a consumer map a tree cut back to the
+//                    shipped nodeCluster labels.
+//
+// Per-leaf membership (index = point id, length n) — the deepest cluster
+// each point reaches, which is all you need to flatten the tree at any λ:
+//   leafHome[p]      deepest condensed node containing p (its home), or -1
+//   leafLambda[p]    λ at which p finally falls out of its home (i.e. the
+//                    finest density at which p is still clustered)
+//
+// To flatten at a query λ_cut: a point p is noise iff λ_cut > leafLambda[p];
+// otherwise its cluster is the deepest ancestor of leafHome[p] (walking up
+// `parent`) whose birthLambda ≤ λ_cut. O(numNodes + n) to ship, vs the
+// O(n·depth) raw leafEvents.
+function serializeCondensedTree(condensed, n, minClusterSize) {
+  const numNodes = condensed.length;
+  const parent        = new Int32Array(numNodes);
+  const birthLambda   = new Float64Array(numNodes);
+  const stability     = new Float64Array(numNodes);
+  const size          = new Int32Array(numNodes);
+  const selectedLabel = new Int32Array(numNodes);
+  for (let i = 0; i < numNodes; i++) {
+    const cn = condensed[i];
+    parent[i]        = cn.parentId;
+    birthLambda[i]   = cn.birthLambda;
+    stability[i]     = cn.stability;
+    // After the condensation fixup pass, every leaf ever under a node has
+    // an event there, so leafEvents.length is exactly the cluster size.
+    size[i]          = cn.leafEvents.length;
+    selectedLabel[i] = Number.isInteger(cn.label) ? cn.label : -1;
+  }
+
+  // Deepest membership per leaf. Every ancestor of p's home also carries
+  // an event for p (nested membership), so the home is simply the event
+  // with the largest birthLambda. The home's recorded fallsOutLambda is
+  // p's final exit λ.
+  const leafHome   = new Int32Array(n).fill(-1);
+  const leafLambda = new Float64Array(n);
+  const homeBirth  = new Float64Array(n).fill(-Infinity);
+  for (let c = 0; c < numNodes; c++) {
+    const b = condensed[c].birthLambda;
+    for (const ev of condensed[c].leafEvents) {
+      const p = ev.leafId;
+      if (b >= homeBirth[p]) {
+        homeBirth[p]  = b;
+        leafHome[p]   = c;
+        leafLambda[p] = ev.fallsOutLambda;
+      }
+    }
+  }
+
+  return {
+    numNodes,
+    n,
+    minClusterSize,
+    root: numNodes > 0 ? 0 : -1,
+    parent, birthLambda, stability, size, selectedLabel,
+    leafHome, leafLambda,
+  };
 }
 
 // EOM cluster selection. Bottom-up: for each node, compare its own
