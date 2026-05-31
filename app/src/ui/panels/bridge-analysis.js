@@ -1,27 +1,29 @@
-// Panel: bridge analysis.
+// Panel: bridge analysis (MLC §6).
 //
-// Lifts the node-table's "bridge" source into a standalone panel so
-// the user can read the bridge story alongside the viewers without
-// sacrificing the node-table's cluster-legend role. The two pinnable
-// panels can sit side-by-side: node-table coloured by cluster,
-// bridge-analysis panel showing which fine clusters bridge ≥ 2
-// coarser parents.
+// Renders bridge-analysis.js output for the selected multi-level (or any
+// multi-level) clustering: each FINE cluster histogrammed against a chosen
+// COARSE parent level. A dominance threshold τ (default 0.8, adjustable)
+// splits the fine clusters into two sections:
+//   - Encapsulated — one dominant parent (spanCount==1 OR dominantFraction
+//     ≥ τ). The clean case.
+//   - Bridges — members drawn from ≥2 coarse parents with no parent above τ.
+//     The straddling case the multi-level workflow is about.
 //
-// Reads from state.bridgeAnalysis (Layer 2.5 derivation; null when
-// fewer than two clustering levels exist). The fine/coarse level
-// pair is taken from state.bridgeConfig; selector at the top lets
-// the user change it (triggers recomputeBridgeAnalysis()).
-//
-// Clicking a row selects that cluster in the viewers (via
-// setSelection). The current selection is highlighted in the table.
+// Reads live state.clusterLevels + state.bridgeAnalysis. The fine/coarse
+// pair lives in state.bridgeConfig (changing it re-runs the cheap
+// recomputeBridgeAnalysis lane); τ is a display threshold applied locally
+// over the already-computed share breakdown. Clicking a row selects that
+// cluster in the viewers.
 
 import { getState, subscribe, setSelection, setBridgeConfig } from "../state.js";
 import { recomputeBridgeAnalysis }                            from "../engine.js";
 
 export const ID          = "bridge-analysis";
 export const LABEL       = "Bridge analysis";
-export const DESCRIPTION = "Fine clusters that span ≥2 coarser parents. Surfaces multi-level boundary structure. Pick the (fine, coarse) level pair to inspect.";
+export const DESCRIPTION = "Fine clusters split into encapsulated (one dominant parent) vs bridges (spanning ≥2 coarse parents below the dominance threshold τ).";
 export const SINGLETON   = true;
+
+const DEFAULT_TAU = 0.8;
 
 export function mount(container, _state, _config = {}) {
   container.innerHTML = "";
@@ -29,49 +31,43 @@ export function mount(container, _state, _config = {}) {
   wrap.className = "panel-bridge";
   container.appendChild(wrap);
 
+  // τ is panel-local display state (persists across re-renders).
+  let tau = DEFAULT_TAU;
+
   function render() {
     wrap.innerHTML = "";
     const s = getState();
     const levels = s.clusterLevels || [];
     const ba = s.bridgeAnalysis;
 
-    // ── Header (title + pair selector) ──
     const header = document.createElement("div");
     header.className = "panel-bridge-header";
-
     const title = document.createElement("div");
     title.className = "panel-bridge-title";
     title.textContent = "Bridge analysis";
     header.appendChild(title);
 
     if (levels.length < 2) {
-      const empty = document.createElement("div");
-      empty.className = "panel-bridge-empty";
-      empty.textContent = "Bridge analysis needs at least two clustering levels. Add a second level in the Clustering modal → Configure → + Add level.";
       wrap.appendChild(header);
-      wrap.appendChild(empty);
+      wrap.appendChild(empty(
+        "Bridge analysis needs at least two clustering levels. Run an " +
+        "Optimise multi-layer clustering (the + under a dim-reduction card), " +
+        "or add a second level in the Clustering modal."));
       return;
     }
     if (!ba) {
-      const empty = document.createElement("div");
-      empty.className = "panel-bridge-empty";
-      empty.textContent = "Bridge analysis not yet computed.";
       wrap.appendChild(header);
-      wrap.appendChild(empty);
+      wrap.appendChild(empty("Bridge analysis not yet computed."));
       return;
     }
 
-    // Pair selector.
+    // ── Pair selector ──
     const pairBar = document.createElement("div");
     pairBar.className = "panel-bridge-pairbar";
-    pairBar.appendChild(makeLabel("Fine:"));
-    const fineSelect = makePairSelect();
+    pairBar.appendChild(label("Fine:"));
+    const fineSelect = select("panel-bridge-pair-select");
     for (let i = 1; i < levels.length; i++) {
-      const opt = document.createElement("option");
-      opt.value = String(i);
-      opt.textContent = `L${i}`;
-      if (i === ba.fineLevel) opt.selected = true;
-      fineSelect.appendChild(opt);
+      fineSelect.appendChild(option(i, `L${i}`, i === ba.fineLevel));
     }
     fineSelect.addEventListener("change", () => {
       const fine = parseInt(fineSelect.value, 10);
@@ -82,88 +78,110 @@ export function mount(container, _state, _config = {}) {
     });
     pairBar.appendChild(fineSelect);
 
-    pairBar.appendChild(makeLabel("Coarse:"));
-    const coarseSelect = makePairSelect();
+    pairBar.appendChild(label("Coarse:"));
+    const coarseSelect = select("panel-bridge-pair-select");
     for (let j = 0; j < ba.fineLevel; j++) {
-      const opt = document.createElement("option");
-      opt.value = String(j);
-      opt.textContent = `L${j}`;
-      if (j === ba.coarseLevel) opt.selected = true;
-      coarseSelect.appendChild(opt);
+      coarseSelect.appendChild(option(j, `L${j}`, j === ba.coarseLevel));
     }
     coarseSelect.addEventListener("change", () => {
       setBridgeConfig({ coarseLevel: parseInt(coarseSelect.value, 10) });
       recomputeBridgeAnalysis();
     });
     pairBar.appendChild(coarseSelect);
-
     header.appendChild(pairBar);
+
+    // ── τ slider ──
+    const tauBar = document.createElement("div");
+    tauBar.className = "panel-bridge-taubar";
+    tauBar.appendChild(label("Dominance τ:"));
+    const slider = document.createElement("input");
+    slider.type = "range";
+    slider.min = "0.5"; slider.max = "1"; slider.step = "0.05";
+    slider.value = String(tau);
+    slider.className = "panel-bridge-tau-slider";
+    const tauVal = document.createElement("span");
+    tauVal.className = "panel-bridge-tau-val";
+    tauVal.textContent = tau.toFixed(2);
+    slider.addEventListener("input", () => {
+      tau = parseFloat(slider.value);
+      tauVal.textContent = tau.toFixed(2);
+      render();                       // local re-bucket, no engine recompute
+    });
+    tauBar.appendChild(slider);
+    tauBar.appendChild(tauVal);
+    header.appendChild(tauBar);
     wrap.appendChild(header);
 
-    // Summary line.
+    // ── Bucket fine clusters by τ at the coarse level ──
+    const fine = levels[ba.fineLevel].clusterResult;
+    const bridges = [];
+    const encapsulated = [];
+    for (const p of ba.perCluster) {
+      const at = p.byLevel[ba.coarseLevel];
+      const dom = at ? at.dominantFraction : 1;
+      const span = at ? at.spanCount : 1;
+      const isBridge = span >= 2 && dom < tau;
+      const fc = fine && fine.clusters[p.fineId];
+      const row = {
+        fineId:  p.fineId,
+        count:   p.memberCount,
+        span,
+        dom,
+        colour:  fc ? fc.colour : "#888",
+        byLevel: p.byLevel,
+      };
+      (isBridge ? bridges : encapsulated).push(row);
+    }
+
     const summary = document.createElement("div");
     summary.className = "panel-bridge-summary";
-    summary.textContent = `${ba.bridgeCount} bridge${ba.bridgeCount === 1 ? "" : "s"} · L${ba.fineLevel} clusters spanning ≥2 L${ba.coarseLevel} parents.`;
+    summary.textContent =
+      `${bridges.length} bridge${bridges.length === 1 ? "" : "s"} · ` +
+      `${encapsulated.length} encapsulated · ` +
+      `L${ba.fineLevel} → L${ba.coarseLevel} parents · τ=${tau.toFixed(2)}`;
     wrap.appendChild(summary);
 
-    // ── Table ──
-    const fine = levels[ba.fineLevel].clusterResult;
-    const rows = ba.perCluster
-      .filter(p => p.isBridgeAtCoarse)
-      .map(p => {
-        const fineCluster = fine && fine.clusters[p.fineId];
-        const at = p.byLevel[ba.coarseLevel];
-        return {
-          fineId:   p.fineId,
-          count:    p.memberCount,
-          span:     at ? at.spanCount : 0,
-          colour:   fineCluster ? fineCluster.colour : "#888",
-          byLevel:  p.byLevel,
-        };
-      });
+    renderSection(wrap, `Bridges (span ≥ 2, dominant < ${tau.toFixed(2)})`, bridges, ba, s);
+    renderSection(wrap, `Encapsulated (dominant ≥ ${tau.toFixed(2)})`, encapsulated, ba, s);
+  }
+
+  // One sortable section table (shared shape for both buckets).
+  function renderSection(parent, heading, rows, ba, s) {
+    const h = document.createElement("div");
+    h.className = "panel-bridge-section-head";
+    h.textContent = `${heading} — ${rows.length}`;
+    parent.appendChild(h);
 
     if (rows.length === 0) {
-      const empty = document.createElement("div");
-      empty.className = "panel-bridge-empty";
-      empty.textContent = `No fine clusters bridge at the (L${ba.fineLevel}, L${ba.coarseLevel}) pair. Try a different pair, or coarsen the upstream level.`;
-      wrap.appendChild(empty);
+      parent.appendChild(empty("(none at this τ / pair)"));
       return;
     }
 
-    // Sortable header.
     const table = document.createElement("table");
     table.className = "panel-bridge-table";
-    wrap.appendChild(table);
+    parent.appendChild(table);
 
     const baseCols = [
-      { key: "colour", label: "",                          align: "left",  sortable: false, value: () => 0 },
-      { key: "fineId", label: `L${ba.fineLevel} id`,       align: "right", sortable: true,  value: r => r.fineId },
-      { key: "count",  label: "count",                     align: "right", sortable: true,  value: r => r.count },
-      { key: "span",   label: `span @L${ba.coarseLevel}`,  align: "right", sortable: true,  value: r => r.span },
+      { key: "colour", label: "",                         align: "left",  sortable: false, value: () => 0 },
+      { key: "fineId", label: `L${ba.fineLevel} id`,      align: "right", sortable: true,  value: r => r.fineId },
+      { key: "count",  label: "count",                    align: "right", sortable: true,  value: r => r.count },
+      { key: "span",   label: `span @L${ba.coarseLevel}`, align: "right", sortable: true,  value: r => r.span },
+      { key: "dom",    label: "dominant",                 align: "right", sortable: true,  value: r => r.dom,
+        render: r => `${Math.round(r.dom * 100)}%` },
     ];
-    // Per-coarser-level share columns — one for each level coarser
-    // than fine. Shows "1:60% 2:25% 3:15%" form so the user can read
-    // which coarse cluster the fine cluster's members fell into.
     const shareCols = [];
     for (let j = 0; j < ba.fineLevel; j++) {
       shareCols.push({
-        key:     `lvl${j}`,
-        label:   `L${j} shares`,
-        align:   "left",
-        sortable: false,
-        value:   () => 0,
-        render:  r => {
+        key: `lvl${j}`, label: `L${j} shares`, align: "left", sortable: false, value: () => 0,
+        render: r => {
           const at = r.byLevel.find(x => x.coarseLevel === j);
-          if (!at) return "";
-          return formatShares(at.shares);
+          return at ? formatShares(at.shares) : "";
         },
       });
     }
     const cols = [...baseCols, ...shareCols];
 
-    let sortKey = "count";
-    let sortDir = "desc";
-
+    let sortKey = "count", sortDir = "desc";
     function rebuild() {
       table.innerHTML = "";
       const thead = document.createElement("thead");
@@ -176,12 +194,8 @@ export function mount(container, _state, _config = {}) {
           th.classList.add("sortable");
           if (col.key === sortKey) th.classList.add("sorted-" + sortDir);
           th.addEventListener("click", () => {
-            if (sortKey === col.key) {
-              sortDir = sortDir === "asc" ? "desc" : "asc";
-            } else {
-              sortKey = col.key;
-              sortDir = "desc";
-            }
+            if (sortKey === col.key) sortDir = sortDir === "asc" ? "desc" : "asc";
+            else { sortKey = col.key; sortDir = "desc"; }
             rebuild();
           });
         }
@@ -222,18 +236,13 @@ export function mount(container, _state, _config = {}) {
           tr.appendChild(td);
         }
         tr.addEventListener("click", () => {
-          // Toggle: if already selected, clear; otherwise select.
-          if (isSelected(r)) {
-            setSelection({ type: null, id: null });
-          } else {
-            setSelection({ type: "cluster", level: ba.fineLevel, id: r.fineId });
-          }
+          if (isSelected(r)) setSelection({ type: null, id: null });
+          else setSelection({ type: "cluster", level: ba.fineLevel, id: r.fineId });
         });
         tbody.appendChild(tr);
       }
       table.appendChild(tbody);
     }
-
     rebuild();
   }
 
@@ -245,23 +254,31 @@ export function mount(container, _state, _config = {}) {
   };
 }
 
-function makeLabel(text) {
+function empty(text) {
+  const e = document.createElement("div");
+  e.className = "panel-bridge-empty";
+  e.textContent = text;
+  return e;
+}
+function label(text) {
   const l = document.createElement("label");
   l.className = "panel-bridge-pairbar-label";
   l.textContent = text;
   return l;
 }
-
-function makePairSelect() {
+function select(cls) {
   const s = document.createElement("select");
-  s.className = "panel-bridge-pair-select";
+  s.className = cls;
   return s;
 }
-
-// Render a shares array (sorted desc by count) as "id:pct id:pct …".
+function option(value, text, selected) {
+  const o = document.createElement("option");
+  o.value = String(value);
+  o.textContent = text;
+  if (selected) o.selected = true;
+  return o;
+}
 function formatShares(shares) {
   if (!Array.isArray(shares) || shares.length === 0) return "";
-  return shares
-    .map(sh => `${sh.id}:${Math.round(sh.fraction * 100)}%`)
-    .join("  ");
+  return shares.map(sh => `${sh.id}:${Math.round(sh.fraction * 100)}%`).join("  ");
 }

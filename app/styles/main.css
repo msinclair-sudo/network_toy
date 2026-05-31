@@ -1491,6 +1491,42 @@ td.node-table-spread, td.node-table-stab { width: 50px; }
 }
 .panel-bridge-summary { font-size: 11px; color: var(--text-dim); }
 .panel-bridge-empty   { padding: 16px; text-align: center; color: var(--text-faint); font-style: italic; }
+/* MLC §6 — τ slider + Encapsulated/Bridges sections */
+.panel-bridge-taubar {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.panel-bridge-tau-slider { flex: 1; max-width: 160px; }
+.panel-bridge-tau-val    { font-family: var(--font-mono); color: var(--text); min-width: 30px; }
+.panel-bridge-section-head {
+  margin: 10px 0 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text);
+  border-bottom: 1px solid var(--border-light);
+  padding-bottom: 2px;
+}
+/* MLC §9 — multi-level ("Optimise multi-layer") modal */
+.multi-level-modal-intro,
+.multi-level-modal-empty { font-size: 12px; color: var(--text-dim); margin-bottom: 10px; line-height: 1.4; }
+.multi-level-modal-cfg  { display: flex; flex-direction: column; gap: 10px; }
+.multi-level-modal-row  { display: flex; flex-direction: column; gap: 2px; }
+.multi-level-modal-row > label { font-size: 11px; color: var(--text-dim); }
+.multi-level-modal-row > input {
+  background: var(--bg-3);
+  color: var(--text);
+  border: 1px solid var(--border-light);
+  border-radius: 3px;
+  padding: 3px 6px;
+  font-size: 12px;
+  font-family: var(--font-mono);
+  width: 90px;
+}
+.multi-level-modal-hint { font-size: 10px; color: var(--text-faint); }
+.multi-level-modal-warn { color: var(--danger, #e15759); font-size: 11px; margin-top: 8px; }
 .panel-bridge-table {
   width: 100%;
   border-collapse: collapse;

@@ -180,6 +180,50 @@ def test_multilevel_card_and_projection_toy(toy_page):
     assert out["parentType"] == "dimred"
 
 
+def test_bridge_panel_sections_and_tau(toy_page):
+    """After a multi-level run, the bridge panel renders Encapsulated +
+    Bridges sections that together account for every fine cluster, and the
+    τ slider re-buckets without an engine recompute."""
+    out = toy_page.evaluate(r'''async () => {
+        const engine = await import("/app/src/ui/engine.js");
+        const state = await import("/app/src/ui/state.js");
+        await engine.recomputeMultiLevel({ params: { minSamples: 5, minClusterSize: 5 } });
+
+        const host = document.createElement("div");
+        document.body.appendChild(host);
+        const { mount } = await import("/app/src/ui/panels/bridge-analysis.js");
+        const inst = mount(host, state.getState(), {});
+        await new Promise(r => setTimeout(r, 50));
+
+        const heads = [...host.querySelectorAll(".panel-bridge-section-head")].map(e => e.textContent);
+        const slider = host.querySelector(".panel-bridge-tau-slider");
+        const totalFine = state.getState().bridgeAnalysis.perCluster.length;
+        // count rows across both section tables
+        const rowsAt = () => host.querySelectorAll(".panel-bridge-row").length;
+        const rowsDefault = rowsAt();
+        // lower τ to 0.5 → fewer/equal bridges; raise to 1.0 → more bridges
+        slider.value = "1"; slider.dispatchEvent(new Event("input"));
+        await new Promise(r => setTimeout(r, 20));
+        const headsHigh = [...host.querySelectorAll(".panel-bridge-section-head")].map(e => e.textContent);
+
+        inst.destroy();
+        return {
+            nHeads: heads.length,
+            hasSlider: !!slider,
+            totalFine,
+            rowsDefault,
+            // every fine cluster appears in exactly one section
+            accounts: rowsDefault === totalFine,
+            headsHighOk: headsHigh.length === 2,
+        };
+    }''')
+    assert out["nHeads"] == 2                 # Encapsulated + Bridges
+    assert out["hasSlider"] is True
+    assert out["totalFine"] >= 2
+    assert out["accounts"] is True
+    assert out["headsHighOk"] is True
+
+
 @pytest.mark.slow
 def test_multilevel_engine_real(page):
     """Real BFS-5000: the nested-worker distance fan-out runs inside the
