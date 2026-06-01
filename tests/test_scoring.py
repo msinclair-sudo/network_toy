@@ -1,119 +1,154 @@
-"""MLC-5 — tree scoring panel: 1–5 per cluster, layer-by-layer with
-parent-score threshold propagation, scores persisted on state.clusterScores
-(keyed by level uid) through the save/load round-trip."""
+"""MLC-5 — scoring panel (panels/scoring.js): 1–5 per cluster on a
+coarse→fine board, card-bound scores (result.scores[levelUid][clusterId]),
+and parent-score threshold gating at finer layers.
+
+The old global-state tree-scoring panel (cluster-scoring.js, state.clusterScores)
+was removed 2026-06-01; the live panel is card-bound. These tests build a
+data→dimred→clustering→labelling→scoring tree synthetically (clean_page) and
+drive the `scoring` panel against the selected scoring card.
+"""
 
 import pytest
 
+# Build a minimal data→dimred→(committed levels)→labelling→scoring tree with a
+# 2-layer ladder (3 coarse, finer split) and labels, then select the scoring
+# card. Mirrors the producer/picker → labelling → scoring chain.
+_BUILD_TREE = r'''
+    const st = await import("/app/src/ui/state.js");
+    const wf = await import("/app/src/ui/workflow.js");
+    st.update({ workflow: { steps: {}, rootId: null, selected: null } });
+    const lvl = (uid, nc) => ({ uid, scope: "global", clusterResult: {
+        method: "hdbscan", nodeCluster: Int32Array.from(nc),
+        clusters: [...new Set(nc)].map(id => ({ id, count: nc.filter(x=>x===id).length, colour: "#4e79a7" })),
+    }});
+    // L0: 2 coarse clusters; L1: 3 fine (so layer 1 has a parent gate).
+    const levels = [ lvl("L0", [0,0,0,1,1,1]), lvl("L1", [0,0,1,2,2,2]) ];
+    const data = wf.createStep({ type: "data", label: "data" });
+    const dim  = wf.createStep({ type: "dimred", label: "dimred", parentId: data });
+    wf.updateStepStatus(dim, "running");
+    wf.setStepResult(dim, { _basePos: null, dimredResult: {} });
+    const ml = wf.createStep({ type: "multiLevel", label: "sweep", params: { minSamples: 5 }, parentId: dim });
+    wf.updateStepStatus(ml, "running");
+    wf.setStepResult(ml, { multiLevelSweep: { candidates: [], curve: [], uidPrefix: ml } });
+    const pk = wf.createStep({ type: "multiLevelPicker", label: "pick", params: { pickedCounts: [2,3] }, parentId: ml });
+    wf.updateStepStatus(pk, "running");
+    wf.setStepResult(pk, { clusterLevels: levels, clusterResult: levels[1].clusterResult });
+    const lb = wf.createStep({ type: "labelling", label: "labels", parentId: pk });
+    wf.updateStepStatus(lb, "running");
+    wf.setStepResult(lb, { byLevel: {
+        L0: { perCluster: [
+            { clusterId: 0, byMethod: { keybert: { terms: ["alpha topic"] } }, combined: "alpha topic" },
+            { clusterId: 1, byMethod: { keybert: { terms: ["beta topic"] } }, combined: "beta topic" },
+        ]},
+        L1: { perCluster: [
+            { clusterId: 0, byMethod: {}, combined: "c0" },
+            { clusterId: 1, byMethod: {}, combined: "c1" },
+            { clusterId: 2, byMethod: {}, combined: "c2" },
+        ]},
+    }});
+    const sc = wf.createStep({ type: "scoring", label: "scoring", parentId: lb });
+    wf.updateStepStatus(sc, "running");
+    wf.setStepResult(sc, { scores: {} });
+    wf.selectStep(sc);
+'''
 
-def _run_multilevel(page):
-    """Produce-only sweep then commit a coarse→fine ladder (produce/picker
-    split) so state.clusterLevels exists for the scoring panel."""
-    page.evaluate(r'''async () => {
-        const engine = await import("/app/src/ui/engine.js");
-        const st = await import("/app/src/ui/state.js");
-        await engine.recomputeMultiLevelSweep({
-            params: { minSamples: 5, selectionMethod: "leaf" }, floor: 0.5,
-            sizeGridCount: 14, bootstrapOpts: { B: 5, subsampleFrac: 0.6 },
-            uidPrefix: "MLSCORE",
-        });
-        const cands = (st.getState().multiLevelSweep.candidates || []);
-        const picks = [...new Set(cands.map(c => c.count).sort((a,b)=>a-b))].slice(0, 3);
-        engine.commitMultiLevelLayers(picks, { uidPrefix: "MLSCORE" });
-    }''')
 
-
-def test_scoring_panel_click_sets_score(toy_page):
-    """Clicking a star writes state.clusterScores[levelUid][clusterId] and
-    the star renders active + the summary updates."""
-    _run_multilevel(toy_page)
-    out = toy_page.evaluate(r'''async () => {
-        const st = await import("/app/src/ui/state.js");
+def test_scoring_panel_click_sets_card_score(clean_page):
+    """Clicking a star writes card.result.scores[levelUid][clusterId] and the
+    star renders active; the column sub-header reports the scored count."""
+    out = clean_page.evaluate(r'''async () => {
+        ''' + _BUILD_TREE + r'''
+        const reg = await import("/app/src/ui/panels/registry.js");
         const host = document.createElement("div");
+        host.style.width = "900px";
         document.body.appendChild(host);
-        const { mount } = await import("/app/src/ui/panels/cluster-scoring.js");
-        const inst = mount(host, st.getState(), {});
-        await new Promise(r => setTimeout(r, 30));
+        const inst = reg.getPanelType("scoring").mount(host, st.getState(), { stepId: sc });
+        await new Promise(r => setTimeout(r, 40));
 
-        const levels = st.getState().clusterLevels;
-        const l0uid = levels[0].uid;
-
-        // click the "4" star on the first cluster row
-        const firstRow = host.querySelector(".panel-score-row");
-        const stars = firstRow.querySelectorAll(".panel-score-star");
+        // First column (L0), first cluster block, click the "4" star.
+        const col0 = host.querySelector(".scoring-col");
+        const firstBlock = col0.querySelector(".scoring-cluster");
+        const stars = firstBlock.querySelectorAll(".scoring-star");
         stars[3].click();   // value 4
-        await new Promise(r => setTimeout(r, 30));
+        await new Promise(r => setTimeout(r, 40));
 
-        const scores = st.getState().clusterScores[l0uid] || {};
-        const activeNow = host.querySelector(".panel-score-row .panel-score-star.active");
-        const summary = host.querySelector(".panel-score-summary").textContent;
+        const card = wf.getStep(sc);
+        const l0Scores = (card.result.scores || {}).L0 || {};
+        // The panel re-renders on the state bump (innerHTML rebuilt), so query
+        // fresh from host — col0 is now a stale, detached node.
+        const col0fresh = host.querySelector(".scoring-col");
+        const activeNow = col0fresh.querySelector(".scoring-star.active");
+        const sub = col0fresh.querySelector(".scoring-col-sub").textContent;
 
         inst.destroy();
-        return {
-            score0: scores[0],
-            activeText: activeNow ? activeNow.textContent : null,
-            summary,
-        };
+        return { score0: l0Scores[0], activeText: activeNow ? activeNow.textContent : null, sub };
     }''')
     assert out["score0"] == 4
     assert out["activeText"] == "4"
-    assert out["summary"].startswith("1 /")
+    assert "1 scored" in out["sub"]
 
 
-def test_scoring_parent_threshold_filters(toy_page):
-    """At a finer layer, raising the parent-score threshold hides children
-    whose dominant parent is unscored / low-scored."""
-    _run_multilevel(toy_page)
-    out = toy_page.evaluate(r'''async () => {
-        const st = await import("/app/src/ui/state.js");
-        const levels = st.getState().clusterLevels;
-        if (levels.length < 2) return { skip: true };
-
+def test_scoring_parent_threshold_gates_finer_layer(clean_page):
+    """At layer 1, clusters whose parent scored below the column threshold
+    render ineligible (no star control); scoring a parent and lowering the
+    threshold makes them eligible. Verifies coarse→fine score flow."""
+    out = clean_page.evaluate(r'''async () => {
+        ''' + _BUILD_TREE + r'''
+        const reg = await import("/app/src/ui/panels/registry.js");
         const host = document.createElement("div");
+        host.style.width = "1100px";
         document.body.appendChild(host);
-        const { mount } = await import("/app/src/ui/panels/cluster-scoring.js");
-        const inst = mount(host, st.getState(), {});
-        await new Promise(r => setTimeout(r, 30));
+        const inst = reg.getPanelType("scoring").mount(host, st.getState(), { stepId: sc });
+        await new Promise(r => setTimeout(r, 40));
 
-        // switch to layer 1
-        const sel = host.querySelector(".panel-score-select");
-        sel.value = "1"; sel.dispatchEvent(new Event("change"));
-        await new Promise(r => setTimeout(r, 30));
+        const cols = host.querySelectorAll(".scoring-col");
+        const l1 = cols[1];
+        // With no parent scored and default threshold 3, every L1 cluster is
+        // ineligible (its parent hasn't cleared the bar).
+        const eligibleBefore = l1.querySelectorAll(".scoring-cluster:not(.ineligible)").length;
 
-        const rowsThresholdAny = host.querySelectorAll(".panel-score-row").length;
+        // Lower the threshold to 1 via the column's parent-≥ input → with no
+        // parent scored, dominantScore(undefined) ≥ 1 is false, so still gated.
+        // Score both parents in L0 to 5, then set threshold 1 → eligible.
+        const card0 = wf.getStep(sc);
+        wf.setCardScore(sc, "L0", 0, 5);
+        wf.setCardScore(sc, "L0", 1, 5);
+        // re-render by re-mounting (panel subscribes to state; force a tick)
+        inst.update();
+        await new Promise(r => setTimeout(r, 20));
+        const inp = host.querySelectorAll(".scoring-col")[1].querySelector(".scoring-threshold input");
+        inp.value = "1"; inp.dispatchEvent(new Event("change"));
+        await new Promise(r => setTimeout(r, 40));
 
-        // raise parent threshold to 5 (no parents scored ⇒ all hidden)
-        const range = host.querySelector(".panel-score-range");
-        range.value = "5"; range.dispatchEvent(new Event("input"));
-        await new Promise(r => setTimeout(r, 30));
-        const rowsThreshold5 = host.querySelectorAll(".panel-score-row").length;
+        const l1after = host.querySelectorAll(".scoring-col")[1];
+        const eligibleAfter = l1after.querySelectorAll(".scoring-cluster:not(.ineligible)").length;
+        const nL1 = 3;
 
         inst.destroy();
-        return { rowsThresholdAny, rowsThreshold5, nL1: levels[1].clusterResult.clusters.length };
+        return { eligibleBefore, eligibleAfter, nL1 };
     }''')
-    if out.get("skip"):
-        pytest.skip("toy multi-level produced <2 layers")
-    assert out["rowsThresholdAny"] == out["nL1"]    # τ=0.8, threshold=any → all shown
-    assert out["rowsThreshold5"] == 0               # no parent scored ≥5 → all hidden
+    assert out["eligibleBefore"] == 0          # no parent scored ≥3 → all gated
+    assert out["eligibleAfter"] == out["nL1"]  # parents scored 5, threshold 1 → all eligible
 
 
-def test_scores_persist_round_trip(toy_page):
-    """clusterScores survive serialise → deserialise."""
-    _run_multilevel(toy_page)
-    out = toy_page.evaluate(r'''async () => {
-        const st  = await import("/app/src/ui/state.js");
-        const ser = await import("/app/src/persistence/serialise.js");
-        const des = await import("/app/src/persistence/deserialise.js");
+def test_scoring_straddle_metric_badge(clean_page):
+    """Migrated from the old panel: finer-layer clusters show a straddle
+    metric badge (clean vs bridge), with the bridge ones flagged."""
+    out = clean_page.evaluate(r'''async () => {
+        ''' + _BUILD_TREE + r'''
+        const reg = await import("/app/src/ui/panels/registry.js");
+        const host = document.createElement("div");
+        host.style.width = "1100px";
+        document.body.appendChild(host);
+        const inst = reg.getPanelType("scoring").mount(host, st.getState(), { stepId: sc });
+        await new Promise(r => setTimeout(r, 40));
 
-        const uid = st.getState().clusterLevels[0].uid;
-        st.setClusterScore(uid, 0, 5);
-        st.setClusterScore(uid, 1, 3);
-
-        const blob = ser.serialiseState(st.getState());
-        const file = new File([blob], "scores.zip", { type: "application/zip" });
-        const { patch } = await des.deserialiseFile(file);
-
-        const restored = patch.clusterScores && patch.clusterScores[uid];
-        return { uid, s0: restored && restored[0], s1: restored && restored[1] };
+        const l1 = host.querySelectorAll(".scoring-col")[1];
+        const metrics = [...l1.querySelectorAll(".scoring-metrics")].map(m => m.textContent);
+        inst.destroy();
+        return {
+            anyMetric: metrics.some(t => /clean|bridge/.test(t)),
+            metrics,
+        };
     }''')
-    assert out["s0"] == 5
-    assert out["s1"] == 3
+    assert out["anyMetric"] is True            # straddle badge rendered on L1 clusters

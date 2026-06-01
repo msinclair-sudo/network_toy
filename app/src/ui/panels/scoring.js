@@ -265,13 +265,20 @@ export function mount(container, _state, config = {}) {
     }
     block.appendChild(left);
 
-    // metrics slot (right). Bridge straddle for now; expands later.
+    // metrics slot (right). Straddle metric from bridge analysis, surfaced
+    // next to the score so the manual 1–5 is made with the geometry in view.
+    // dominantFraction = how much of the cluster sits in its single biggest
+    // parent; straddle = 1 − that. Bridges (span ≥ 2 under τ) are flagged.
     const metrics = document.createElement("div");
-    metrics.className = "scoring-metrics";
-    if (metric) {
+    metrics.className = "scoring-metrics"
+      + (metric && metric.isBridge ? " is-bridge" : "");
+    if (metric && Number.isFinite(metric.dom)) {
+      const straddlePct = Math.round((1 - metric.dom) * 100);
       metrics.textContent = metric.isBridge
-        ? `straddle ${Math.round((1 - metric.dom) * 100)}% · ${metric.span}`
-        : `clean ${Math.round(metric.dom * 100)}%`;
+        ? `bridge · straddles ${straddlePct}% across ${metric.span}`
+        : `clean · ${Math.round(metric.dom * 100)}% in parent`;
+      metrics.title = "From bridge analysis: dominant-parent share vs straddle. "
+        + "Lower dominance / higher span = more of a bridge.";
     } else {
       metrics.textContent = "—";
     }

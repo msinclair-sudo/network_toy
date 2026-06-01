@@ -134,36 +134,48 @@ def test_labelling_projects_into_scoring_slot(clean_page):
     assert out["hasL1"] is True
 
 
-def test_scoring_panel_prefers_stored_labels(clean_page):
-    """The scoring panel renders the stored label from state.clusterLabels
-    rather than an inline 'Cluster N' fallback."""
+def test_scoring_panel_renders_stored_labels(clean_page):
+    """The scoring panel (card-bound scoring.js) renders the labelling card's
+    stored per-method labels as bullets, not an inline 'Cluster N' fallback."""
     out = clean_page.evaluate(
         '''async () => {
             const st = await import("/app/src/ui/state.js");
-            function lvl(uid, labels) {
-                const ids = [...new Set(labels)].filter(x => x >= 0);
-                return { uid, clusterResult: { method: "hdbscan", params: {},
-                    nodeCluster: new Int32Array(labels),
-                    clusters: ids.map(id => ({ id, count: labels.filter(c => c === id).length,
-                        members: labels.map((c, i) => c === id ? i : -1).filter(i => i >= 0), colour: "#888" })) }};
-            }
-            // Single level so the panel scores it directly (no parent filter).
-            st.update({
-                clusterLevels: [lvl("L0", [0,0,0,1,1,1])],
-                clusterLabels: { L0: { methods: [], perCluster: [
-                    { clusterId: 0, byMethod: {}, combined: "MY LABEL A" },
-                    { clusterId: 1, byMethod: {}, combined: "MY LABEL B" },
-                ]}},
-                engineRevision: (st.getState().engineRevision || 0) + 1,
-            });
+            const wf = await import("/app/src/ui/workflow.js");
+            const reg = await import("/app/src/ui/panels/registry.js");
+            st.update({ workflow: { steps: {}, rootId: null, selected: null } });
+            const lvl = (uid, nc) => ({ uid, scope: "global", clusterResult: {
+                method: "hdbscan", nodeCluster: Int32Array.from(nc),
+                clusters: [...new Set(nc)].map(id => ({ id, count: nc.filter(x=>x===id).length, colour: "#888" })),
+            }});
+            const levels = [ lvl("L0", [0,0,0,1,1,1]) ];
+            const data = wf.createStep({ type: "data", label: "data" });
+            const dim  = wf.createStep({ type: "dimred", label: "dimred", parentId: data });
+            wf.updateStepStatus(dim, "running"); wf.setStepResult(dim, { dimredResult: {} });
+            const ml = wf.createStep({ type: "multiLevel", label: "sweep", params: {}, parentId: dim });
+            wf.updateStepStatus(ml, "running");
+            wf.setStepResult(ml, { multiLevelSweep: { candidates: [], curve: [], uidPrefix: ml } });
+            const pk = wf.createStep({ type: "multiLevelPicker", label: "pick", params: { pickedCounts: [2] }, parentId: ml });
+            wf.updateStepStatus(pk, "running");
+            wf.setStepResult(pk, { clusterLevels: levels, clusterResult: levels[0].clusterResult });
+            const lb = wf.createStep({ type: "labelling", label: "labels", parentId: pk });
+            wf.updateStepStatus(lb, "running");
+            wf.setStepResult(lb, { byLevel: { L0: { perCluster: [
+                { clusterId: 0, byMethod: { keybert: { terms: ["MY LABEL A"] } }, combined: "MY LABEL A" },
+                { clusterId: 1, byMethod: { keybert: { terms: ["MY LABEL B"] } }, combined: "MY LABEL B" },
+            ]}}});
+            const sc = wf.createStep({ type: "scoring", label: "scoring", parentId: lb });
+            wf.updateStepStatus(sc, "running"); wf.setStepResult(sc, { scores: {} });
+            wf.selectStep(sc);
+
             const host = document.createElement("div");
+            host.style.width = "700px";
             document.body.appendChild(host);
-            const panel = await import("/app/src/ui/panels/cluster-scoring.js");
-            panel.mount(host, st.getState(), {});
-            await new Promise(r => setTimeout(r, 30));
-            const labels = [...host.querySelectorAll(".panel-score-label")].map(n => n.textContent);
+            const inst = reg.getPanelType("scoring").mount(host, st.getState(), { stepId: sc });
+            await new Promise(r => setTimeout(r, 40));
+            const labels = [...host.querySelectorAll(".scoring-label-bullet")].map(n => n.textContent);
+            inst.destroy();
             return { labels };
         }'''
     )
-    assert "MY LABEL A" in out["labels"]
-    assert "MY LABEL B" in out["labels"]
+    assert any("MY LABEL A" in t for t in out["labels"])
+    assert any("MY LABEL B" in t for t in out["labels"])
