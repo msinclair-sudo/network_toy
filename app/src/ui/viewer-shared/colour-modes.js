@@ -12,6 +12,42 @@ export const DEFAULT_COLOUR_MODE = "cluster:finest";
 export const DIMMED_COLOUR       = "#3a3f4a";
 export const UNKNOWN_COLOUR      = "#888";
 
+// ── gradient scaling stats, memoised on the source array reference ──────
+// The colour resolver runs once PER NODE PER FRAME, so scanning the whole
+// in-degree / year array on every call (as the old code did) is O(n²) per
+// frame. Cache the derived stats keyed on the source typed-array identity;
+// the arrays are reassigned (never mutated in place), so an identity check is
+// a safe cache key.
+
+let _inDegStats = { ref: null, max: 1, logMax: 1 };
+export function inDegStats(citationResult) {
+  const arr = citationResult && citationResult.inDeg;
+  if (!arr) return { max: 1, logMax: Math.log1p(1) };
+  if (_inDegStats.ref !== arr) {
+    let max = 1;
+    for (let i = 0; i < arr.length; i++) if (arr[i] > max) max = arr[i];
+    _inDegStats = { ref: arr, max, logMax: Math.log1p(max) };
+  }
+  return _inDegStats;
+}
+
+let _yearStats = { ref: null, min: null, max: null };
+export function yearStats(genResult) {
+  const nodes = genResult && genResult.nodes;
+  if (!nodes) return { min: null, max: null };
+  if (_yearStats.ref !== nodes) {
+    let min = Infinity, max = -Infinity;
+    for (const nd of nodes) {
+      const y = nd && nd.year;
+      if (Number.isFinite(y)) { if (y < min) min = y; if (y > max) max = y; }
+    }
+    _yearStats = Number.isFinite(min)
+      ? { ref: nodes, min, max }
+      : { ref: nodes, min: null, max: null };
+  }
+  return _yearStats;
+}
+
 // Build the colour-by dropdown's options from the current state.
 //
 // "cluster:N"      → level index N
@@ -54,9 +90,16 @@ export function getColourModeOptions(state) {
   if (state.genResult && state.genResult.origins) {
     opts.push({ value: "origin", label: "Origin (generator label)" });
   }
-  opts.push({ value: "t", label: "Time (t)" });
+  // Publication year (real years on real data; normalised t fallback on toy).
+  const ys = yearStats(state.genResult);
+  opts.push({
+    value: "year",
+    label: (ys.min != null) ? `Publication year (${ys.min}–${ys.max})` : "Time (t)",
+  });
   if (state.citationResult) {
-    opts.push({ value: "inDeg", label: "Citation in-degree" });
+    opts.push({ value: "inDeg:raw", label: "Citation in-degree (count)" });
+    opts.push({ value: "inDeg",     label: "Citation in-degree (normalised)" });
+    opts.push({ value: "inDeg:log", label: "Citation in-degree (log)" });
   }
   return opts;
 }
@@ -105,17 +148,28 @@ export function baseColourFor(node, state, mode) {
     }
     return UNKNOWN_COLOUR;
   }
-  if (mode === "t") {
+  if (mode === "t" || mode === "year") {
+    // Publication-year gradient over the real [minYear, maxYear] range.
+    // Falls back to the normalised node.t when no real years exist (toy data).
+    const ys = yearStats(state.genResult);
+    if (ys.min != null && Number.isFinite(node.year)) {
+      const span = ys.max - ys.min;
+      return tGradient(span > 0 ? (node.year - ys.min) / span : 0);
+    }
     return tGradient(+node.t || 0);
   }
-  if (mode === "inDeg") {
+  if (mode === "inDeg" || mode === "inDeg:log" || mode === "inDeg:raw") {
     const cit = state.citationResult;
     if (cit && cit.inDeg) {
-      let max = 1;
-      for (let i = 0; i < cit.inDeg.length; i++) {
-        if (cit.inDeg[i] > max) max = cit.inDeg[i];
-      }
-      return inDegGradient(cit.inDeg[node.id] / max);
+      const c = cit.inDeg[node.id] || 0;
+      const { max, logMax } = inDegStats(cit);
+      // raw + linear both map onto [0,max] linearly (raw is the same hue ramp,
+      // surfaced as a distinct option so the legend reads real counts); log
+      // spreads the long low-degree tail so it isn't crushed by hub outliers.
+      const t = (mode === "inDeg:log")
+        ? (logMax > 0 ? Math.log1p(c) / logMax : 0)
+        : (max > 0 ? c / max : 0);
+      return inDegGradient(t);
     }
     return UNKNOWN_COLOUR;
   }

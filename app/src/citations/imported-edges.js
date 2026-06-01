@@ -46,10 +46,26 @@ export const defaultParams = () => ({
 //                       passed through to the importer; algorithms never reach
 //                       into global state.
 export async function infer(genResult, _clusterResult, params = {}, dataSourceParams = {}) {
+  // Fast path: the data source already supplied its edges on the Layer-1
+  // result (genResult.citationEdges, flat [src,dst,…] in node-index space,
+  // directed citing→cited — biblion/sqlite + real do this at ingest). Use
+  // them directly instead of re-fetching from disk. materialise() expects
+  // importer convention "a is cited by b" (and flips to citing→cited), so we
+  // hand it CITED-first pairs [dst, src] to preserve the real direction +
+  // in-degree (dst is the cited paper).
+  if (Array.isArray(genResult.citationEdges) && genResult.citationEdges.length) {
+    const flat = genResult.citationEdges;
+    const pairs = new Array(flat.length >> 1);
+    for (let k = 0, p = 0; k < flat.length; k += 2, p++) {
+      pairs[p] = [flat[k + 1], flat[k]];   // [cited, citing]
+    }
+    return materialise(genResult, pairs, { importer: "data-source-edges" });
+  }
+
+  // Fallback: pull from the configured importer (json-file carved subsets).
   const importerId = params.importer || "json-file";
   const importer   = getImporter(importerId);
   const rawEdges   = await importer.fetch({ dataSourceParams });
-
   return materialise(genResult, rawEdges, { importer: importerId });
 }
 

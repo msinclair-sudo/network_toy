@@ -410,9 +410,10 @@ function sourceOptionsFor(s) {
   if (s.genResult && s.genResult.origins) {
     opts.push({ value: "origin", label: "Origin (generator label)" });
   }
-  opts.push({ value: "t", label: "Time (t)" });
+  opts.push({ value: "year", label: "Publication year" });
   if (s.citationResult) {
-    opts.push({ value: "inDeg", label: "Citation in-degree" });
+    opts.push({ value: "inDeg:raw", label: "Citation in-degree (count)" });
+    opts.push({ value: "inDeg:log", label: "Citation in-degree (log)" });
   }
   return opts;
 }
@@ -424,8 +425,10 @@ function buildTableData(s, source) {
   if (source === "bridge")        return bridgeRows(s);
   if (source === "boundaryScore") return boundaryScoreRows(s);
   if (source === "origin")        return originRows(s);
-  if (source === "inDeg")         return inDegRows(s);
-  if (source === "t")             return timeBinRows(s);
+  if (source === "inDeg" || source === "inDeg:raw" || source === "inDeg:log") {
+    return inDegRows(s, source);
+  }
+  if (source === "t" || source === "year") return timeBinRows(s);
   return { columns: [], rows: [], unitLabel: "rows", title: "" };
 }
 
@@ -636,19 +639,24 @@ function originRows(s) {
   };
 }
 
-function inDegRows(s) {
+function inDegRows(s, source = "inDeg") {
   const cit   = s.citationResult;
   const nodes = s.genResult && s.genResult.nodes;
   if (!cit || !cit.inDeg || !nodes) {
     return { columns: [], rows: [], unitLabel: "nodes", title: "no citation graph" };
   }
   const cl = s.clusterResult;
-  // Find max in-degree once so the gradient normalises consistently
-  // (matches viewer-3d's per-render scaling).
+  const isLog = source === "inDeg:log";
+  // Max in-degree once → consistent scaling that matches the viewer's
+  // colour-modes inDegStats (so the table reads as the legend).
   let maxIn = 1;
   for (let i = 0; i < cit.inDeg.length; i++) {
     if (cit.inDeg[i] > maxIn) maxIn = cit.inDeg[i];
   }
+  const logMax = Math.log1p(maxIn);
+  const grad = (c) => inDegGradient(isLog
+    ? (logMax > 0 ? Math.log1p(c) / logMax : 0)
+    : (maxIn > 0 ? c / maxIn : 0));
 
   const all = [];
   for (let i = 0; i < nodes.length; i++) {
@@ -657,31 +665,31 @@ function inDegRows(s) {
     all.push({
       _key:    `node:${i}`,
       _select: () => ({ type: "node", id: i }),
-      // Gradient swatch matches viewer-3d's inDeg colouring exactly,
-      // so the table reads as the legend.
-      colour:  inDegGradient(inDeg / maxIn),
+      colour:  grad(inDeg),
       id:      i,
       inDeg,
-      t:       nodes[i].t,
+      year:    Number.isFinite(nodes[i].year) ? nodes[i].year : null,
       cluster: cid,
     });
   }
   all.sort((a, b) => b.inDeg - a.inDeg);
   const rows = all.slice(0, TOP_N_INDEG);
   return {
-    title:     `top ${rows.length} of ${nodes.length} by in-degree`,
+    title:     `top ${rows.length} of ${nodes.length} by in-degree` + (isLog ? " (log scale)" : ""),
     unitLabel: "nodes",
     columns: [
       { key: "colour",  label: "",        kind: "colour", sortable: false },
       { key: "id",      label: "id",      kind: "int",    sortable: true  },
       { key: "inDeg",   label: "in-deg",  kind: "int",    sortable: true  },
-      { key: "t",       label: "t",       kind: "float",  sortable: true  },
+      { key: "year",    label: "year",    kind: "int",    sortable: true  },
       { key: "cluster", label: "cluster", kind: "int",    sortable: true  },
     ],
     rows,
     defaultSort: { key: "inDeg", dir: "desc" },
     selectionKey: (row, sel) => sel.type === "node" && sel.id === row.id,
-    gradient: { stops: INDEG_STOPS, min: 0, max: maxIn, label: "in-deg" },
+    // Legend min/max are real in-degree counts (the gradient may be log-scaled
+    // internally, but the labelled bounds are the real 0..max counts).
+    gradient: { stops: INDEG_STOPS, min: 0, max: maxIn, label: isLog ? "in-deg (log)" : "in-deg" },
   };
 }
 
@@ -690,41 +698,55 @@ function timeBinRows(s) {
   if (!nodes) {
     return { columns: [], rows: [], unitLabel: "bins", title: "no data" };
   }
-  const counts = new Array(T_BINS).fill(0);
+  // Bin by REAL publication year when years are present; fall back to the
+  // normalised t for toy data (no real years).
+  let yMin = Infinity, yMax = -Infinity;
   for (const n of nodes) {
-    let b = Math.floor(n.t * T_BINS);
+    const y = n && n.year;
+    if (Number.isFinite(y)) { if (y < yMin) yMin = y; if (y > yMax) yMax = y; }
+  }
+  const hasYears = Number.isFinite(yMin) && yMax > yMin;
+  const span = hasYears ? (yMax - yMin) : 1;
+
+  const counts = new Array(T_BINS).fill(0);
+  const frac = (n) => hasYears
+    ? (Number.isFinite(n.year) ? (n.year - yMin) / span : 0)
+    : (+n.t || 0);
+  for (const n of nodes) {
+    let b = Math.floor(frac(n) * T_BINS);
     if (b >= T_BINS) b = T_BINS - 1;
     if (b < 0) b = 0;
     counts[b]++;
   }
   const rows = counts.map((cnt, i) => {
-    const lo  = i / T_BINS;
-    const hi  = (i + 1) / T_BINS;
-    const mid = (lo + hi) / 2;
+    const loF = i / T_BINS, hiF = (i + 1) / T_BINS, mid = (loF + hiF) / 2;
+    const range = hasYears
+      ? `${Math.round(yMin + loF * span)}–${Math.round(yMin + hiF * span)}`
+      : `${loF.toFixed(1)}–${hiF.toFixed(1)}`;
     return {
       _key:    `tBin:${i}`,
       _select: () => ({ type: "tBin", binIdx: i }),
       colour:  tGradient(mid),
       bin:     i,
-      range:   `${lo.toFixed(1)}–${hi.toFixed(1)}`,
-      mid,
+      range,
       count:   cnt,
     };
   });
   return {
-    title:     `${T_BINS} bins of t`,
+    title:     hasYears ? `${T_BINS} year bins (${yMin}–${yMax})` : `${T_BINS} bins of t`,
     unitLabel: "bins",
     columns: [
       { key: "colour", label: "",       kind: "colour", sortable: false },
       { key: "bin",    label: "bin",    kind: "int",    sortable: true  },
-      { key: "range",  label: "range",  kind: "text",   sortable: false },
-      { key: "mid",    label: "mid t",  kind: "float",  sortable: true  },
+      { key: "range",  label: hasYears ? "years" : "range", kind: "text", sortable: false },
       { key: "count",  label: "count",  kind: "int",    sortable: true  },
     ],
     rows,
     defaultSort: { key: "bin", dir: "asc" },
     selectionKey: (row, sel) => sel.type === "tBin" && sel.binIdx === row.bin,
-    gradient: { stops: T_STOPS, min: 0, max: 1, label: "t" },
+    gradient: hasYears
+      ? { stops: T_STOPS, min: yMin, max: yMax, label: "year" }
+      : { stops: T_STOPS, min: 0, max: 1, label: "t" },
   };
 }
 
@@ -768,3 +790,7 @@ function sameSelection(a, b) {
   if (a.type === "tBin")    return a.binIdx === b.binIdx;
   return false;
 }
+
+// Test-only handle for the pure row-builders (real-year bins, in-degree
+// scaling) so they can be exercised without mounting the panel.
+export const __test = { timeBinRows, inDegRows, buildTableData };
