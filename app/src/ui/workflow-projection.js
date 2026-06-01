@@ -28,6 +28,7 @@ import { getStep, getStepAncestors } from "./workflow.js";
 const PROJECTORS = {
   data:           (step, patch) => projectData(step, patch),
   dimred:         (step, patch) => projectDimred(step, patch),
+  fusionBranch:   (step, patch) => projectFusionBranch(step, patch),
   clustering:     (step, patch) => projectClustering(step, patch),
   multiLevel:       (step, patch) => projectMultiLevel(step, patch),
   multiLevelPicker: (step, patch) => projectMultiLevelPicker(step, patch),
@@ -61,6 +62,31 @@ function projectDimred(step, patch) {
   if (r.basePos2d   !== undefined && r._basePos2d === undefined) patch._basePos2d = r.basePos2d;
   if (r.dimredResultPreFusion !== undefined) patch.dimredResultPreFusion = r.dimredResultPreFusion;
   if (r._basePosPreFusion !== undefined)     patch._basePosPreFusion     = r._basePosPreFusion;
+}
+
+// Fusion-branch card — the pre/post-fusion fork router. Its dimred ancestor's
+// projector already put the POST-fusion embedding into dimredResult/_basePos.
+// For a POST branch that's correct → no-op. For a PRE branch, override those
+// slots with the pre-fusion embedding (carried on the dimred card result), so
+// a clustering card under the pre branch clusters the pre-fusion embedding
+// with the same code. The walk runs root→selected, so this fires AFTER the
+// dimred projector.
+function projectFusionBranch(step, patch) {
+  const endpoint = step.params && step.params.endpoint;
+  if (endpoint !== "pre") return;   // post = the dimred projector's default
+  // Find the dimred ancestor carrying both embeddings.
+  const anc = getStepAncestors(step.id);
+  let dimred = null;
+  for (let i = anc.length - 1; i >= 0; i--) {
+    if (anc[i].type === "dimred" && anc[i].result) { dimred = anc[i]; break; }
+  }
+  const r = dimred && dimred.result;
+  if (!r) return;
+  if (r.dimredResultPreFusion) patch.dimredResult = r.dimredResultPreFusion;
+  if (r._basePosPreFusion !== undefined) patch._basePos = r._basePosPreFusion;
+  // (2D pre-fusion basePos isn't separately stored today; the 2D viewer keeps
+  // the post 2D until a pre-fusion 2D embedding is carried — acceptable for
+  // Phase A, the 3D viewer + clustering use the swapped 3D/compression slots.)
 }
 
 function projectClustering(step, patch) {

@@ -49,6 +49,7 @@ import { listLabelMethods }                         from "../../labelling/cluste
 import { buildScoringPrepJob }                      from "../runners/scoring-runner.js";
 import { buildExportPrepJob }                       from "../runners/export-runner.js";
 import { buildCrossClusterJob }                     from "../runners/cross-cluster-runner.js";
+import { buildFusionBranchJob }                     from "../runners/fusion-branch-runner.js";
 import { listComparableClusterings }                from "./step-tree-picker.js";
 import * as engine                                  from "../engine.js";
 
@@ -61,6 +62,7 @@ export function getLayerDescriptor(nodeId, editStepId = null) {
   switch (nodeId) {
     case "data":       return dataDescriptor();
     case "dimred":     return dimredDescriptor(editStepId);
+    case "fusionBranch": return fusionBranchDescriptor(editStepId);
     case "clustering": return clusteringDescriptor(editStepId);
     case "layout":     return layoutDescriptor(editStepId);
     case "bootstrap":  return bootstrapDescriptor(editStepId);
@@ -116,6 +118,13 @@ function beginStep({ editStepId, type, label, params, parentId, refIds = [] }) {
 // the data root has been migrated). Caller falls back to "no-tree"
 // mode if returning null.
 function findCanonicalParent(childType) {
+  // Fork-aware: clustering attaches under the SELECTED fusion branch when one
+  // is in the lineage (so a pre/post branch carries its own clustering), else
+  // the canonical dimred. Keeps the fork's two branches independent.
+  if (childType === "clustering") {
+    const branch = findSelectedAncestorOfType("fusionBranch");
+    if (branch) return branch;
+  }
   const parentTypeMap = {
     dimred:         "data",
     clustering:     "dimred",
@@ -236,6 +245,9 @@ function snapshotResultForType(type) {
       _basePos2d:            s._basePos2d,
       dimredResultPreFusion: s.dimredResultPreFusion,
       _basePosPreFusion:     s._basePosPreFusion,
+      // Fusion produced a SECOND (pre-fusion) embedding → this dimred card
+      // can fork into pre/post branches. Identity fusion leaves this false.
+      fusionActive:          !!s.dimredResultPreFusion,
     };
   }
   if (type === "clustering") {
@@ -375,7 +387,7 @@ function dimredDescriptor(editStepId = null) {
     applyChange: async ({ noise, fusion, compression, viz, viz2d }) => {
       const dimredParams = { noise, fusion, compression, viz, viz2d };
       const label = `Dim-reduce · ${compression.method} → ${viz.method}`;
-      return createAndRunStep({
+      const promise = createAndRunStep({
         type:   "dimred",
         label,
         params: dimredParams,
@@ -390,8 +402,85 @@ function dimredDescriptor(editStepId = null) {
           catch (e) { console.error("[dimred-descriptor] redimred failed:", e); throw e; }
         },
       });
+      // When fusion produced a second (pre-fusion) embedding, auto-fork the
+      // workflow into a pre branch + a post branch under this dimred card and
+      // select the POST one (the fused result). Identity fusion → no fork
+      // (one embedding); the user adds clustering under the dimred directly.
+      promise.then(() => {
+        const dimredCard = listSteps({ type: "dimred" }).slice(-1)[0];
+        if (!dimredCard || !(dimredCard.result && dimredCard.result.fusionActive)) return;
+        const existing = listSteps({ type: "fusionBranch" })
+          .filter(b => b.parentId === dimredCard.id);
+        if (existing.length) {
+          const post = existing.find(b => b.params && b.params.endpoint === "post");
+          if (post) selectStep(post.id);
+          return;
+        }
+        fusionBranchDescriptor().applyChange({ endpoint: "pre",  parentId: dimredCard.id })
+          .catch(() => {});
+        fusionBranchDescriptor().applyChange({ endpoint: "post", parentId: dimredCard.id })
+          .then(() => {
+            const post = listSteps({ type: "fusionBranch" })
+              .find(b => b.parentId === dimredCard.id && b.params.endpoint === "post");
+            if (post) selectStep(post.id);
+          })
+          .catch(() => {});
+      }).catch(() => { /* dimred failure already logged */ });
+      return promise;
     },
     openModal: () => openDimredModal(desc),
+  };
+  return desc;
+}
+
+// Fusion-branch card — the pre/post-fusion fork. When a dim-reduction card
+// ran fusion (graph-diffusion → a second pre-fusion embedding), the workflow
+// forks into a pre branch + a post branch under it (auto-spawned by the dimred
+// descriptor). Each branch is a ROUTER: selecting it (or any descendant)
+// projects its endpoint's embedding into the legacy dimredResult/_basePos
+// slots (projectFusionBranch), so a clustering card under the branch clusters
+// that embedding with the same code. No config modal.
+function fusionBranchDescriptor(editStepId = null) {
+  const editStep = () => (editStepId ? getStep(editStepId) : null);
+  const desc = {
+    label: "Fusion branch",
+    getActive: () => {
+      const es = editStep();
+      const parentId = es ? es.parentId : findSelectedAncestorOfType("dimred");
+      const dimred = parentId ? getStep(parentId) : null;
+      return {
+        hasDimred: parentId != null,
+        fusionActive: !!(dimred && dimred.result && dimred.result.fusionActive),
+        parentId,
+      };
+    },
+    // endpoint ∈ {"pre","post"}; parentId given by the auto-spawn (the dimred
+    // card). Falls back to the nearest dimred ancestor if invoked manually.
+    applyChange: async ({ endpoint, parentId } = {}) => {
+      const ep = endpoint === "pre" ? "pre" : "post";
+      const pid = parentId || (editStep() ? editStep().parentId : findSelectedAncestorOfType("dimred"));
+      if (!pid) throw new Error("[fusion-branch-descriptor] no dim-reduction ancestor to fork");
+      const label = ep === "pre" ? "Pre-fusion" : "Post-fusion";
+      const stepId = beginStep({
+        editStepId,
+        type:   "fusionBranch",
+        label,
+        params: { endpoint: ep },
+        parentId: pid,
+      });
+      const { promise } = enqueueJob({
+        type:  "fusionBranch",
+        label,
+        stepId,
+        fn:    buildFusionBranchJob({ endpoint: ep }),
+      });
+      promise.catch((e) => {
+        if (e && e.name === "AbortError") return;
+        console.error("[fusion-branch-descriptor] job failed:", e);
+      });
+      return promise;
+    },
+    openModal: () => {},
   };
   return desc;
 }
@@ -805,7 +894,11 @@ function multiLevelDescriptor(editStepId = null) {
   const editStep = () => (editStepId ? getStep(editStepId) : null);
   const resolveParent = () => {
     const es = editStep();
-    return es ? es.parentId : findSelectedAncestorOfType("dimred");
+    if (es) return es.parentId;
+    // Fork-aware: attach under the selected fusion branch if one is in the
+    // lineage (the branch carries the embedding), else the dimred card.
+    return findSelectedAncestorOfType("fusionBranch")
+        || findSelectedAncestorOfType("dimred");
   };
   const desc = {
     label: "Optimise: Multi-layer clustering",

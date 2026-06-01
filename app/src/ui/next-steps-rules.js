@@ -17,6 +17,13 @@ export const NEXT_STEP_RULES = {
     { label: "Optimise multi-layer clustering", hint: "Sweep HDBSCAN (leaf) → pick a coarse→fine layer ladder from the reproducibility curve", modal: "multiLevel" },
     { label: "Run dim sweep",           hint: "ARI stability across embedding dimensions", modal: "dimSweep" },
   ],
+  // Pre/post-fusion fork branch — the embedding carrier. When fusion ran, two
+  // of these auto-spawn under the dimred card; each offers the same clustering
+  // follow-ons (operating on its own embedding).
+  fusionBranch: [
+    { label: "Configure clustering",    hint: "Cluster this branch's embedding (pre- or post-fusion)", modal: "clustering" },
+    { label: "Optimise multi-layer clustering", hint: "Sweep HDBSCAN on this branch → pick a layer ladder", modal: "multiLevel" },
+  ],
   clustering: [
     { label: "Run bootstrap stability", hint: "Per-cluster Jaccard via resampling", modal: "bootstrap" },
     { label: "Compare with another clustering", hint: "ARI / NMI / movers vs a second clustering", modal: "fusionComparison" },
