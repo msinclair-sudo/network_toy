@@ -240,9 +240,7 @@ export async function ingestDataOnly() {
     dimredResult:           null,
     dimredResultPreFusion:  null,
     clusterLevels:          null,
-    clusterLevelsPreFusion: null,
     clusterResult:          null,
-    clusterResultPreFusion: null,
     bridgeAnalysis:         null,
     neighbourhoodResult:    null,
     tasteResult:            null,
@@ -646,22 +644,13 @@ export async function recluster(opts = {}) {
 
   // ── Compute graph for this lane. ─────────────────────────────────
   //
-  //   dimredResult           ──▶ post  (always; produces clusterLevels)
-  //   dimredResultPreFusion  ──▶ pre   (only when fusion ran a second
-  //                                     pass; produces the pre-fusion
-  //                                     levels used by the "Cluster —
-  //                                     pre-fusion" colour mode)
-  //
-  // The two passes are independent (different inputs, same algo /
-  // levels) so they run in parallel via runDAG's batching. Each pass
-  // is itself sequential internally — its levels chain dependencies
-  // (within-parent reads the previous level's clusterResult) — so we
-  // send one worker job per pass, not one per level. The worker
-  // imports clustering-cascade.js and runs the full chain.
-  //
-  // precomputedLevels is only sent on the `post` pass — the pre-fusion
-  // pass runs on a different dimred input (dimredResultPreFusion) so a
-  // cr derived from the post-fusion input would be wrong there.
+  // Single pass: cluster state.dimredResult — which is the active fusion
+  // BRANCH's embedding (pre or post; the fork projects the chosen one into
+  // dimredResult, see projectFusionBranch). The old parallel pre+post
+  // dual-track is gone — pre/post is now two workflow branches, each running
+  // its own clustering. The pass is sequential internally (within-parent
+  // reads the previous level's clusterResult), so one worker job runs the
+  // full chain via clustering-cascade.js.
   const dag = {
     post: {
       workerUrl: CLUSTERING_WORKER_URL,
@@ -678,30 +667,10 @@ export async function recluster(opts = {}) {
       }),
     },
   };
-  if (s.dimredResultPreFusion) {
-    dag.pre = {
-      workerUrl: CLUSTERING_WORKER_URL,
-      deps: [],
-      buildPayload: () => ({
-        mode:         "cascade",
-        algoId:       algo.id,
-        nodesSlim,
-        dimredResult: s.dimredResultPreFusion,
-        levelCfgs:    cfg.levels,
-        allowNoise,
-        n,
-      }),
-    };
-  }
 
   const r = await runDAG(dag);
 
-  const levels          = r.post;
-  const preFusionLevels = r.pre || null;
-  const preFusionFinest = preFusionLevels
-    ? preFusionLevels[preFusionLevels.length - 1].clusterResult
-    : null;
-
+  const levels = r.post;
   const finest = levels[levels.length - 1].clusterResult;
   // Derived: bridge analysis pair is taken from state.bridgeConfig
   // (or the deepest valid pair if config is empty/stale). Null when
@@ -713,8 +682,6 @@ export async function recluster(opts = {}) {
   update({
     clusterLevels:          levels,
     clusterResult:          finest,
-    clusterLevelsPreFusion: preFusionLevels,
-    clusterResultPreFusion: preFusionFinest,
     bridgeAnalysis,
     bridgeConfig: cfgBridge,
     // Stale eval results → previous clustering. Drop them so the
@@ -832,8 +799,6 @@ export function commitMultiLevelLayers(pickedCounts, opts = {}) {
     update({
       clusterLevels:          null,
       clusterResult:          null,
-      clusterLevelsPreFusion: null,
-      clusterResultPreFusion: null,
       bridgeAnalysis:         null,
       engineRevision:         (getState().engineRevision || 0) + 1,
     });
@@ -847,9 +812,6 @@ export function commitMultiLevelLayers(pickedCounts, opts = {}) {
   update({
     clusterLevels:          levels,
     clusterResult:          finest,
-    // multi-level is a single (post-fusion) ladder — no pre-fusion sibling.
-    clusterLevelsPreFusion: null,
-    clusterResultPreFusion: null,
     bridgeAnalysis,
     bridgeConfig:    cfgBridge,
     evalResults:     { validate: null, optimise: null },

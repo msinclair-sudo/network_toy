@@ -94,8 +94,6 @@ function projectClustering(step, patch) {
   if (!r) return;
   if (r.clusterLevels)                       patch.clusterLevels = r.clusterLevels;
   if (r.clusterResult)                       patch.clusterResult = r.clusterResult;
-  if (r.clusterLevelsPreFusion !== undefined) patch.clusterLevelsPreFusion = r.clusterLevelsPreFusion;
-  if (r.clusterResultPreFusion !== undefined) patch.clusterResultPreFusion = r.clusterResultPreFusion;
   if (r.bridgeAnalysis         !== undefined) patch.bridgeAnalysis = r.bridgeAnalysis;
 }
 
@@ -123,8 +121,6 @@ function projectMultiLevelPicker(step, patch) {
   if (r.clusterResult)                patch.clusterResult  = r.clusterResult;
   if (r.bridgeAnalysis !== undefined) patch.bridgeAnalysis = r.bridgeAnalysis;
   if (Array.isArray(r.pickedCounts))  patch.multiLevelPicked = r.pickedCounts;
-  patch.clusterLevelsPreFusion = null;
-  patch.clusterResultPreFusion = null;
 }
 
 // Bridge-analysis card → state.bridgeAnalysis (+ bridgeConfig pair), the

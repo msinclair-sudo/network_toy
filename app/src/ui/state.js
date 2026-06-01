@@ -78,12 +78,11 @@ const state = {
   // where curve = [{count, size, stability, plateauWidth, selected}] — the
   // stability-vs-count series the multi-layer card's panel (Stage 4) draws.
   multiLevelSweep:       null,
-  clusterLevelsPreFusion:null,    // Same shape as clusterLevels, but computed on dimredResultPreFusion.
-                                  //   Drives the "Color by pre-fusion clusters" colour mode. Null when
-                                  //   pre-fusion compute didn't run.
+  // (clusterLevelsPreFusion / clusterResultPreFusion removed — pre/post-fusion
+  //  is now a workflow FORK; each branch clusters its own embedding into
+  //  clusterLevels. See projectFusionBranch.)
   clusterResult:         null,    // Backward-compat alias for the FINEST level's clusterResult
                                   //   (used by panels that aren't yet level-aware)
-  clusterResultPreFusion:null,    // Backward-compat alias for clusterLevelsPreFusion's finest level.
   neighbourhoodResult:   null,    // taste-network internal: {neighbourhoods, nodeNeighbourhood}
   tasteResult:           null,    // taste-network internal: {tasteByNeighbourhood, tasteByCluster}
   citationResult:        null,    // Layer 3 output: CitationResult contract

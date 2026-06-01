@@ -69,20 +69,9 @@ export function getColourModeOptions(state) {
       });
     }
   }
-  // Pre-fusion cluster labels — only offered when a fusion run has
-  // produced parallel clusters on the pre-fusion embedding. Lets the
-  // user spot which papers were reorganised by citation context.
-  const preLevels = state.clusterLevelsPreFusion || [];
-  if (preLevels.length > 0) {
-    for (let i = 0; i < preLevels.length; i++) {
-      opts.push({
-        value: `clusterPre:${i}`,
-        label: preLevels.length > 1
-          ? `Cluster — pre-fusion (level ${i})`
-          : "Cluster — pre-fusion",
-      });
-    }
-  }
+  // (Pre-fusion cluster labels are no longer a colour mode — pre/post-fusion
+  // is now a workflow FORK. Select the pre or post fusion-branch card to see
+  // its clustering; the viewer follows the selected branch.)
   if (state.bridgeAnalysis) {
     opts.push({ value: "bridge",        label: "Bridge clusters" });
     opts.push({ value: "boundaryScore", label: "Boundary score (gradient)" });
@@ -104,19 +93,10 @@ export function getColourModeOptions(state) {
   return opts;
 }
 
-// Resolve the cluster-result for a cluster:* / clusterPre:* mode.
+// Resolve the cluster-result for a cluster:* mode.
 // Returns null for non-cluster modes or when no clustering exists.
 export function clusterResultForMode(state, mode) {
   if (!mode) return null;
-  if (mode.startsWith("clusterPre:")) {
-    const levels = state.clusterLevelsPreFusion || [];
-    if (levels.length === 0) return null;
-    const idx = parseInt(mode.slice("clusterPre:".length), 10);
-    if (Number.isFinite(idx) && idx >= 0 && idx < levels.length) {
-      return levels[idx].clusterResult;
-    }
-    return levels[levels.length - 1].clusterResult;
-  }
   if (!mode.startsWith("cluster")) return null;
   const levels = state.clusterLevels || [];
   if (levels.length === 0) return null;
@@ -132,7 +112,7 @@ export function clusterResultForMode(state, mode) {
 // projection the viewer puts on each datum — must carry id, originId
 // (when toy), t. Cluster IDs are read from state, not the node.
 export function baseColourFor(node, state, mode) {
-  if (mode && (mode.startsWith("cluster:") || mode.startsWith("clusterPre:") || mode === "cluster")) {
+  if (mode && (mode.startsWith("cluster:") || mode === "cluster")) {
     const cr = clusterResultForMode(state, mode);
     if (cr) {
       const cid = cr.nodeCluster[node.id];

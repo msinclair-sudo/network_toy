@@ -255,8 +255,6 @@ function snapshotResultForType(type) {
       capturedAt:             new Date().toISOString(),
       clusterLevels:          s.clusterLevels,
       clusterResult:          s.clusterResult,
-      clusterLevelsPreFusion: s.clusterLevelsPreFusion,
-      clusterResultPreFusion: s.clusterResultPreFusion,
       bridgeAnalysis:         s.bridgeAnalysis,
     };
   }

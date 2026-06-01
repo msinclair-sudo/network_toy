@@ -225,9 +225,11 @@ def test_fusion_compare_helpers(page):
     assert c["topRetention"] < 0.5
 
 
-def test_fusion_comparison_panel_empty_when_no_prefusion(page):
-    """BFS-5000 with default identity fusion → clusterLevelsPreFusion
-    is null → panel shows empty hint."""
+def test_fusion_comparison_panel_empty_when_unbound(page):
+    """With no saved comparison bound, the panel shows the new empty hint
+    pointing at the fork → Fusion comparison card flow. (The old live
+    pre/post mode reading clusterLevelsPreFusion was removed with the fusion
+    fork.)"""
     out = page.evaluate(
         '''async () => {
             const host = document.createElement("div");
@@ -245,56 +247,8 @@ def test_fusion_comparison_panel_empty_when_no_prefusion(page):
     )
     assert out["title"] == "Fusion comparison"
     assert out["emptyText"] is not None
-    assert "non-identity fusion" in out["emptyText"]
+    assert "No comparison bound" in out["emptyText"]
     assert out["hasAgg"] is False
-
-
-def test_fusion_comparison_panel_with_synthetic_prefusion(page):
-    """Inject a synthetic clusterLevelsPreFusion (permuted labels of
-    the current clustering) and verify the panel renders aggregate +
-    table + movers."""
-    out = page.evaluate(
-        '''async () => {
-            const state = await import("/app/src/ui/state.js");
-            const s = state.getState();
-            const postCr = s.clusterLevels[0].clusterResult;
-            const n = postCr.nodeCluster.length;
-            const ids = [...new Set(Array.from(postCr.nodeCluster))].filter(x => x >= 0).sort((a,b)=>a-b);
-            // Synthetic pre = post with every 10th label cycled.
-            const preNodes = new Int32Array(n);
-            for (let i = 0; i < n; i++) {
-                let lab = postCr.nodeCluster[i];
-                if (lab >= 0 && i % 10 === 0 && ids.length > 1) {
-                    lab = ids[(ids.indexOf(lab) + 1) % ids.length];
-                }
-                preNodes[i] = lab;
-            }
-            state.update({
-                clusterLevelsPreFusion: [{
-                    uid: "synth", scope: "global",
-                    clusterResult: {
-                        method: postCr.method, params: postCr.params,
-                        nodeCluster: preNodes,
-                        clusters: ids.map(id => ({ id, indices: [] })),
-                    },
-                }],
-            });
-            const host = document.createElement("div");
-            document.body.appendChild(host);
-            const { mount } = await import("/app/src/ui/panels/fusion-comparison.js");
-            mount(host, state.getState(), {});
-            await new Promise(r => setTimeout(r, 200));
-            return {
-                agg:      host.querySelector(".panel-fc-agg")?.textContent?.replace(/\\s+/g, " ").trim(),
-                rows:     host.querySelectorAll(".panel-fc-row").length,
-                movers:   host.querySelectorAll(".panel-fc-mover-row").length,
-            };
-        }'''
-    )
-    assert out["agg"] is not None
-    assert "ARI" in out["agg"]
-    assert out["rows"] > 0
-    assert out["movers"] > 0
 
 
 # ── dim-sweep panel + chart helpers ────────────────────────────────────

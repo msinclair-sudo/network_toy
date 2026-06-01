@@ -25,9 +25,9 @@
 //          dispersed by fusion. 0 = peers intact; 1 = none of its old
 //          peers ended up in its new cluster.
 //
-// Both share the same partition pair — caller picks `level` for both
-// `clusterLevels` and `clusterLevelsPreFusion`. Pure: no state reads,
-// no DOM, computes in a single pass.
+// Source-agnostic: the caller passes any two clusterResults (a level from
+// each of two clusterings — e.g. the pre- and post-fusion branch ladders).
+// Pure: no state reads, no DOM, computes in a single pass.
 
 import { adjustedRandIndex }       from "./ari.js";
 import { normalisedMutualInformation } from "./nmi.js";

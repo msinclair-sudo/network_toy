@@ -129,16 +129,8 @@ export function serialiseState(state) {
       clusterResult: serialiseClusterResult(lvl.clusterResult, arrays, idx),
     }));
   }
-  // 6a. clusterLevelsPreFusion — fusion-comparison A endpoint
-  // cluster labels. Same shape; separate binary key prefix so the
-  // reviver assigns distinct payloads.
-  if (Array.isArray(state.clusterLevelsPreFusion)) {
-    out.clusterLevelsPreFusion = state.clusterLevelsPreFusion.map((lvl, idx) => ({
-      uid:           lvl.uid,
-      scope:         lvl.scope,
-      clusterResult: serialiseClusterResult(lvl.clusterResult, arrays, `pre.${idx}`),
-    }));
-  }
+  // (6a. clusterLevelsPreFusion removed — pre/post-fusion is now a workflow
+  //  fork; each branch's clustering saves as a normal clusterLevels ladder.)
   // clusterResult is a backward-compat alias for the finest level.
   // No need to save separately — restored from clusterLevels.
 

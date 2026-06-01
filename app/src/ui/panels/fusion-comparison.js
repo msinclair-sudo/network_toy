@@ -31,8 +31,9 @@
 // equal-length ClusterResults.
 
 import { getState, subscribe, setSelection } from "../state.js";
+// (compareFusionPartitions import removed — the live pre/post mode that called
+//  it is gone; saved comparisons arrive pre-computed in the card result.)
 import { getStep, listSteps }                from "../workflow.js";
-import { compareFusionPartitions }            from "../../eval/fusion-compare.js";
 
 export const ID          = "fusion-comparison";
 export const LABEL       = "Fusion comparison";
@@ -139,33 +140,18 @@ export function mount(container, _state, config = {}) {
         return;
       }
     } else {
-      // Live pre/post-fusion comparison.
-      const s         = getState();
-      const levels    = s.clusterLevels || [];
-      const levelsPre = s.clusterLevelsPreFusion;
-      if (!levelsPre || !Array.isArray(levelsPre) || levelsPre.length === 0 || levels.length === 0) {
-        const empty = document.createElement("div");
-        empty.className = "panel-fc-empty";
-        empty.textContent = "Fusion comparison needs a non-identity fusion stage. Open the Dim-reduction modal → Fusion → graph-diffusion → Apply (real-data mode only — toy citations are generated downstream and can't feed fusion on the first pass). Or open a Fusion comparison card on the workflow chart to compare any two clusterings.";
-        wrap.appendChild(empty);
-        return;
-      }
-      nLevels = Math.min(levels.length, levelsPre.length);
-      labelA  = "pre";
-      labelB  = "post";
-      getFc   = (lvl) => {
-        const preLvl  = levelsPre[lvl];
-        const postLvl = levels[lvl];
-        if (!preLvl || !postLvl) return null;
-        const preCr  = preLvl.clusterResult;
-        const postCr = postLvl.clusterResult;
-        const key = `${lvl}:${preLvl.uid || lvl}:${postLvl.uid || lvl}`;
-        if (cachedKey !== key) {
-          cachedFC = compareFusionPartitions(preCr, postCr, { topMoversN: 25 });
-          cachedKey = key;
-        }
-        return cachedFC;
-      };
+      // No saved comparison bound. The old "live pre/post-fusion" mode (read
+      // state.clusterLevelsPreFusion) is gone — pre/post-fusion is now a
+      // workflow FORK. Compare the two fusion branches via a Fusion comparison
+      // card (it wires the two clusterings as refIds).
+      const empty = document.createElement("div");
+      empty.className = "panel-fc-empty";
+      empty.textContent = "No comparison bound. To compare pre- vs post-fusion, " +
+        "run a dim-reduction with graph-diffusion fusion (forks into pre/post " +
+        "branches), cluster each, then add a Fusion comparison card to compare " +
+        "the two — or compare any two clusterings the same way.";
+      wrap.appendChild(empty);
+      return;
     }
 
     if (selectedLevel >= nLevels) selectedLevel = 0;

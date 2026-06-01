@@ -243,9 +243,7 @@ def bfs5000_page(playwright_browser):
                 _basePos2d:             s._basePos2d,
                 _basePosPreFusion:      s._basePosPreFusion,
                 clusterLevels:          s.clusterLevels,
-                clusterLevelsPreFusion: s.clusterLevelsPreFusion,
                 clusterResult:          s.clusterResult,
-                clusterResultPreFusion: s.clusterResultPreFusion,
             };
         }'''
     )
