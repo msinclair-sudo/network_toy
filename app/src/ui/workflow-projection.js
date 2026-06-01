@@ -108,13 +108,11 @@ function projectMultiLevelPicker(step, patch) {
 function projectBridgeAnalysis(step, patch) {
   const r = step.result;
   if (!r) return;
+  // Finest-layer pair view drives the viewer + the (legacy) singleton panel.
   if (r.bridgeAnalysis) patch.bridgeAnalysis = r.bridgeAnalysis;
-  if (r.params && Number.isInteger(r.params.fineLevel)) {
-    patch.bridgeConfig = {
-      fineLevel:   r.params.fineLevel,
-      coarseLevel: r.params.coarseLevel,
-    };
-  }
+  // Per-layer breakdown (bridges are computed for every layer i ≥ 1 vs i − 1)
+  // rides alongside for the per-layer bridge panel + downstream consumers.
+  if (r.bridgeAllLayers) patch.bridgeAllLayers = r.bridgeAllLayers;
 }
 
 // Labelling card → state.clusterLabels (keyed by level uid), the slot the

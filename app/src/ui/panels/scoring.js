@@ -15,7 +15,7 @@
 
 import { getState, subscribe }   from "../state.js";
 import { getStep, getSelectedStep, getStepDescendants, getStepAncestors,
-         setCardScore }          from "../workflow.js";
+         findClusterLevels, setCardScore } from "../workflow.js";
 import { computeBridgeAnalysis } from "../bridge-analysis.js";
 import { listLabelMethods }      from "../../labelling/cluster-labels.js";
 
@@ -54,9 +54,12 @@ export function mount(container, _state, config = {}) {
   // the level ladder (clustering ancestor), labels (labelling parent),
   // and the scores (on the card).
   function resolveData(card) {
+    // Labels come from the labelling card (the direct parent); the level
+    // ladder comes from the nearest clustering-like ANCESTOR — which may be
+    // further up than the grandparent now that a bridge card can sit in the
+    // chain (picker → bridge → labelling → scoring).
     const labelling = card.parentId ? getStep(card.parentId) : null;
-    const clustering = labelling && labelling.parentId ? getStep(labelling.parentId) : null;
-    const levels = (clustering && clustering.result && clustering.result.clusterLevels) || [];
+    const { levels } = findClusterLevels(card.id);
     const labelsByLevel = (labelling && labelling.result && labelling.result.byLevel) || {};
     const scores = (card.result && card.result.scores) || {};
     return { levels, labelsByLevel, scores };

@@ -47,14 +47,17 @@ export const NEXT_STEP_RULES = {
   ],
   // Picker — once it commits a ladder (clusterLevels), it's clustering-
   // equivalent, so the analysis steps a clustering card spawns hang off it.
+  // After committing a ladder the pipeline flows picker → bridge → labelling
+  // → scoring (a bridge card auto-spawns; offered here too if it was deleted).
+  // Labelling/scoring hang off the bridge card, not the picker directly.
   multiLevelPicker: [
+    { label: "Run bridge analysis",     hint: "Per-layer: which clusters straddle ≥2 parents in the layer above", modal: "bridgeAnalysis" },
     { label: "Run bootstrap stability", hint: "Per-cluster Jaccard via resampling", modal: "bootstrap" },
     { label: "Compare with another clustering", hint: "ARI / NMI / movers vs a second clustering", modal: "fusionComparison" },
-    { label: "Run bridge analysis",     hint: "Fine clusters straddling ≥2 coarse parents", modal: "bridgeAnalysis" },
-    { label: "Label clusters",          hint: "Name clusters (representative paper / year / TF-IDF) for scoring", modal: "labelling" },
   ],
   bridgeAnalysis: [
-    { label: "Re-run bridge analysis",  hint: "Fork a fresh run with the same level pair", rerun: true },
+    { label: "Re-run bridge analysis",  hint: "Recompute per-layer bridges across the ladder", rerun: true },
+    { label: "Label clusters",          hint: "Name clusters (representative paper / year / KeyBERT) for scoring", modal: "labelling" },
   ],
   labelling: [
     { label: "Re-run labelling",        hint: "Fork a fresh run with the same methods", rerun: true },

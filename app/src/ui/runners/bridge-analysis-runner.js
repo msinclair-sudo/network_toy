@@ -1,30 +1,34 @@
 // Bridge-analysis runner — first of the "analysis layer" cards.
 //
-// Wraps the pure computeBridgeAnalysis() derivation as a queue-job-shaped
-// function bound to a workflow step. Like the other analysis runners it:
-//   - reads its clustering from the parent card's snapshot (immutable per
-//     §10.D1), NOT from live state, so re-selecting another card mid-flight
-//     can't pull the rug out;
-//   - returns a result the bridge-analysis panel renders (the projection
-//     layer replays result.bridgeAnalysis into state.bridgeAnalysis when
-//     the card is selected, so the existing singleton panel needs no
-//     changes).
+// Bridges are a PER-LAYER relationship (§9): for every committed layer i ≥ 1,
+// each cluster in layer i is checked against the clusters in the layer
+// immediately above it (i − 1). This runner computes that across ALL layers
+// in one pass (computeBridgeAnalysisAllLayers), rather than a single
+// fine→coarse pair. It positions the bridge step in the pipeline
+// (picker → bridge → labelling → scoring).
 //
-// The derivation is cheap (O(n) over the fine level's members) — there's
-// no worker; we just await a microtask so the spinner shows for slow
-// upstreams. A parent with <2 levels has no fine/coarse pair to compare,
-// so we fail fast with a clear message.
+// Like the other analysis runners it:
+//   - reads its clustering from the parent card's snapshot (immutable per
+//     §10.D1), NOT from live state;
+//   - returns a result the bridge-analysis panel renders. For the viewer's
+//     `bridge` / `boundaryScore` colour modes (which paint per-node arrays at
+//     a single comparison level) we also surface the FINEST layer's pair view
+//     as `bridgeAnalysis`, so projection into state.bridgeAnalysis keeps the
+//     viewer working; the all-layers breakdown rides alongside as `byLayer`.
+//
+// The derivation is cheap (O(n) per layer) — no worker. A parent with <2
+// levels has no layer to compare, so we fail fast with a clear message.
 
-import { getStep }              from "../workflow.js";
-import { computeBridgeAnalysis } from "../bridge-analysis.js";
+import { getStep }                          from "../workflow.js";
+import { computeBridgeAnalysis,
+         computeBridgeAnalysisAllLayers }   from "../bridge-analysis.js";
 
 /**
  * @param {object} opts
- * @param {string} opts.parentStepId           Clustering-like card id.
- * @param {{fineLevel?:number, coarseLevel?:number}} opts.params
+ * @param {string} opts.parentStepId   Clustering-like card id (the picker).
  * @returns {(ctx:{signal,setPhase,setProgress}) => Promise<object>}
  */
-export function buildBridgeAnalysisJob({ parentStepId, params }) {
+export function buildBridgeAnalysisJob({ parentStepId }) {
   return async function runBridgeAnalysisJob(ctx) {
     const parent = getStep(parentStepId);
     if (!parent) {
@@ -35,26 +39,29 @@ export function buildBridgeAnalysisJob({ parentStepId, params }) {
     if (levels.length < 2) {
       throw new Error(
         "Bridge analysis needs at least two clustering levels — run it on a " +
-        "multi-layer card (or a multi-level clustering), not a single partition.");
+        "multi-layer ladder, not a single partition.");
     }
 
-    ctx.setPhase    && ctx.setPhase("fine → coarse shares");
+    ctx.setPhase    && ctx.setPhase("per-layer parent shares");
     ctx.setProgress && ctx.setProgress(0.2);
 
-    const ba = computeBridgeAnalysis(levels, {
-      fineLevel:   params && params.fineLevel,
-      coarseLevel: params && params.coarseLevel,
+    // All layers (i ≥ 1 vs i − 1).
+    const allLayers = computeBridgeAnalysisAllLayers(levels);
+    // Finest-layer pair view for the viewer's per-node colour modes +
+    // state.bridgeAnalysis projection (back-compat with the singleton panel).
+    const finest = computeBridgeAnalysis(levels, {
+      fineLevel:   levels.length - 1,
+      coarseLevel: levels.length - 2,
     });
     ctx.setProgress && ctx.setProgress(1);
 
     return {
-      capturedAt:    new Date().toISOString(),
-      bridgeAnalysis: ba,
-      // Echo the resolved pair (computeBridgeAnalysis clamps invalid input)
-      // so the projection layer can restore state.bridgeConfig too.
-      params:        { fineLevel: ba.fineLevel, coarseLevel: ba.coarseLevel },
-      nBridges:      ba.bridgeCount,
-      nLevels:       levels.length,
+      capturedAt:        new Date().toISOString(),
+      bridgeAnalysis:    finest,        // single-pair view (viewer / legacy panel)
+      bridgeAllLayers:   allLayers,     // { nLevels, byLayer:[…], totalBridges }
+      params:            { fineLevel: finest.fineLevel, coarseLevel: finest.coarseLevel },
+      nBridges:          allLayers.totalBridges,
+      nLevels:           levels.length,
     };
   };
 }

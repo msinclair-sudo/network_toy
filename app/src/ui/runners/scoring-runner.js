@@ -14,7 +14,7 @@
 // The actual scoring UI is a separate panel (panels/scoring.js); this
 // runner only assembles the inputs.
 
-import { getStep } from "../workflow.js";
+import { getStep, findClusterLevels } from "../workflow.js";
 
 /**
  * @param {object} opts
@@ -29,10 +29,9 @@ export function buildScoringPrepJob({ parentLabellingStepId }) {
     }
     const labelsByLevel = (labelling.result && labelling.result.byLevel) || {};
 
-    // The labelling card hangs directly off the clustering-like card,
-    // which carries the level ladder.
-    const clustering = labelling.parentId ? getStep(labelling.parentId) : null;
-    const levels = (clustering && clustering.result && clustering.result.clusterLevels) || [];
+    // Level ladder = nearest clustering ancestor above the labelling card
+    // (a bridge card may sit between labelling and the picker).
+    const levels = findClusterLevels(parentLabellingStepId).levels;
 
     ctx.setPhase && ctx.setPhase("preparing levels");
     const levelSummary = levels.map(l => ({

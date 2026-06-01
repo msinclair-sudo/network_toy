@@ -95,6 +95,11 @@ const state = {
   // levels exist. See bridge-analysis.js for shape.
   bridgeAnalysis:        null,
 
+  // Per-layer bridge breakdown (every layer i ≥ 1 vs i − 1) from the bridge
+  // card. { nLevels, byLayer:[{layer, coarseLevel, perCluster, bridgeCount}],
+  // totalBridges } — see computeBridgeAnalysisAllLayers. Null until run.
+  bridgeAllLayers:       null,
+
   // Which (fineLevel, coarseLevel) pair the bridge analysis runs on.
   // When a field is null/invalid, the engine clamps it to the deepest
   // valid pair (fineLevel = last, coarseLevel = last - 1). The bridge

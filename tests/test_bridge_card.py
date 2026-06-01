@@ -1,21 +1,21 @@
 """Tests for the bridge-analysis card — the first "analysis layer".
 
-A `bridgeAnalysis` card attaches under a clustering-like card (clustering
-OR multi-layer), histograms a fine cluster level against a coarser parent
-level, and records which fine clusters straddle ≥2 coarse parents
-(bridges). It reuses the existing singleton bridge-analysis panel via the
-projection layer (result.bridgeAnalysis → state.bridgeAnalysis).
+Bridges are a PER-LAYER relationship (§9): for every committed layer i ≥ 1,
+each cluster in layer i is checked against the clusters in the layer above it
+(i − 1). The bridge card runs this across ALL layers in one pass (no
+fine/coarse pair to pick), attaches under the layer picker, and sits in the
+pipeline picker → bridge → labelling → scoring.
 
-Uses `clean_page` (no BFS ingest) — the whole flow is pure-module logic
-over a synthetic level ladder built by hand.
+Uses `clean_page` (no BFS ingest) — the whole flow is pure-module logic over
+a synthetic level ladder built by hand.
 """
 
 
-# data → dimred → multiLevel(3 levels). The ladder is designed so exactly
-# one fine (L2) cluster straddles two L1 parents → bridgeCount == 1:
-#   L0: [0,0,0,0,0,0]            one coarse cluster
-#   L1: [0,0,0,1,1,1]            two parents
-#   L2: [0,0,1,1,2,2]            cluster 1 = nodes 2,3 → parents L1{0,1}
+# data → dimred → multiLevel(sweep) → picker(3 levels). The ladder is designed
+# so exactly one L2 cluster straddles two L1 parents → one bridge total:
+#   L0: [0,0,0,0,0,0]   one coarse cluster   (L1 vs L0 → 0 bridges)
+#   L1: [0,0,0,1,1,1]   two parents
+#   L2: [0,0,1,1,2,2]   cluster 1 = nodes 2,3 → spans L1{0,1}  (L2 vs L1 → 1 bridge)
 _BUILD_TREE = '''
     const wf = await import("/app/src/ui/workflow.js");
     wf.clearWorkflow();
@@ -40,8 +40,6 @@ _BUILD_TREE = '''
     const dim  = wf.createStep({ type: "dimred", label: "dimred", parentId: data });
     wf.updateStepStatus(dim, "running");
     wf.setStepResult(dim, { _basePos: new Float32Array(18), dimredResult: {} });
-    // Producer sweep + picker child (the picker holds the committed ladder
-    // and is the clustering-equivalent bridge analysis attaches under).
     const ml = wf.createStep({ type: "multiLevel", label: "multi-layer sweep",
         params: { minSamples: 5 }, parentId: dim });
     wf.updateStepStatus(ml, "running");
@@ -54,61 +52,65 @@ _BUILD_TREE = '''
 '''
 
 
-def test_bridge_card_runs_and_counts_bridges(clean_page):
-    """getLayerDescriptor('bridgeAnalysis').applyChange forks a bridge
-    card under the selected multi-layer card, runs the derivation, and
-    records the straddle count."""
+def test_bridge_card_runs_all_layers(clean_page):
+    """applyChange (no params) forks a bridge card under the picker and
+    computes per-layer bridges across the whole ladder: byLayer has one entry
+    per layer i≥1, totalBridges counts the straddles (here: 1, the L2 cluster
+    spanning two L1 parents)."""
     out = clean_page.evaluate(
         '''async () => {
             ''' + _BUILD_TREE + '''
             const ld = await import("/app/src/ui/modals/layer-descriptors.js");
             const desc = ld.getLayerDescriptor("bridgeAnalysis");
             const active = desc.getActive();
-            await desc.applyChange({ fineLevel: 2, coarseLevel: 1 });
-            const cards = wf.listSteps({ type: "bridgeAnalysis" });
-            const card = cards[cards.length - 1];
-            const ba = card.result && card.result.bridgeAnalysis;
+            await desc.applyChange();
+            const card = wf.listSteps({ type: "bridgeAnalysis" }).slice(-1)[0];
+            const all = card.result && card.result.bridgeAllLayers;
+            const finest = card.result && card.result.bridgeAnalysis;
             return {
                 hasClustering: active.hasClustering,
                 nLevels:       active.nLevels,
                 status:        card.status,
-                parentIsMl:    card.parentId === pk,
-                fineLevel:     ba && ba.fineLevel,
-                coarseLevel:   ba && ba.coarseLevel,
-                bridgeCount:   ba && ba.bridgeCount,
+                parentIsPicker: card.parentId === pk,
+                byLayerLayers: all && all.byLayer.map(b => b.layer),
+                perLayerBridges: all && all.byLayer.map(b => b.bridgeCount),
+                totalBridges:  all && all.totalBridges,
+                finestBridges: finest && finest.bridgeCount,
             };
         }'''
     )
     assert out["hasClustering"] is True
     assert out["nLevels"] == 3
     assert out["status"] == "done"
-    assert out["parentIsMl"] is True
-    assert out["fineLevel"] == 2
-    assert out["coarseLevel"] == 1
-    assert out["bridgeCount"] == 1
+    assert out["parentIsPicker"] is True
+    assert out["byLayerLayers"] == [1, 2]          # layers 1 and 2 (0 has no parent)
+    assert out["perLayerBridges"] == [0, 1]        # L1 vs L0: 0 ; L2 vs L1: 1
+    assert out["totalBridges"] == 1
+    assert out["finestBridges"] == 1               # viewer pair view (L2 vs L1)
 
 
-def test_bridge_card_appears_in_next_steps(clean_page):
-    """Clustering-like cards expose bridge analysis in their "+" menu."""
+def test_bridge_in_pipeline_next_steps(clean_page):
+    """The picker offers bridge analysis; a bridge card offers labelling
+    (the chain flows picker → bridge → labelling → scoring)."""
     out = clean_page.evaluate(
         '''async () => {
             const ns = await import("/app/src/ui/next-steps-rules.js");
             return {
                 clustering: ns.addStepRulesFor("clustering").map(r => r.modal),
-                multiLevel: ns.addStepRulesFor("multiLevelPicker").map(r => r.modal),
+                picker:     ns.addStepRulesFor("multiLevelPicker").map(r => r.modal),
                 bridge:     ns.addStepRulesFor("bridgeAnalysis").map(r => r.modal),
             };
         }'''
     )
     assert "bridgeAnalysis" in out["clustering"]
-    assert "bridgeAnalysis" in out["multiLevel"]
-    # A bridge card's only follow-on is re-run (no modal add-steps).
-    assert out["bridge"] == []
+    assert "bridgeAnalysis" in out["picker"]        # picker → bridge
+    assert "labelling" in out["bridge"]             # bridge → labelling
 
 
 def test_bridge_card_projects_into_panel_slots(clean_page):
     """Selecting a bridge card replays its result into state.bridgeAnalysis
-    + bridgeConfig (the slots the singleton bridge panel reads)."""
+    (finest pair, for the viewer/legacy panel) + state.bridgeAllLayers (the
+    per-layer breakdown), and the picker's levels are projected too."""
     out = clean_page.evaluate(
         '''async () => {
             ''' + _BUILD_TREE + '''
@@ -116,55 +118,51 @@ def test_bridge_card_projects_into_panel_slots(clean_page):
             const proj = await import("/app/src/ui/workflow-projection.js");
             const st = await import("/app/src/ui/state.js");
             const desc = ld.getLayerDescriptor("bridgeAnalysis");
-            await desc.applyChange({ fineLevel: 2, coarseLevel: 1 });
+            await desc.applyChange();
             const card = wf.listSteps({ type: "bridgeAnalysis" }).slice(-1)[0];
-            // Move selection away, then re-select the bridge card.
             wf.selectStep(ml);
             proj.projectStepIntoLegacyState(card.id);
             const s = st.getState();
             return {
                 hasBA:       !!s.bridgeAnalysis,
                 baBridges:   s.bridgeAnalysis && s.bridgeAnalysis.bridgeCount,
-                cfgFine:     s.bridgeConfig && s.bridgeConfig.fineLevel,
-                cfgCoarse:   s.bridgeConfig && s.bridgeConfig.coarseLevel,
+                hasAllLayers: !!s.bridgeAllLayers,
+                allTotal:    s.bridgeAllLayers && s.bridgeAllLayers.totalBridges,
                 hasLevels:   Array.isArray(s.clusterLevels) && s.clusterLevels.length,
             };
         }'''
     )
     assert out["hasBA"] is True
     assert out["baBridges"] == 1
-    assert out["cfgFine"] == 2
-    assert out["cfgCoarse"] == 1
-    # The multi-layer ancestor's levels are also projected (panel needs them).
-    assert out["hasLevels"] == 3
+    assert out["hasAllLayers"] is True
+    assert out["allTotal"] == 1
+    assert out["hasLevels"] == 3            # picker's ladder projected (panel needs it)
 
 
-def test_bridge_card_edit_in_place(clean_page):
-    """Editing a bridge card via the gear (editStepId) overwrites the same
-    card with a new level pair instead of forking a new one."""
+def test_bridge_card_rerun_overwrites_in_place(clean_page):
+    """Re-running a bridge card via the gear (editStepId) overwrites the same
+    card instead of forking a new one (no params to change — it always runs
+    all layers)."""
     out = clean_page.evaluate(
         '''async () => {
             ''' + _BUILD_TREE + '''
             const ld = await import("/app/src/ui/modals/layer-descriptors.js");
             const desc = ld.getLayerDescriptor("bridgeAnalysis");
-            await desc.applyChange({ fineLevel: 2, coarseLevel: 1 });
+            await desc.applyChange();
             const card = wf.listSteps({ type: "bridgeAnalysis" }).slice(-1)[0];
             const countBefore = wf.listSteps({ type: "bridgeAnalysis" }).length;
-            // Gear edit: same card id, new pair.
             const editDesc = ld.getLayerDescriptor("bridgeAnalysis", card.id);
-            const prefill = editDesc.getActive();
-            await editDesc.applyChange({ fineLevel: 1, coarseLevel: 0 });
+            await editDesc.applyChange();
             const countAfter = wf.listSteps({ type: "bridgeAnalysis" }).length;
             const same = wf.getStep(card.id);
             return {
-                prefillFine:  prefill.fineLevel,
                 countBefore, countAfter,
-                editedFine:   same && same.params.fineLevel,
-                editedCoarse: same && same.params.coarseLevel,
+                sameStatus: same && same.status,
+                sameTotal: same && same.result && same.result.bridgeAllLayers
+                    && same.result.bridgeAllLayers.totalBridges,
             };
         }'''
     )
-    assert out["prefillFine"] == 2          # prefilled from the card's own params
     assert out["countBefore"] == out["countAfter"] == 1   # no new card
-    assert out["editedFine"] == 1           # overwritten in place
-    assert out["editedCoarse"] == 0
+    assert out["sameStatus"] == "done"
+    assert out["sameTotal"] == 1

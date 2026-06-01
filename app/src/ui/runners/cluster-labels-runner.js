@@ -12,13 +12,15 @@
 // before the job runs).
 
 import { getState }      from "../state.js";
-import { getStep }       from "../workflow.js";
+import { getStep, findClusterLevels } from "../workflow.js";
 import { labelClusters } from "../../labelling/cluster-labels.js";
 import { getNodeText, hasSqliteText } from "../../datasource/sqlite.js";
 
 /**
  * @param {object} opts
- * @param {string}   opts.parentStepId   Clustering-like card id.
+ * @param {string}   opts.parentStepId   The attach parent (may be a bridge
+ *                                        card); levels resolve from the
+ *                                        nearest clustering ancestor above it.
  * @param {string[]} opts.methods        Label method ids to run (subset of
  *                                        the labelling registry).
  * @returns {(ctx:{signal,setPhase,setProgress}) => Promise<object>}
@@ -29,9 +31,11 @@ export function buildLabellingJob({ parentStepId, methods }) {
     if (!parent) {
       throw new Error(`[cluster-labels-runner] parent step "${parentStepId}" no longer exists`);
     }
-    const levels = (parent.result && parent.result.clusterLevels) || [];
+    // Walk up to the nearest clustering ladder (the bridge card between
+    // picker and labelling carries no clusterLevels of its own).
+    const levels = findClusterLevels(parentStepId).levels;
     if (levels.length === 0) {
-      throw new Error("[cluster-labels-runner] parent clustering has no levels to label");
+      throw new Error("[cluster-labels-runner] no clustering levels found above this card to label");
     }
 
     // Labelling ctx — embedding + node table from live (staged) state.

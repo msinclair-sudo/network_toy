@@ -150,3 +150,46 @@ export function computeBridgeAnalysis(clusterLevels, config = {}) {
     bridgeCount,
   };
 }
+
+// All-layers bridge analysis (§9, the per-layer model). Bridges are a
+// PER-LAYER relationship: for every committed layer i ≥ 1, each cluster in
+// layer i is checked against the clusters in the layer immediately above it
+// (i − 1) — does it straddle ≥ 2 parents there, and which ones. Layer 0 (the
+// coarsest) has no parent, so it contributes no bridges.
+//
+// This is the same comparison the scoring board already does inline per
+// column; computing it once on the card means the bridge step is positioned
+// in the pipeline (picker → bridge → labelling → scoring) and its result is
+// reusable. Each layer reuses the proven single-pair computeBridgeAnalysis
+// (fineLevel = i, coarseLevel = i − 1).
+//
+// Returns null for < 2 levels. Output:
+//   {
+//     nLevels,
+//     byLayer: [{                       // one entry per layer i, i = 1..last
+//       layer:        i,
+//       coarseLevel:  i - 1,
+//       perCluster, perNodeScore, perNodeIsBridge, bridgeCount,   // from the pair
+//     }],
+//     totalBridges,                     // Σ bridgeCount over layers
+//   }
+export function computeBridgeAnalysisAllLayers(clusterLevels) {
+  if (!clusterLevels || clusterLevels.length < 2) return null;
+  const last = clusterLevels.length - 1;
+  const byLayer = [];
+  let totalBridges = 0;
+  for (let i = 1; i <= last; i++) {
+    const pair = computeBridgeAnalysis(clusterLevels, { fineLevel: i, coarseLevel: i - 1 });
+    if (!pair) continue;
+    byLayer.push({
+      layer:           i,
+      coarseLevel:     i - 1,
+      perCluster:      pair.perCluster,
+      perNodeScore:    pair.perNodeScore,
+      perNodeIsBridge: pair.perNodeIsBridge,
+      bridgeCount:     pair.bridgeCount,
+    });
+    totalBridges += pair.bridgeCount;
+  }
+  return { nLevels: clusterLevels.length, byLayer, totalBridges };
+}

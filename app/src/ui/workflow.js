@@ -169,6 +169,26 @@ export function getStepAncestors(id) {
 }
 
 /**
+ * Find the committed clusterLevels[] nearest to `id` by walking up its
+ * lineage (the step itself first, then ancestors, deepest → shallowest) for
+ * the first step whose result carries a non-empty clusterLevels. Lets cards
+ * downstream of an intervening analysis card (e.g. labelling/scoring below an
+ * inserted bridge card) still resolve their ladder without assuming a fixed
+ * parent hop. Returns { levels, stepId } or { levels: [], stepId: null }.
+ * @param {string} id
+ */
+export function findClusterLevels(id) {
+  const lineage = getStepAncestors(id);   // root → id
+  for (let i = lineage.length - 1; i >= 0; i--) {
+    const r = lineage[i].result;
+    if (r && Array.isArray(r.clusterLevels) && r.clusterLevels.length) {
+      return { levels: r.clusterLevels, stepId: lineage[i].id };
+    }
+  }
+  return { levels: [], stepId: null };
+}
+
+/**
  * All descendants of a step (BFS). Excludes the step itself.
  * @param {string} id
  * @returns {Step[]}

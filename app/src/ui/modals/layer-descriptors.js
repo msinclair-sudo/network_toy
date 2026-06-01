@@ -491,11 +491,7 @@ export function rerunStep(stepId) {
     });
   }
   if (step.type === "bridgeAnalysis") {
-    const p = step.params || {};
-    return bridgeAnalysisDescriptor().applyChange({
-      fineLevel:   p.fineLevel,
-      coarseLevel: p.coarseLevel,
-    });
+    return bridgeAnalysisDescriptor().applyChange();
   }
   if (step.type === "labelling") {
     const p = step.params || {};
@@ -926,7 +922,19 @@ function multiLevelPickerDescriptor(editStepId = null) {
         stepId,
         fn:    buildMultiLevelPickerJob({ pickedCounts: counts, uidPrefix }),
       });
-      promise.catch((e) => {
+      // Once the ladder is committed, auto-spawn a bridge-analysis card under
+      // the picker (the per-layer bridge step sits picker → bridge → labelling
+      // → scoring). Mirrors how the sweep auto-spawns this picker. One bridge
+      // card per picker (re-pick reuses it); needs ≥ 2 committed layers.
+      promise.then(() => {
+        const picker = step();
+        if (!picker || counts.length < 2) return;
+        const existing = listSteps({ type: "bridgeAnalysis" })
+          .find(b => b.parentId === picker.id);
+        if (existing) { selectStep(existing.id); return; }
+        bridgeAnalysisDescriptor().applyChange()
+          .catch(e => { if (!(e && e.name === "AbortError")) console.error("[multi-level-picker] auto bridge failed:", e); });
+      }).catch((e) => {
         if (e && e.name === "AbortError") return;
         console.error("[multi-level-picker] commit failed:", e);
       });
@@ -980,29 +988,23 @@ function bridgeAnalysisDescriptor(editStepId = null) {
       if (!parentId) return { hasClustering: false, nLevels: 0 };
       const parent = getStep(parentId);
       const levels = (parent && parent.result && parent.result.clusterLevels) || [];
-      // The materialised committed level count (0 until the picker commits a
-      // ladder; the runner clamps any out-of-range pick).
-      const nLevels = levels.length || 0;
-      const es = editStep();
-      const ep = (es && es.params) || {};
-      const fineLevel = Number.isInteger(ep.fineLevel)
-        ? ep.fineLevel : Math.max(1, nLevels - 1);
-      const coarseLevel = Number.isInteger(ep.coarseLevel)
-        ? ep.coarseLevel : Math.max(0, fineLevel - 1);
-      return { hasClustering: true, nLevels, fineLevel, coarseLevel, parentId };
+      // Per-layer model: bridges are computed for every layer i ≥ 1 vs the
+      // layer above (i − 1). No fine/coarse pair to pick.
+      return { hasClustering: true, nLevels: levels.length || 0, parentId };
     },
-    applyChange: async ({ fineLevel, coarseLevel }) => {
+    // No params — bridges run across ALL layers (i ≥ 1 vs i − 1). Kept async
+    // + arg-tolerant so the modal/auto-spawn callers can invoke it bare.
+    applyChange: async () => {
       const parentId = resolveParent();
       if (!parentId) {
         throw new Error("[bridge-analysis-descriptor] no clustering ancestor to analyse");
       }
-      const params = { fineLevel, coarseLevel };
-      const label = `Bridge · L${fineLevel}→L${coarseLevel}`;
+      const label = "Bridges · all layers";
       const stepId = beginStep({
         editStepId,
         type:   "bridgeAnalysis",
         label,
-        params,
+        params: {},
         parentId,
       });
       selectStep(stepId);
@@ -1010,7 +1012,7 @@ function bridgeAnalysisDescriptor(editStepId = null) {
         type:  "bridgeAnalysis",
         label,
         stepId,
-        fn:    buildBridgeAnalysisJob({ parentStepId: parentId, params }),
+        fn:    buildBridgeAnalysisJob({ parentStepId: parentId }),
       });
       promise.catch((e) => {
         if (e && e.name === "AbortError") return;
@@ -1030,17 +1032,25 @@ function bridgeAnalysisDescriptor(editStepId = null) {
 // changes. A downstream scoring card consumes these labels.
 function labellingDescriptor(editStepId = null) {
   const editStep = () => (editStepId ? getStep(editStepId) : null);
+  // Attach under the SELECTED card (so a labelling can hang off a bridge card
+  // in the picker → bridge → labelling chain), but only when that card has a
+  // clustering ladder reachable above it. Fall back to the nearest
+  // clustering-like ancestor when nothing useful is selected.
   const resolveParent = () => {
     const es = editStep();
-    return es ? es.parentId : findSelectedAncestorOfType(CLUSTERING_LIKE_TYPES);
+    if (es) return es.parentId;
+    const sel = getSelectedStep();
+    if (sel && findClusterLevels(sel.id).levels.length) return sel.id;
+    return findSelectedAncestorOfType(CLUSTERING_LIKE_TYPES);
   };
   const desc = {
     label: "Run: Cluster labelling",
     getActive: () => {
       const parentId = resolveParent();
       if (!parentId) return { hasClustering: false, nLevels: 0, methods: [], selected: [] };
-      const parent = getStep(parentId);
-      const levels = (parent && parent.result && parent.result.clusterLevels) || [];
+      // Levels come from the nearest clustering ancestor (may be above the
+      // direct parent if a bridge card sits between).
+      const levels = findClusterLevels(parentId).levels;
       const nLevels = levels.length || 0;
       // Availability is data-dependent — probe with the same ctx the runner
       // will use (embedding + node table from live state).
