@@ -90,54 +90,83 @@ def test_parallel_distance_matches_sync(clean_page):
 
 
 # ── Engine lane (toy, fast) ─────────────────────────────────────────────
-def test_multilevel_engine_toy(toy_page):
-    """recomputeMultiLevel lands a valid coarse→fine ladder in
-    state.clusterLevels with bridge analysis, on toy data."""
+def test_multilevel_sweep_then_commit_toy(toy_page):
+    """The produce/picker split: recomputeMultiLevelSweep scores every
+    candidate (state.multiLevelSweep, no clusterLevels yet); then
+    commitMultiLevelLayers(pickedCounts) builds the coarse→fine ladder in
+    state.clusterLevels with bridge analysis."""
     out = toy_page.evaluate(r'''async () => {
         const engine = await import("/app/src/ui/engine.js");
         const st = await import("/app/src/ui/state.js");
-        const res = await engine.recomputeMultiLevel({ params: { minSamples: 5, minClusterSize: 5 } });
+        // toy_page pre-runs data→dimred→clustering, so clusterLevels is
+        // already populated. Clear it so we can prove the SWEEP alone commits
+        // nothing (it must not create clusterLevels — only the picker does).
+        st.update({ clusterLevels: null, clusterResult: null });
+        // 1. Produce-only sweep: scores candidates, no layers committed.
+        await engine.recomputeMultiLevelSweep({
+            params: { minSamples: 5, selectionMethod: "leaf" }, floor: 0.5,
+            sizeGridCount: 14, bootstrapOpts: { B: 5, subsampleFrac: 0.6 },
+            uidPrefix: "MLTEST",
+        });
+        const afterSweep = st.getState();
+        const sweep = afterSweep.multiLevelSweep || {};
+        const cands = sweep.candidates || [];
+        const candCounts = cands.map(c => c.count).sort((a,b)=>a-b);
+        const noLevelsYet = !afterSweep.clusterLevels;
+
+        // 2. Pick the two coarsest distinct granularities and commit.
+        const picks = [...new Set(candCounts)].slice(0, 2);
+        engine.commitMultiLevelLayers(picks, { uidPrefix: "MLTEST" });
+
         const s = st.getState();
         const lv = s.clusterLevels || [];
-        // partitions must be coarse→fine (non-decreasing cluster count) and
-        // every point assigned (absorption leaves no noise).
         const counts = lv.map(l => l.clusterResult.clusters.length);
         let noNoise = true, contiguous = true;
         for (const l of lv) {
             const nc = l.clusterResult.nodeCluster;
             let max = -1; const seen = new Set();
             for (let i = 0; i < nc.length; i++) {
-                if (nc[i] < 0) { noNoise = false; }
+                if (nc[i] < 0) noNoise = false;
                 if (nc[i] > max) max = nc[i];
                 seen.add(nc[i]);
             }
             for (let c = 0; c <= max; c++) if (!seen.has(c)) contiguous = false;
         }
         return {
+            candCount: cands.length,
+            candHaveCR: cands.every(c => c.clusterResult && c.clusterResult.nodeCluster),
+            noLevelsYet,
+            curveLen: Array.isArray(sweep.curve) ? sweep.curve.length : 0,
+            picks,
             nLevels: lv.length,
             counts,
             ascending: counts.every((c, i) => i === 0 || c >= counts[i-1]),
             noNoise,
             contiguous,
             hasBridge: !!s.bridgeAnalysis,
-            nLayers: (s.multiLevelLayers || []).length,
+            allHaveStability: lv.every(l => l.stability === null || Number.isFinite(l.stability)),
             method: lv[0] && lv[0].clusterResult.method,
-            hasTree: !!(lv[0] && lv[0].clusterResult.condensedTree),
         };
     }''')
-    assert out["nLevels"] >= 2, f"expected ≥2 layers, got {out['nLevels']} ({out['counts']})"
+    assert out["candCount"] >= 2, f"expected ≥2 candidates, got {out['candCount']}"
+    assert out["candHaveCR"] is True            # every candidate retains its clusterResult
+    assert out["noLevelsYet"] is True           # sweep alone commits nothing
+    assert out["curveLen"] == out["candCount"]
+    assert out["nLevels"] == len(out["picks"])
     assert out["method"] == "hdbscan"
     assert out["ascending"] is True
     assert out["noNoise"] is True
     assert out["contiguous"] is True
     assert out["hasBridge"] is True
-    assert out["hasTree"] is True
+    assert out["allHaveStability"] is True
 
 
-def test_multilevel_card_and_projection_toy(toy_page):
-    """The multiLevel descriptor creates a card under the dimred ancestor,
-    the job lands clusterLevels in the card result, and selecting the card
-    projects them into legacy state."""
+def test_multilevel_producer_picker_cards_toy(toy_page):
+    """The produce/picker card split: the multiLevel descriptor creates a
+    SWEEP card under the dimred ancestor whose result holds the scored sweep
+    (multiLevelSweep, no clusterLevels). A picker card auto-spawns under it;
+    picking granularities + applyChange commits clusterLevels into the picker
+    card's result, and selecting the picker projects them into legacy state."""
     out = toy_page.evaluate(r'''async () => {
         const ld = await import("/app/src/ui/modals/layer-descriptors.js");
         const wf = await import("/app/src/ui/workflow.js");
@@ -146,38 +175,61 @@ def test_multilevel_card_and_projection_toy(toy_page):
 
         // ensure a dimred card is in the selected lineage (toy_page yields
         // data→dimred→clustering; select the clustering leaf).
-        const steps = wf.listSteps();
-        const clust = steps.filter(s => s.type === "clustering").pop();
+        const clust = wf.listSteps().filter(s => s.type === "clustering").pop();
         wf.selectStep(clust.id);
 
+        // 1. Producer sweep card.
         const desc = ld.getLayerDescriptor("multiLevel");
         const active = desc.getActive();
         await desc.applyChange({
             minSamples: active.defaults.minSamples,
-            minClusterSize: active.defaults.minClusterSize,
-            capLayers: active.defaults.capLayers,
+            floor:      0.5,
+            B:          5,            // small bootstrap budget to keep the test quick
         });
+        const producer = wf.listSteps().filter(s => s.type === "multiLevel").pop();
+        const producerHasSweep = !!(producer.result && producer.result.multiLevelSweep);
+        const producerNoLevels = !(producer.result && producer.result.clusterLevels);
 
-        const card = wf.listSteps().filter(s => s.type === "multiLevel").pop();
-        // select the card and project it
-        wf.selectStep(card.id);
-        proj.projectStepIntoLegacyState(card.id);
+        // 2. The picker auto-spawned under the producer (promise.then). Give
+        //    the microtask a beat to land.
+        await new Promise(r => setTimeout(r, 30));
+        const picker = wf.listSteps().filter(s => s.type === "multiLevelPicker" && s.parentId === producer.id).pop();
+
+        // 3. Pick the two coarsest distinct granularities and apply.
+        const cands = producer.result.multiLevelSweep.candidates || [];
+        const picks = [...new Set(cands.map(c => c.count).sort((a,b)=>a-b))].slice(0, 2);
+        wf.selectStep(picker.id);
+        const pdesc = ld.getLayerDescriptor("multiLevelPicker");
+        await pdesc.applyChange({ pickedCounts: picks });
+
+        const committed = wf.listSteps().filter(s => s.type === "multiLevelPicker" && s.parentId === producer.id).pop();
+        wf.selectStep(committed.id);
+        proj.projectStepIntoLegacyState(committed.id);
         const s = st.getState();
         return {
-            cardExists: !!card,
-            status: card.status,
-            cardLevels: card.result ? card.result.clusterLevels.length : 0,
-            nLayers: card.result ? card.result.layers.length : 0,
+            producerExists: !!producer,
+            producerStatus: producer.status,
+            producerHasSweep,
+            producerNoLevels,
+            producerParent: wf.getStep(producer.parentId).type,
+            pickerAutoSpawned: !!picker,
+            pickerStatus: committed.status,
+            pickerLevels: committed.result ? committed.result.clusterLevels.length : 0,
+            picks,
             projectedLevels: (s.clusterLevels || []).length,
-            parentType: wf.getStep(card.parentId).type,
+            projectedSweep: !!s.multiLevelSweep,
         };
     }''')
-    assert out["cardExists"] is True
-    assert out["status"] == "done"
-    assert out["cardLevels"] >= 2
-    assert out["nLayers"] == out["cardLevels"]
-    assert out["projectedLevels"] == out["cardLevels"]
-    assert out["parentType"] == "dimred"
+    assert out["producerExists"] is True
+    assert out["producerStatus"] == "done"
+    assert out["producerHasSweep"] is True
+    assert out["producerNoLevels"] is True          # producer commits nothing
+    assert out["producerParent"] == "dimred"
+    assert out["pickerAutoSpawned"] is True
+    assert out["pickerStatus"] == "done"
+    assert out["pickerLevels"] == len(out["picks"])
+    assert out["projectedLevels"] == out["pickerLevels"]
+    assert out["projectedSweep"] is True            # producer ancestor projects the curve
 
 
 def test_bridge_panel_sections_and_tau(toy_page):
@@ -187,7 +239,16 @@ def test_bridge_panel_sections_and_tau(toy_page):
     out = toy_page.evaluate(r'''async () => {
         const engine = await import("/app/src/ui/engine.js");
         const state = await import("/app/src/ui/state.js");
-        await engine.recomputeMultiLevel({ params: { minSamples: 5, minClusterSize: 5 } });
+        // Sweep, then commit the two coarsest granularities so bridge
+        // analysis (needs ≥2 levels) has a ladder to work on.
+        await engine.recomputeMultiLevelSweep({
+            params: { minSamples: 5, selectionMethod: "leaf" }, floor: 0.5,
+            sizeGridCount: 14, bootstrapOpts: { B: 5, subsampleFrac: 0.6 },
+            uidPrefix: "MLBRIDGE",
+        });
+        const cands = (state.getState().multiLevelSweep.candidates || []);
+        const picks = [...new Set(cands.map(c => c.count).sort((a,b)=>a-b))].slice(0, 2);
+        engine.commitMultiLevelLayers(picks, { uidPrefix: "MLBRIDGE" });
 
         const host = document.createElement("div");
         document.body.appendChild(host);
@@ -226,29 +287,38 @@ def test_bridge_panel_sections_and_tau(toy_page):
 
 @pytest.mark.slow
 def test_multilevel_engine_real(page):
-    """Real BFS-5000: the nested-worker distance fan-out runs inside the
-    clustering worker, and a multi-level ladder lands with bridges."""
+    """Real BFS-5000: the sweep's Phase-1 nested-worker distance fan-out runs
+    inside the clustering worker, Phase-2 bootstraps fan out across workers,
+    and a coarse→fine reproducible ladder lands."""
     out = page.evaluate(r'''async () => {
         const engine = await import("/app/src/ui/engine.js");
         const st = await import("/app/src/ui/state.js");
-        const res = await engine.recomputeMultiLevel({ params: { minSamples: 5, minClusterSize: 15 } });
+        await engine.recomputeMultiLevelSweep({
+            params: { minSamples: 15, selectionMethod: "leaf" }, floor: 0.5,
+            sizeGridCount: 16, bootstrapOpts: { B: 6, subsampleFrac: 0.6 },
+            uidPrefix: "MLREAL",
+        });
+        const cands = (st.getState().multiLevelSweep.candidates || []);
+        const picks = [...new Set(cands.map(c => c.count).sort((a,b)=>a-b))].slice(0, 3);
+        engine.commitMultiLevelLayers(picks, { uidPrefix: "MLREAL" });
         const s = st.getState();
         const lv = s.clusterLevels || [];
         const counts = lv.map(l => l.clusterResult.clusters.length);
         let noNoise = true;
         for (const l of lv) for (let i = 0; i < l.clusterResult.nodeCluster.length; i++)
             if (l.clusterResult.nodeCluster[i] < 0) noNoise = false;
-        // bridges should actually appear at real scale (absorbed cuts)
-        const bridgeCount = s.bridgeAnalysis ? s.bridgeAnalysis.bridgeCount : 0;
         return {
             n: s.genResult.nodes.length,
             nLevels: lv.length,
             counts,
             noNoise,
-            bridgeCount,
+            allStable: lv.every(l => Number.isFinite(l.stability)),
+            hasBridge: !!s.bridgeAnalysis,
         };
     }''')
     assert out["n"] == 5000
     assert out["nLevels"] >= 2
     assert out["noNoise"] is True
     assert out["counts"] == sorted(out["counts"])
+    assert out["allStable"] is True
+    assert out["hasBridge"] is True

@@ -36,6 +36,63 @@ def test_method_receipt_renders(page):
     assert out["hasCopyBtn"] is True
 
 
+def test_method_receipt_follows_selected_multilevel_card(page):
+    """Regression: the receipt must describe the SELECTED workflow card,
+    not the global layerParams.clustering. Selecting a multi-layer card
+    should switch the clustering paragraph to the sweep-selected ladder
+    wording and surface that card's own minSamples/floor — even though
+    the global config still says plain HDBSCAN."""
+    out = page.evaluate(
+        '''async () => {
+            const state = await import("/app/src/ui/state.js");
+            const wf    = await import("/app/src/ui/workflow.js");
+            // Build a minimal data → dimred → multiLevel tree and select
+            // the multiLevel card. clusterLevels stays the live one.
+            state.update({ workflow: { steps: {}, rootId: null, selected: null } });
+            const data = wf.createStep({ type: "data", label: "Data", params: {} });
+            const dr   = wf.createStep({ type: "dimred", label: "Dimred", params: {}, parentId: data });
+            // Producer (sweep) card carries the settings; picker child carries
+            // the committed ladder — the receipt describes the picker.
+            const ml   = wf.createStep({
+                type: "multiLevel", label: "Multi-layer sweep",
+                params: { minSamples: 17, floor: 0.55, B: 12 },
+                parentId: dr,
+            });
+            wf.updateStepStatus(ml, "running");
+            wf.setStepResult(ml, {
+                multiLevelSweep: { candidates: [], curve: [], uidPrefix: ml, floor: 0.55 },
+                settings:        { minSamples: 17, floor: 0.55, B: 12 },
+                scoreVersion:    3,
+            });
+            const pk = wf.createStep({
+                type: "multiLevelPicker", label: "Pick layers",
+                params: { pickedCounts: [3, 6] }, parentId: ml,
+            });
+            wf.updateStepStatus(pk, "running");
+            wf.setStepResult(pk, {
+                clusterLevels:   state.getState().clusterLevels,
+                clusterResult:   state.getState().clusterResult,
+                pickedCounts:    [3, 6],
+                nLevels:         (state.getState().clusterLevels || []).length,
+            });
+            wf.selectStep(pk);
+
+            const host = document.createElement("div");
+            document.body.appendChild(host);
+            const { mount } = await import("/app/src/ui/panels/method-receipt.js");
+            mount(host, state.getState(), {});
+            await new Promise(r => setTimeout(r, 100));
+            const txt = host.textContent;
+            // Clean up so we don't leak the synthetic tree into later tests.
+            state.update({ workflow: { steps: {}, rootId: null, selected: null } });
+            return txt;
+        }'''
+    )
+    assert "multi-layer ladder" in out.lower()
+    assert "minsamples=17" in out.lower()
+    assert "floor=0.55" in out.lower()
+
+
 # ── bridge-analysis ────────────────────────────────────────────────────
 
 

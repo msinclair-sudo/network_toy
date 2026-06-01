@@ -1,12 +1,12 @@
-// Multi-level ("Optimise multi-layer") clustering config modal — MLC §9.
+// Multi-level ("Optimise multi-layer") clustering config modal — §9 revamp.
 //
-// One HDBSCAN run → a coarse→fine ladder of partitions extracted from the
-// condensed tree. The user sets the HDBSCAN granularity (minClusterSize /
-// minSamples) and the layer cap; Apply creates a `multiLevel` card under
-// the selected dimred ancestor and enqueues the run.
-//
-// Mirrors dim-sweep / fusion-comparison modals: config in the body,
-// Cancel + Apply in the footer.
+// No longer one HDBSCAN run cut by persistence. Instead it sweeps HDBSCAN
+// resolution, bootstrap-scores each granularity's REPRODUCIBILITY, and keeps
+// the most stable partitions at distinct cluster counts as the coarse→fine
+// layers (eval/multilayer-sweep.js). The user sets the shared density
+// (minSamples), how many layers to keep at most, the reproducibility floor,
+// and the bootstrap budget. Apply creates a `multiLevel` card under the
+// selected dimred ancestor and enqueues the sweep.
 
 import { openModal } from "./modal.js";
 
@@ -29,10 +29,10 @@ export function openMultiLevelModal(descriptor) {
   const intro = document.createElement("div");
   intro.className = "multi-level-modal-intro";
   intro.textContent =
-    "Run HDBSCAN once and extract a coarse→fine ladder of cluster layers " +
-    "from its condensed tree (no repeated sweeps). Noise-stripped points " +
-    "are absorbed into the nearest cluster, so a fine cluster can bridge " +
-    "two coarse parents. The viewer's colour-by-layer mode shows each level.";
+    "Sweeps HDBSCAN (leaf) across cluster resolutions and scores how " +
+    "reproducible each granularity is (bootstrap-Jaccard). It then opens a " +
+    "picker showing the stability-vs-count curve, where you click the " +
+    "granularities you want as your coarse→fine layers.";
   body.appendChild(intro);
 
   const d = active.defaults;
@@ -40,19 +40,16 @@ export function openMultiLevelModal(descriptor) {
   cfg.className = "multi-level-modal-cfg";
   body.appendChild(cfg);
 
-  const minClusterSize = numberRow(cfg, "Min cluster size",
-    d.minClusterSize, 2, Math.max(2, (active.n || 1000)),
-    "Smallest cluster HDBSCAN will keep. Larger ⇒ coarser, fewer layers.");
   const minSamples = numberRow(cfg, "Min samples",
-    d.minSamples, 1, Math.max(1, (active.n || 1000) - 1),
-    "HDBSCAN density smoothing (k for core distance).");
-  const capLayers = numberRow(cfg, "Max layers",
-    d.capLayers, 2, 5,
-    "Hard cap on discovered layers (data-derived, ≤ 5).");
-
-  const warn = document.createElement("div");
-  warn.className = "multi-level-modal-warn";
-  body.appendChild(warn);
+    d.minSamples, 1, Math.max(1, (active.n || 1000) - 1), 1,
+    "HDBSCAN density smoothing (k for core distance). Shared across all layers.");
+  const floor = numberRow(cfg, "Reproducibility floor",
+    d.floor, 0, 1, 0.05,
+    "A granularity must score at least this mean-Jaccard to become a layer " +
+    "(0.6 = Hennig's 'doubtful' boundary). Lower to keep shakier levels.");
+  const B = numberRow(cfg, "Bootstrap iterations",
+    d.B, 3, 40, 1,
+    "Resamples per candidate granularity. More = steadier scores, slower run.");
 
   return openModal({
     title: descriptor.label,
@@ -63,18 +60,18 @@ export function openMultiLevelModal(descriptor) {
         label: "Run",
         primary: true,
         onClick: () => {
-          const mcs = clampInt(minClusterSize.value, 2, active.n || 1000, d.minClusterSize);
-          const ms  = clampInt(minSamples.value, 1, (active.n || 1000) - 1, d.minSamples);
-          const cap = clampInt(capLayers.value, 2, 5, d.capLayers);
-          descriptor.applyChange({ minClusterSize: mcs, minSamples: ms, capLayers: cap })
-            .catch(e => console.error("[multi-level-modal] applyChange failed:", e));
+          descriptor.applyChange({
+            minSamples: clampNum(minSamples.value, 1, (active.n || 1000) - 1, d.minSamples, true),
+            floor:      clampNum(floor.value, 0, 1, d.floor, false),
+            B:          clampNum(B.value, 3, 40, d.B, true),
+          }).catch(e => console.error("[multi-level-modal] applyChange failed:", e));
         },
       },
     ],
   });
 }
 
-function numberRow(parent, labelText, value, min, max, hint) {
+function numberRow(parent, labelText, value, min, max, step, hint) {
   const row = document.createElement("div");
   row.className = "multi-level-modal-row";
   const lab = document.createElement("label");
@@ -83,7 +80,7 @@ function numberRow(parent, labelText, value, min, max, hint) {
   input.type = "number";
   input.min = String(min);
   input.max = String(max);
-  input.step = "1";
+  input.step = String(step);
   input.value = String(value);
   row.appendChild(lab);
   row.appendChild(input);
@@ -97,8 +94,8 @@ function numberRow(parent, labelText, value, min, max, hint) {
   return input;
 }
 
-function clampInt(raw, min, max, fallback) {
-  const v = parseInt(raw, 10);
+function clampNum(raw, min, max, fallback, asInt) {
+  let v = asInt ? parseInt(raw, 10) : parseFloat(raw);
   if (!Number.isFinite(v)) return fallback;
   return Math.max(min, Math.min(max, v));
 }

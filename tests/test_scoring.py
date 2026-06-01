@@ -6,9 +6,19 @@ import pytest
 
 
 def _run_multilevel(page):
+    """Produce-only sweep then commit a coarse→fine ladder (produce/picker
+    split) so state.clusterLevels exists for the scoring panel."""
     page.evaluate(r'''async () => {
         const engine = await import("/app/src/ui/engine.js");
-        await engine.recomputeMultiLevel({ params: { minSamples: 5, minClusterSize: 5 } });
+        const st = await import("/app/src/ui/state.js");
+        await engine.recomputeMultiLevelSweep({
+            params: { minSamples: 5, selectionMethod: "leaf" }, floor: 0.5,
+            sizeGridCount: 14, bootstrapOpts: { B: 5, subsampleFrac: 0.6 },
+            uidPrefix: "MLSCORE",
+        });
+        const cands = (st.getState().multiLevelSweep.candidates || []);
+        const picks = [...new Set(cands.map(c => c.count).sort((a,b)=>a-b))].slice(0, 3);
+        engine.commitMultiLevelLayers(picks, { uidPrefix: "MLSCORE" });
     }''')
 
 

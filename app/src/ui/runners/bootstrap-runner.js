@@ -49,10 +49,24 @@ export function buildBootstrapJob({ parentClusteringStepId, settings }) {
     // Algorithm + per-level params come from the parent's recorded
     // params (the clustering card stores {method, levels}); resolving
     // from live state would tie us to the currently-selected card.
+    //
+    // A multi-layer card runs HDBSCAN but stores {minSamples,
+    // minClusterSize, capLayers} rather than {method, levels} — so map it
+    // onto the hdbscan algo with those params for the resampled re-clusters.
     const parentParams = parent.params || {};
-    const algoId       = parentParams.method;
-    const levelParams  = (parentParams.levels || [])[0] && (parentParams.levels || [])[0].params;
-    const algo         = getClusteringAlgo(algoId);
+    let algoId, levelParams;
+    if (parent.type === "multiLevel") {
+      algoId = "hdbscan";
+      levelParams = {
+        ...getClusteringAlgo("hdbscan").defaultParams(),
+        minSamples:     parentParams.minSamples,
+        minClusterSize: parentParams.minClusterSize,
+      };
+    } else {
+      algoId      = parentParams.method;
+      levelParams = (parentParams.levels || [])[0] && (parentParams.levels || [])[0].params;
+    }
+    const algo = getClusteringAlgo(algoId);
 
     // genResult + dimredResult are not held on the clustering card
     // (they're upstream); use live state. Bootstrap is deterministic in

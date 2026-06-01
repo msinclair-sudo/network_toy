@@ -21,7 +21,15 @@ const SLOTS = ["primary", "secondary", "bottom"];
 
 // Per-slot tracking. panelsRef lets us skip tab-strip rebuilds when
 // only state.blend (or other unrelated slices) changed.
-const slotInstances = new Map();   // slot → { panelsRef, instance, tabId }
+const slotInstances = new Map();   // slot → { panelsRef, instance, tabId, keepAlive, wrapper }
+
+// Keep-alive cache for panels flagged keepAlive (e.g. viewer-3d): when such
+// a panel is switched away from, its DOM wrapper + instance are DETACHED and
+// stashed here (keyed by tabId) instead of destroyed, then re-attached on
+// return. This is what stops the WebGL viewer rendering blank / leaking GL
+// contexts on a destroy+remount round-trip. Entries are cleared (and the
+// instance destroyed) only when the tab is actually closed.
+const keptAlive = new Map();        // tabId → { wrapper, instance }
 
 export function mountPanelSystem() {
   for (const slot of SLOTS) initSlot(slot);
@@ -126,12 +134,23 @@ function renderActivePanel(slot, slotEl) {
   if (!contentEl) return;
   const slotState = getState().panels[slot];
 
-  // Tear down previous instance for this slot.
+  // Detach (keep-alive) or tear down the previous instance for this slot.
   const prev = slotInstances.get(slot);
-  if (prev && prev.instance && prev.instance.destroy) {
-    try { prev.instance.destroy(); } catch (e) { console.warn(e); }
+  if (prev && prev.instance) {
+    // A keep-alive panel is only DETACHED if its tab still exists (i.e. we
+    // switched away). If the tab was closed, fall through to real teardown.
+    const tabStillOpen = prev.tabId && slotState.tabs.some(t => t.id === prev.tabId);
+    if (prev.keepAlive && prev.wrapper && tabStillOpen) {
+      if (prev.wrapper.parentNode) prev.wrapper.parentNode.removeChild(prev.wrapper);
+      keptAlive.set(prev.tabId, { wrapper: prev.wrapper, instance: prev.instance });
+    } else {
+      if (prev.tabId) keptAlive.delete(prev.tabId);
+      if (prev.instance.destroy) {
+        try { prev.instance.destroy(); } catch (e) { console.warn(e); }
+      }
+    }
   }
-  contentEl.innerHTML = "";
+  contentEl.innerHTML = "";   // kept-alive wrapper already detached above
 
   // No active tab → empty hint.
   if (!slotState.activeTabId || slotState.tabs.length === 0) {
@@ -149,22 +168,46 @@ function renderActivePanel(slot, slotEl) {
   const meta = getPanelType(tab.type);
   const tabContext = { slot, tabId: tab.id };
 
+  // Re-attach a previously kept-alive instance instead of remounting.
+  if (meta.keepAlive && keptAlive.has(tab.id)) {
+    const cached = keptAlive.get(tab.id);
+    keptAlive.delete(tab.id);
+    contentEl.appendChild(cached.wrapper);
+    try { cached.instance.update && cached.instance.update(getState()); } catch (e) { console.warn(e); }
+    slotInstances.set(slot, {
+      panelsRef: slotState, instance: cached.instance, tabId: tab.id,
+      keepAlive: true, wrapper: cached.wrapper,
+    });
+    return;
+  }
+
   // Pre-register the slot tracker BEFORE mount so any state writes
   // made during mount (e.g. colour-mode migration → setTabConfig)
   // re-entering the subscribe see `tracked.tabId === desired.activeTabId`
   // and skip re-running renderActivePanel — otherwise we recurse,
   // destroying the half-built panel and leaving orphan DOM overlays.
-  slotInstances.set(slot, { panelsRef: slotState, instance: null, tabId: tab.id });
+  slotInstances.set(slot, { panelsRef: slotState, instance: null, tabId: tab.id, keepAlive: !!meta.keepAlive });
 
+  // Keep-alive panels mount into a STABLE wrapper that we can detach/
+  // re-attach without destroying; others mount straight into contentEl.
   let instance = null;
+  let wrapper = null;
   try {
-    instance = meta.mount(contentEl, getState(), tab.config || {}, tabContext);
+    if (meta.keepAlive) {
+      wrapper = document.createElement("div");
+      wrapper.className = "panel-keepalive-wrap";
+      wrapper.style.cssText = "width:100%;height:100%;position:relative;";
+      contentEl.appendChild(wrapper);
+      instance = meta.mount(wrapper, getState(), tab.config || {}, tabContext);
+    } else {
+      instance = meta.mount(contentEl, getState(), tab.config || {}, tabContext);
+    }
   } catch (e) {
     console.error(`[panel-system] failed to mount ${tab.type}:`, e);
     contentEl.innerHTML = "";
     contentEl.appendChild(errorPlaceholder(tab.type, e));
   }
-  slotInstances.set(slot, { panelsRef: slotState, instance, tabId: tab.id });
+  slotInstances.set(slot, { panelsRef: slotState, instance, tabId: tab.id, keepAlive: !!meta.keepAlive, wrapper });
 }
 
 function emptySlotHint() {

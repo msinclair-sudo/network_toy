@@ -19,6 +19,7 @@
 import { getState, subscribe, setSelection, setClusterScore } from "../state.js";
 import { computeBridgeAnalysis }                              from "../bridge-analysis.js";
 import { labelClusters }                                      from "../../labelling/cluster-labels.js";
+import { getNodeText, hasSqliteText }                         from "../../datasource/sqlite.js";
 
 export const ID          = "cluster-scoring";
 export const LABEL       = "Tree scoring";
@@ -42,15 +43,21 @@ export function mount(container, _state, _config = {}) {
     const ctx = {
       embedding: s.embedding || (s._basePos ? { d: 3, data: s._basePos } : null),
       nodes:     (s.genResult && s.genResult.nodes) || [],
-      getText:   undefined,    // titles not materialised — labels fall back
+      getText:   hasSqliteText() ? getNodeText : undefined,  // live from biblion SQLite corpus
     };
     return { s, levels, ctx };
   }
 
-  // Lazily label a level (cached by engineRevision + level uid).
+  // Resolve labels for a level. Prefer the STORED labels from an upstream
+  // labelling card (projected into state.clusterLabels, keyed by level uid)
+  // — labelling is a static card, so we don't recompute live. Fall back to
+  // an inline compute only when no labelling card has run, so a bare
+  // clustering still shows representative-paper labels.
   function labelsFor(levels, levelIdx, ctx, rev) {
-    if (labelCache.rev !== rev) labelCache = { rev, byLevel: {} };
     const uid = levels[levelIdx].uid;
+    const stored = getState().clusterLabels;
+    if (stored && stored[uid]) return stored[uid];
+    if (labelCache.rev !== rev) labelCache = { rev, byLevel: {} };
     if (!labelCache.byLevel[uid]) {
       try {
         labelCache.byLevel[uid] = labelClusters(levels[levelIdx].clusterResult, ctx);
@@ -170,7 +177,7 @@ export function mount(container, _state, _config = {}) {
       const passes = isBridge ? anyParentClears : ((dominantParentScore || 0) >= parentThreshold);
       if (!passes) continue;
       const parentInfo = shares.map(sh => ({ id: sh.id, fraction: sh.fraction, score: parentScoreOf(sh.id) }));
-      (isBridge ? bridges : encap).push({ cl, parentInfo });
+      (isBridge ? bridges : encap).push({ cl, parentInfo, dom, span, isBridge });
     }
 
     appendScoreSection(wrap, "Encapsulated", encap, labels, scores, levelUid, s);
@@ -187,12 +194,14 @@ export function mount(container, _state, _config = {}) {
       return;
     }
     for (const it of items) {
-      parent.appendChild(clusterRow(it.cl, labels, scores, levelUid, it.parentInfo, s));
+      parent.appendChild(clusterRow(it.cl, labels, scores, levelUid, it.parentInfo, s,
+        { dom: it.dom, span: it.span, isBridge: it.isBridge }));
     }
   }
 
-  // One cluster row: swatch + label + size + (parent provenance) + 1–5.
-  function clusterRow(cl, labels, scores, levelUid, parentInfo, s) {
+  // One cluster row: swatch + label + size + (parent provenance) + a
+  // straddle metric badge (bridge analysis informing the manual score) + 1–5.
+  function clusterRow(cl, labels, scores, levelUid, parentInfo, s, metric = null) {
     const row = document.createElement("div");
     row.className = "panel-score-row";
     const sel = s.selection || {};
@@ -224,6 +233,23 @@ export function mount(container, _state, _config = {}) {
     }
     meta.textContent = metaText;
     main.appendChild(meta);
+
+    // Straddle metric badge — surfaces the bridge-analysis number next to
+    // the stars so the manual 1–5 score is made with the geometry in view.
+    // dominantFraction = how much of the cluster sits in its single biggest
+    // parent; straddle = 1 − that. Bridges (span ≥ 2 under τ) are flagged.
+    if (metric && Number.isFinite(metric.dom)) {
+      const badge = document.createElement("span");
+      badge.className = "panel-score-bridge-badge"
+        + (metric.isBridge ? " is-bridge" : "");
+      const straddlePct = Math.round((1 - metric.dom) * 100);
+      badge.textContent = metric.isBridge
+        ? `bridge · straddles ${straddlePct}% across ${metric.span}`
+        : `clean · ${Math.round(metric.dom * 100)}% in parent`;
+      badge.title = "From bridge analysis: dominant-parent share vs straddle. "
+        + "Lower dominance / higher span = more of a bridge.";
+      main.appendChild(badge);
+    }
     row.appendChild(main);
 
     // 1–5 control.

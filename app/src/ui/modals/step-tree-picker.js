@@ -11,15 +11,22 @@
 
 import { listSteps, getStepAncestors } from "../workflow.js";
 
+// Step types that materialise a clusterLevels[] ladder — both are
+// comparable as ref / cand in a cross-clustering comparison. Kept in
+// sync with CLUSTERING_LIKE_TYPES in layer-descriptors.js.
+const COMPARABLE_TYPES = ["clustering", "multiLevel"];
+
 /**
- * Clustering cards that carry a materialised result (clusterLevels),
- * each annotated with a human lineage label. These are the cards a
- * cross-source comparison can use as ref / cand.
+ * Clustering-like cards (clustering OR multi-layer) that carry a
+ * materialised result (clusterLevels), each annotated with a human
+ * lineage label. These are the cards a cross-clustering comparison can
+ * use as ref / cand.
  *
  * @returns {Array<{id, label, lineage, step}>} in tree (BFS) order.
  */
 export function listComparableClusterings() {
-  return listSteps({ type: "clustering" })
+  return COMPARABLE_TYPES
+    .flatMap(t => listSteps({ type: t }))
     .filter(s => s.result && Array.isArray(s.result.clusterLevels) && s.result.clusterLevels.length > 0)
     .map(s => ({ id: s.id, label: s.label, lineage: lineageLabel(s.id), step: s }));
 }

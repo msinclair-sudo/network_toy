@@ -17,6 +17,8 @@ import * as BridgeAnalysis         from "./bridge-analysis.js";
 import * as DimSweep               from "./dim-sweep.js";
 import * as FusionComparison       from "./fusion-comparison.js";
 import * as ClusterScoring         from "./cluster-scoring.js";
+import * as Scoring                from "./scoring.js";
+import * as MultilayerCurve        from "./multilayer-curve.js";
 import * as NextSteps              from "./next-steps.js";
 
 const entries = new Map();
@@ -28,6 +30,10 @@ function register(mod) {
     description: mod.DESCRIPTION || "",
     mount:       mod.mount,
     singleton:   !!mod.SINGLETON,    // panel-picker filters singletons already mounted
+    // keepAlive: the panel system DETACHES (not destroys) this panel on tab
+    // switch and re-attaches it on return — for expensive WebGL panels
+    // (viewer-3d) that render blank / leak contexts when torn down + rebuilt.
+    keepAlive:   !!mod.KEEP_ALIVE,
     // §6.19.2 — panels that render a specific saved run aren't useful
     // as "add a blank one" choices in the picker; they're meant to be
     // instantiated bound to a runId. The picker filters these out of
@@ -48,6 +54,8 @@ register(BridgeAnalysis);
 register(DimSweep);
 register(FusionComparison);
 register(ClusterScoring);
+register(Scoring);
+register(MultilayerCurve);
 register(NextSteps);
 
 // Future entries (mounted as their modules come online):

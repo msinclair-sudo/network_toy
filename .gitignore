@@ -40,3 +40,15 @@ saves/
 # path. Code that depends on those artifacts treats them as
 # locally-materialised inputs, not tracked fixtures.
 literture-network/
+
+# materialised ingest artifacts (db snapshot + SPECTER2 .npy + index)
+# built by tools/ingest/ from a biblion db; large binaries, not source
+data/
+
+# vendored biblion repo (its own git repo + bundles a test DB). The toy
+# reads a biblion db only to BUILD data/ via tools/ingest/; the repo itself
+# is an external dependency, not this project's source.
+biblion/
+
+# personal working notes / brain-dump — not project source.
+pending_changes.md

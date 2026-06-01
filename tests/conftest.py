@@ -41,7 +41,10 @@ import time
 import pytest
 from playwright.sync_api import sync_playwright
 
-URL = "http://localhost:8000/app/"
+# Port is overridable so a session can keep :8000 for a live browser and run
+# the suite elsewhere (e.g. NETWORK_TOY_TEST_PORT=8002). Defaults to 8000.
+TEST_PORT = int(os.environ.get("NETWORK_TOY_TEST_PORT", "8000"))
+URL = f"http://localhost:{TEST_PORT}/app/"
 KNOWN_FG_TEARDOWN = "Cannot read properties of undefined (reading 'tick')"
 
 # Session-level analysis params — TUNED FOR TEST SPEED, not production
@@ -87,27 +90,27 @@ def dev_server():
     is running a dev server alongside the tests) — but in that case
     DOES NOT terminate the foreign process.
     """
-    if _port_in_use(8000):
+    if _port_in_use(TEST_PORT):
         # Already serving; trust it. Don't tear down on session end.
         yield URL
         return
 
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     proc = subprocess.Popen(
-        ["python", "-m", "http.server", "8000"],
+        ["python", "-m", "http.server", str(TEST_PORT)],
         cwd=repo_root,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
     # Wait for the server to actually be ready.
     for _ in range(50):
-        if _port_in_use(8000):
+        if _port_in_use(TEST_PORT):
             break
         time.sleep(0.1)
     else:
         proc.terminate()
         proc.wait()
-        raise RuntimeError("dev server failed to start on :8000")
+        raise RuntimeError(f"dev server failed to start on :{TEST_PORT}")
 
     yield URL
     proc.terminate()

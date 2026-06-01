@@ -438,6 +438,74 @@ export function setStepResult(id, result) {
 }
 
 /**
+ * Re-arm a step for an in-place re-run (the ⚙ gear "edit this card"
+ * path). Unlike re-run-as-fork, this keeps the step's id, parentId,
+ * childIds and refIds — only its params/label are updated and its run
+ * state is reset to pending so a fresh job can be bound to the SAME card.
+ *
+ * Revision is intentionally NOT reset: the next setStepResult bumps it,
+ * which is what marks the (kept) children stale so the user knows to
+ * re-run them.
+ *
+ * Allowed from any status (an explicit user edit), so it bypasses the
+ * normal transition guard.
+ *
+ * @param {string} id
+ * @param {object} [opts]
+ * @param {object} [opts.params]  New params (replaces the old params).
+ * @param {string} [opts.label]   New display label.
+ * @returns {void}
+ * @throws {Error}                If id is unknown.
+ */
+export function rearmStep(id, opts = {}) {
+  const step = getStepRaw(id);
+  if (!step) throw new Error(`[workflow] rearmStep: unknown id "${id}"`);
+  const fields = {
+    status:     STEP_STATUS.PENDING,
+    result:     null,
+    error:      null,
+    progress:   null,
+    startedAt:  null,
+    endedAt:    null,
+    runtimeSec: null,
+  };
+  if (opts.params != null) fields.params = { ...opts.params };
+  if (typeof opts.label === "string" && opts.label) fields.label = opts.label;
+  // refIds (cross-edges, e.g. a comparison card's two clusterings) can
+  // change when the card is re-targeted. Only touch them if supplied.
+  if (Array.isArray(opts.refIds)) {
+    const w = getWorkflow();
+    fields.refIds = opts.refIds.filter(rid => w.steps[rid]);
+  }
+  patchStep(id, fields);
+}
+
+/**
+ * Set a 1–5 score on a scoring card. Scores live ON the card (per the
+ * agreed data model — they travel with the branch, not a global store),
+ * under result.scores[levelUid][clusterId]. value === null unsets it.
+ *
+ * Does NOT bump revision (scores aren't upstream data — changing them
+ * mustn't mark children stale) and doesn't touch status.
+ *
+ * @param {string} id            Scoring card step id.
+ * @param {string} levelUid
+ * @param {number} clusterId
+ * @param {number|null} value    1..5, or null to clear.
+ * @returns {void}
+ */
+export function setCardScore(id, levelUid, clusterId, value) {
+  const step = getStepRaw(id);
+  if (!step || !step.result) return;
+  const scores = { ...(step.result.scores || {}) };
+  const lvl = { ...(scores[levelUid] || {}) };
+  if (value == null) delete lvl[clusterId];
+  else lvl[clusterId] = value;
+  scores[levelUid] = lvl;
+  patchStep(id, { result: { ...step.result, scores } });
+}
+
+/**
  * Set the currently-selected step. selectStep(null) clears the
  * selection. Pass an unknown id and the call is a silent no-op (no
  * throw — the renderer may race a delete).

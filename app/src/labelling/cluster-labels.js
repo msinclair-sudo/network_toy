@@ -65,10 +65,26 @@ const METHODS = {
     available: hasText,
     run: (cr, ctx) => runTfidf(cr, ctx, /* classBased */ false),
   },
+  keybert: {
+    id: "keybert",
+    label: "KeyBERT",
+    available: hasText,
+    run: runKeyBERT,
+  },
 };
 
-export function listLabelMethods() {
-  return Object.values(METHODS).map(m => ({ id: m.id, label: m.label }));
+// List the label methods. Pass a ctx ({embedding, nodes, getText?}) to also
+// report per-method availability + a reason when unavailable (used by the
+// labelling card's modal to disable methods that can't run on this data).
+export function listLabelMethods(ctx = null) {
+  return Object.values(METHODS).map(m => {
+    const out = { id: m.id, label: m.label };
+    if (ctx) {
+      out.available = m.available(ctx);
+      if (!out.available) out.reason = reasonFor(m.id, ctx);
+    }
+    return out;
+  });
 }
 
 /**
@@ -217,6 +233,114 @@ function runTfidf(cr, ctx, classBased, membersArg) {
   return out;
 }
 
+// KeyBERT-STYLE keyphrase labels, adapted to a no-transformer environment.
+//
+// Real KeyBERT embeds candidate phrases with the same sentence-transformer as
+// the document and ranks them by cosine similarity, then MMR-diversifies. The
+// static in-browser toy has no phrase encoder, so we keep KeyBERT's two
+// defining moves — (1) candidate n-gram generation, (2) MMR diversification —
+// and substitute a class-based TF-IDF *relevance* for the (unavailable)
+// phrase↔document cosine. The result is a small set of DIVERSE, cluster-
+// distinctive 1–2-grams: closer to KeyBERT's output than plain TF-IDF (which
+// has no diversity step and emits unigrams only). The approximation is
+// documented so we don't overclaim it's the real model.
+//
+// relevance(phrase, cluster) = classTfidf over the phrase's frequency in the
+//   cluster's bag vs. how many clusters contain it.
+// MMR: pick the top phrase, then iteratively pick the phrase maximising
+//   λ·relevance − (1−λ)·maxTokenOverlapWithAlreadyPicked, so near-duplicate
+//   phrases ("soil microbial", "microbial community", "soil microbial
+//   community") don't all win.
+const KEYBERT_NGRAM_MAX = 2;   // unigrams + bigrams
+const KEYBERT_MMR_LAMBDA = 0.6;
+const KEYBERT_CANDIDATES = 30; // top-by-relevance pool MMR diversifies over
+
+function runKeyBERT(cr, ctx, membersArg) {
+  const members = membersArg || membersOf(cr);
+  const nClusters = cr.clusters.length;
+
+  // Per-cluster phrase frequencies (1..KEYBERT_NGRAM_MAX grams).
+  const tf = new Array(nClusters);
+  for (let c = 0; c < nClusters; c++) {
+    const counts = new Map();
+    for (const i of members[c]) {
+      const text = ctx.getText(ctx.nodes[i] ? ctx.nodes[i].id : i);
+      if (!text) continue;
+      for (const ph of ngrams(tokenize(text), KEYBERT_NGRAM_MAX)) {
+        counts.set(ph, (counts.get(ph) || 0) + 1);
+      }
+    }
+    tf[c] = counts;
+  }
+
+  // Class document frequency: how many clusters contain each phrase.
+  const df = new Map();
+  for (let c = 0; c < nClusters; c++) {
+    for (const ph of tf[c].keys()) df.set(ph, (df.get(ph) || 0) + 1);
+  }
+
+  const out = new Array(nClusters);
+  for (let c = 0; c < nClusters; c++) {
+    let total = 0;
+    for (const v of tf[c].values()) total += v;
+    total = total || 1;
+    // Relevance = class TF-IDF; a longer phrase gets a mild length boost so
+    // informative bigrams aren't always beaten by their component unigrams.
+    const scored = [];
+    for (const [ph, count] of tf[c]) {
+      const tfv = count / total;
+      const idf = Math.log(1 + nClusters / (1 + (df.get(ph) || 0)));
+      const lenBoost = 1 + 0.15 * (ph.split(" ").length - 1);
+      scored.push({ term: ph, score: tfv * idf * lenBoost, count });
+    }
+    scored.sort((a, b) => b.score - a.score);
+    const pool = scored.slice(0, KEYBERT_CANDIDATES);
+    const diverse = mmrSelect(pool, TOP_TERMS);
+    out[c] = { terms: diverse.map(s => s.term), detail: diverse };
+  }
+  return out;
+}
+
+// Maximal-marginal-relevance pick from a relevance-sorted candidate pool.
+// Diversity penalty = max Jaccard token-overlap with an already-picked phrase.
+function mmrSelect(pool, k) {
+  if (pool.length === 0) return [];
+  const picked = [pool[0]];
+  const rest = pool.slice(1);
+  const toks = (p) => new Set(p.term.split(" "));
+  const overlap = (a, b) => {
+    const A = toks(a), B = toks(b);
+    let inter = 0;
+    for (const t of A) if (B.has(t)) inter++;
+    const uni = A.size + B.size - inter;
+    return uni ? inter / uni : 0;
+  };
+  while (picked.length < k && rest.length) {
+    let bestIdx = 0, bestVal = -Infinity;
+    for (let i = 0; i < rest.length; i++) {
+      let maxOv = 0;
+      for (const p of picked) { const o = overlap(rest[i], p); if (o > maxOv) maxOv = o; }
+      const mmr = KEYBERT_MMR_LAMBDA * rest[i].score - (1 - KEYBERT_MMR_LAMBDA) * maxOv;
+      if (mmr > bestVal) { bestVal = mmr; bestIdx = i; }
+    }
+    picked.push(rest.splice(bestIdx, 1)[0]);
+  }
+  return picked;
+}
+
+// Contiguous n-grams (1..maxN) over an already-tokenised, stopword-filtered
+// word list. Bigrams are only formed from adjacent surviving tokens, so they
+// read as real phrases rather than spanning removed stopwords.
+function ngrams(tokens, maxN) {
+  const out = [];
+  for (let i = 0; i < tokens.length; i++) {
+    for (let n = 1; n <= maxN && i + n <= tokens.length; n++) {
+      out.push(tokens.slice(i, i + n).join(" "));
+    }
+  }
+  return out;
+}
+
 /* ── helpers ─────────────────────────────────────────────────────────── */
 
 function hasText(ctx) {
@@ -233,7 +357,7 @@ function hasText(ctx) {
 function reasonFor(id, ctx) {
   if (id === "representative") return "needs an embedding";
   if (id === "year")          return "no node has a year";
-  if (id === "cTfidf" || id === "tfidf") {
+  if (id === "cTfidf" || id === "tfidf" || id === "keybert") {
     return typeof ctx.getText !== "function"
       ? "needs per-node text — titles/abstracts are not materialised in this dataset"
       : "no member text found";
@@ -259,6 +383,10 @@ function tokenize(text) {
 
 // Pick the most legible single label from whatever methods ran.
 function combine(byMethod) {
+  // KeyBERT first — diverse keyphrases read as the most informative label.
+  if (byMethod.keybert && byMethod.keybert.terms && byMethod.keybert.terms.length) {
+    return byMethod.keybert.terms.join(" · ");
+  }
   if (byMethod.cTfidf && byMethod.cTfidf.terms && byMethod.cTfidf.terms.length) {
     return byMethod.cTfidf.terms.join(" · ");
   }

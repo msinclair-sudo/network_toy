@@ -30,8 +30,8 @@ _BUILD_TREE = '''
 
 def test_next_steps_lists_clustering_followons(clean_page):
     """Selecting a clustering card surfaces its follow-on actions:
-    bootstrap, compare-with-another-clustering, dim sweep, citation
-    layout."""
+    bootstrap, compare-with-another-clustering, bridge analysis, label
+    clusters, dim sweep, citation layout."""
     out = clean_page.evaluate(
         '''async () => {
             ''' + _BUILD_TREE + '''
@@ -54,10 +54,12 @@ def test_next_steps_lists_clustering_followons(clean_page):
     )
     assert out["title"] == "What's next?"
     assert "clustering A" in (out["context"] or "")
-    assert out["actionCount"] == 4
+    assert out["actionCount"] == 6
     joined = " | ".join(out["labels"])
     assert "bootstrap stability" in joined.lower()
     assert "compare with another clustering" in joined.lower()
+    assert "bridge analysis" in joined.lower()
+    assert "label clusters" in joined.lower()
     assert "dim sweep" in joined.lower()
     assert "citation layout" in joined.lower()
 
@@ -105,6 +107,8 @@ def test_add_step_modal_lists_downstream_options(clean_page):
     joined = " | ".join(out["options"]).lower()
     assert "bootstrap stability" in joined
     assert "compare with another clustering" in joined
+    assert "bridge analysis" in joined
+    assert "label clusters" in joined
     assert "dim sweep" in joined
     assert "citation layout" in joined
     # No 'rerun this card' option in the add-step menu.

@@ -13,7 +13,7 @@ plans were folded in here on 2026-05-30:
 
 - the **workflow-tree redesign** (Phase 2) → now §8, **shipped**;
 - the **multi-level clustering + tree scoring + bridge clusters** plan →
-  now §9, the **active next work** (decisions locked, no code yet).
+  now §9, **shipped 2026-05-31** (MLC-0 → MLC-5).
 
 Per-layer reference docs stay separate (`doc/dynamics.md` is their
 index): clustering, dimred, fusion, citations, citation-layout, blend,
@@ -36,12 +36,27 @@ eval, workers, ui-architecture, scaling, multi-level.
   auto-run on boot), per-card **+** add-step buttons, and **granular
   build-out** (add-data creates only a data card; dim-reduction doesn't
   auto-run clustering).
+- **Multi-level clustering + tree scoring + bridge clusters (§9, shipped
+  2026-05-31, MLC-0 → MLC-5):** one HDBSCAN run → its condensed tree is
+  surfaced (MLC-0) and cut into a coarse→fine partition ladder
+  (`clustering-multilevel.js`), with noise-stripped points absorbed into
+  the nearest live cluster over the MST so a fine cluster can bridge two
+  coarse parents (the user-chosen "absorbed cuts"). An **Optimise
+  multi-layer** card runs it; the **bridge panel** splits fine clusters
+  into Encapsulated/Bridges by a dominance threshold τ; the **tree scoring
+  panel** takes 1–5 scores layer-by-layer with parent-score threshold
+  propagation (persisted on `state.clusterScores`); a multi-method
+  **labelling module** (`labelling/cluster-labels.js`) labels clusters
+  (representative paper + year now; c-TF-IDF/TF-IDF gated until titles are
+  materialised). The dominant O(n²·d) distance matrix fans out across cores
+  (`workers/parallel-distance.js`).
 
 **Active / next:**
 
-- **Multi-level clustering + tree scoring + bridge clusters** (§9).
-  First build step is **MLC-0**: surface the HDBSCAN condensed tree from
-  the worker (gates the single-run layer-extraction approach).
+- Nothing queued. Possible follow-ups: materialise paper titles so the
+  text labelling methods light up; a KeyBERT method (needs a term encoder);
+  re-cut saved trees at new λ without re-running HDBSCAN (surface the
+  weighted MST).
 
 ## 1. Out of scope (explicit, so we don't drift)
 
@@ -979,34 +994,51 @@ scoring surface can show/compare them. Plain TF-IDF is the cheap
 baseline. The module stays swappable — adding a method is one registry
 entry, like the clustering / scorer registries.
 
-### 8. Phasing
+### 8. Phasing — SHIPPED 2026-05-31
 
-Each phase is independently shippable and testable (pytest + a browser
-smoke), mirroring the workflow-tree slices.
+Each phase shipped independently with pytest coverage (`tests/
+test_condensed_tree.py`, `test_multilevel.py`, `test_cluster_labels.py`,
+`test_scoring.py`). What landed, and where it diverged from the plan:
 
-- **MLC-0 Surface the HDBSCAN condensed tree.** Extend the HDBSCAN
-  worker/result to emit the condensed tree (parent / λ / child / size)
-  alongside the flat labels. Prerequisite for single-run extraction
-  (§4 caveat). Pure-ish engine work + tests.
-- **MLC-1 Layer discovery.** `discoverLayers()` reads MLC-0's tree,
-  finds the stable λ-shelves (cap 5), returns ordered layer cuts.
-  Algorithm-agnostic fallback (§3.B) for mutual-kNN reuses the stored
-  sweep. Validate top range ≈ 8–12 on the current dataset.
-- **MLC-2 Layer cascade card + Optimise modal mode.** A multi-level
-  clustering card + runner that flattens the tree at each discovered
-  λ-cut into `clusterLevels[]`. Add the "Optimise multi-layer" mode to
-  the Optimise modal (other modes unchanged). Hybrid card shape (§6.2).
-- **MLC-3 Bridge panel.** Saved-mode panel over `bridge-analysis.js`
-  with τ=0.8 threshold (adjustable) + Encapsulated/Bridges sections.
-- **MLC-4 Labelling module.** Multi-method `label(members)` (KeyBERT +
-  c-TF-IDF + representative-paper); real-data only, guarded.
-- **MLC-5 Tree scoring.** Scoring card (refIds-bound) + 1–5 controls +
-  parent-score threshold propagation + bridge transparency. Replaces the
-  old scoring app's role inside the toy.
-
-Dependencies: MLC-0 → MLC-1 → MLC-2 → {MLC-3, MLC-5}; MLC-4 feeds MLC-5's
-labels (scoring can ship with numeric-id / exemplar placeholders first,
-then gain richer labels).
+- **MLC-0 ✓ Condensed tree surfaced.** `clusterResult.condensedTree` — a
+  compact, clone-safe projection (node-parallel parent/birthLambda/
+  stability/size/selectedLabel + per-leaf home/leafLambda). It was already
+  computed inside HDBSCAN and discarded; now serialised, validated, and
+  persisted. `app/src/clustering-hdbscan.js`.
+- **MLC-1 ✓ Layer discovery.** `discoverLayers()` ranks λ-shelves by
+  scale-invariant **log-λ persistence** (cap 5), coarse→fine.
+  `flattenFrontier()` cuts the tree. `app/src/clustering-multilevel.js`.
+- **MLC-2 ✓ Layer cascade card.** `inferHdbscanMultiLevel` does it all in
+  ONE run; `buildMultiLevel` keeps only layers that strictly REFINE the
+  previous (high-λ cuts collapse under absorption, so structural count ≠
+  realised count). "Optimise multi-layer" is a standalone modal reached
+  from the dimred card's **+** (not folded into the big Optimise tab — same
+  effect, less risk). Multi-level card + projection + worker `multilevel`
+  mode + `engine.recomputeMultiLevel`.
+- **Absorbed cuts (user decision).** Frontier cuts of one tree are strictly
+  nested ⇒ zero within-tree bridges. So noise-stripped points are absorbed
+  into the nearest live cluster by **multi-source Dijkstra over the MST**
+  (`absorbViaMST`, O(n log n), cross-branch) — that's what makes a fine
+  cluster straddle two coarse parents. (The plan's claim that pure tree
+  cuts "straddle naturally" was wrong; absorption is the bridge source.)
+- **MLC-3 ✓ Bridge panel.** Enhanced `panels/bridge-analysis.js` with the
+  τ dominance slider (default 0.8) splitting Encapsulated vs Bridges.
+- **MLC-4 ✓ Labelling module.** `labelling/cluster-labels.js` — registry of
+  representative-paper + year (work on real data) + c-TF-IDF/TF-IDF
+  (implemented + unit-tested via an injected text accessor). **The real
+  subsets materialise only paperId + embedding — no titles/abstracts — so
+  the text methods gate with a reason until a titles source is wired into
+  `ctx.getText`.** KeyBERT deferred (needs a term encoder).
+- **MLC-5 ✓ Tree scoring.** `panels/cluster-scoring.js` — a singleton
+  PANEL (not a separate card type; simpler, and cards aren't persisted
+  anyway). 1–5 layer-by-layer, parent-score threshold filter, bridges
+  section, scores on `state.clusterScores` keyed by **level uid** (so each
+  clustering branch keeps its own scores) + persisted via save/load.
+- **CPU scaling (user ask).** The dominant O(n²·d) distance matrix fans out
+  across cores via nested `workers/distance-worker.js` +
+  `parallel-distance.js` (sync fallback; no SharedArrayBuffer — no
+  COOP/COEP). MST-based absorption made the per-layer cost O(n log n), so
+  the 5 layers are nearly free over one HDBSCAN run.
 
 ### 9. Decisions (resolved)
 

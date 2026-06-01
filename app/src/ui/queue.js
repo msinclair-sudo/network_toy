@@ -34,6 +34,7 @@ import {
   updateStepStatus, setStepResult, updateStepProgress,
   getStep, STEP_STATUS,
 } from "./workflow.js";
+import { projectStepIntoLegacyState } from "./workflow-projection.js";
 
 // ── helpers ──────────────────────────────────────────────────────────
 
@@ -145,6 +146,25 @@ async function processNext() {
           }
         },
       };
+
+      // Stage the engine input for step-bound jobs. The queue is FIFO,
+      // so by the time a child job runs its parent has already settled
+      // and populated its result — project that ancestry into the legacy
+      // slots (state._basePos / clusterLevels / …) so the engine reads
+      // THIS branch's upstream, not whatever the user has since clicked
+      // onto. This is what lets a card be queued while its parent is
+      // still in-flight ("each branch owns its children"). Silent
+      // (bumpRevision:false) so it doesn't pull the viewer off the card
+      // the user is currently looking at; the engine lane bumps
+      // engineRevision itself when it finishes. Only steps with a parent
+      // consume upstream geometry — the data root doesn't.
+      if (boundStepId) {
+        const boundStep = getStep(boundStepId);
+        if (boundStep && boundStep.parentId) {
+          try { projectStepIntoLegacyState(boundStepId, { bumpRevision: false }); }
+          catch (e) { console.warn("[queue] pre-run input staging failed:", e); }
+        }
+      }
 
       try {
         const result = await rt.fn(ctx);

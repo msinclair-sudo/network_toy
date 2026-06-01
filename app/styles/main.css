@@ -578,6 +578,24 @@ html, body {
   stroke: var(--bg-1);
 }
 
+/* "✕" delete button — top-left corner of a card. Faint until hovered,
+   then turns danger-red to signal the destructive (cascading) action. */
+#workflow-chart .wf-delete-btn {
+  cursor: pointer;
+}
+#workflow-chart .wf-delete-hit {
+  fill: transparent;
+}
+#workflow-chart .wf-delete-glyph {
+  stroke: var(--text-faint);
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  pointer-events: none;
+}
+#workflow-chart .wf-delete-btn:hover .wf-delete-glyph {
+  stroke: var(--danger, #e5484d);
+}
+
 /* Add-step modal — list of next-step options. */
 .add-step-modal-body {
   display: flex;
@@ -763,6 +781,94 @@ html, body {
   color: var(--text-dim);
   font-size: 14px;
   margin-bottom: 4px;
+}
+
+/* Scoring panel — column-per-layer board (MLC §5). */
+.scoring-board {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  height: 100%;
+  overflow: auto;
+}
+.scoring-board.empty {
+  align-items: center;
+  justify-content: center;
+  color: var(--text-faint);
+  font-size: 13px;
+  padding: 20px;
+  text-align: center;
+}
+.scoring-col {
+  /* Width is content-driven so long labels stay readable: grow to fit the
+     widest label, but stay within a sane band. Was a hard 300px, which
+     clipped longer topic labels. */
+  flex: 1 1 auto;
+  min-width: 320px;
+  max-width: 520px;
+  border-right: 1px solid var(--border-light);
+  display: flex;
+  flex-direction: column;
+}
+.scoring-col-head {
+  position: sticky;
+  top: 0;
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--border-light);
+  padding: 6px 8px;
+  z-index: 1;
+}
+.scoring-col-title { font-size: 13px; color: var(--text); font-weight: 600; }
+.scoring-col-sub   { font-size: 10px; color: var(--text-faint); }
+.scoring-threshold { display: flex; align-items: center; gap: 4px; margin-top: 4px; font-size: 10px; color: var(--text-dim); }
+.scoring-threshold input { width: 42px; }
+.scoring-col-body  { display: flex; flex-direction: column; }
+
+.scoring-cluster {
+  display: flex;
+  gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+.scoring-cluster.ineligible { opacity: 0.45; }
+.scoring-cluster-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.scoring-cluster-head { display: flex; align-items: center; gap: 6px; }
+.scoring-swatch { width: 10px; height: 10px; border-radius: 2px; flex: none; }
+.scoring-cluster-id { font-size: 12px; color: var(--text); }
+.scoring-cluster-labels { font-size: 12px; line-height: 1.35; }
+.scoring-cluster-label-head { color: var(--text-faint); }
+/* Wrap long labels onto multiple lines instead of clipping with an ellipsis,
+   so the whole label is always readable. */
+.scoring-label-bullet { color: var(--text-dim); white-space: normal; overflow-wrap: anywhere; }
+.scoring-label-bullet.none { color: var(--text-faint); font-style: italic; }
+
+.scoring-stars { display: flex; gap: 2px; margin-top: 2px; }
+.scoring-star {
+  width: 18px; height: 18px; padding: 0;
+  font-size: 10px;
+  border: 1px solid var(--border-light);
+  background: var(--bg-2);
+  color: var(--text-dim);
+  border-radius: 3px;
+  cursor: pointer;
+}
+.scoring-star:hover { border-color: var(--accent); color: var(--text); }
+.scoring-star.active { background: var(--accent); color: var(--bg-1); border-color: var(--accent); }
+
+.scoring-metrics { flex: 0 0 64px; font-size: 9px; color: var(--text-dim); text-align: right; align-self: center; }
+
+.scoring-bridge-divider {
+  padding: 4px 8px;
+  font-size: 10px;
+  color: var(--danger, #e5484d);
+  background: var(--bg-2);
+  border-top: 1px solid var(--border-light);
+  border-bottom: 1px solid var(--border-light);
+}
+/* below-threshold section header (the greyed-out tier at the bottom) */
+.scoring-bridge-divider.muted {
+  color: var(--text-faint);
+  background: transparent;
 }
 
 .placeholder-panel .placeholder-hint {
@@ -1557,6 +1663,21 @@ td.node-table-spread, td.node-table-stab { width: 50px; }
 .panel-score-main   { flex: 1; min-width: 0; }
 .panel-score-label  { color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .panel-score-meta   { font-size: 10px; color: var(--text-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.panel-score-bridge-badge {
+  display: inline-block;
+  margin-top: 2px;
+  font-size: 9px;
+  line-height: 1.4;
+  padding: 0 5px;
+  border-radius: 7px;
+  background: var(--bg-2);
+  color: var(--text-dim);
+  border: 1px solid var(--border-light);
+}
+.panel-score-bridge-badge.is-bridge {
+  color: var(--danger, #e5484d);
+  border-color: var(--danger, #e5484d);
+}
 .panel-score-stars  { display: flex; gap: 2px; flex: none; }
 .panel-score-star {
   width: 20px; height: 20px; padding: 0;
@@ -1703,6 +1824,24 @@ td.node-table-spread, td.node-table-stab { width: 50px; }
 .bootstrap-modal-row input[type="range"] { width: 100%; }
 .bootstrap-modal-readout      { font-family: var(--font-mono); font-size: 11px; color: var(--text); text-align: right; }
 .bootstrap-modal-empty        { color: var(--text-faint); font-style: italic; padding: 8px 4px; }
+
+/* ── cluster-labelling modal ──────────────────────────────────────── */
+
+.labelling-modal-context { font-size: 11px; color: var(--text-dim); margin-bottom: 8px; }
+.labelling-modal-methods { display: flex; flex-direction: column; gap: 4px; }
+.labelling-modal-method {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text);
+  cursor: pointer;
+}
+.labelling-modal-method.unavailable { color: var(--text-faint); cursor: not-allowed; }
+.labelling-modal-method-name { flex: none; }
+.labelling-modal-method-why  { font-size: 10px; color: var(--text-faint); font-style: italic;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.labelling-modal-empty       { color: var(--text-faint); font-style: italic; padding: 8px 4px; }
 
 /* ── dim-reduction modal (two-section) ────────────────────────────── */
 
@@ -2464,6 +2603,56 @@ td.node-table-spread, td.node-table-stab { width: 50px; }
 .chart-bars-whisker line {
   stroke: var(--text-dim);
   stroke-width: 1;
+}
+
+/* ── line / scatter chart (charts/line.js) ──────────────────────────── */
+.chart-line-path {
+  fill: none;
+  stroke: var(--border-light);
+  stroke-width: 1.5;
+}
+.chart-line-hline {
+  stroke: var(--accent);
+  stroke-width: 1;
+  stroke-dasharray: 4 3;
+  opacity: 0.7;
+}
+.chart-line-hline-label {
+  fill: var(--accent);
+  font-size: 9px;
+  font-family: var(--font-mono);
+}
+.chart-line-dot {
+  fill: var(--text-dim);
+  stroke: var(--bg-1);
+  stroke-width: 1;
+}
+.chart-line-dot.selected {
+  fill: var(--accent);
+  stroke: var(--bg-1);
+  stroke-width: 1.5;
+}
+.chart-line-dot.null {
+  fill: none;
+  stroke: var(--text-faint);
+  stroke-dasharray: 1.5 1.5;
+}
+
+/* multi-layer stability-curve panel */
+.multilayer-curve-panel { padding: 8px; display: flex; flex-direction: column; gap: 6px; }
+.multilayer-curve-title { font-size: 13px; color: var(--text-dim); font-weight: 600; }
+.multilayer-curve-summary { font-size: 10px; color: var(--text-faint); font-family: var(--font-mono); }
+.multilayer-curve-empty { color: var(--text-faint); font-style: italic; font-size: 12px; padding: 12px 4px; line-height: 1.5; }
+.multilayer-curve-chart { overflow-x: auto; }
+.multilayer-curve-controls { display: flex; gap: 6px; align-items: center; margin-top: 4px; }
+.multilayer-curve-apply {
+  font-size: 11px; padding: 4px 10px; border-radius: 4px; cursor: pointer;
+  background: var(--accent, #4e79a7); color: #fff; border: none; font-weight: 600;
+}
+.multilayer-curve-apply:disabled { opacity: 0.45; cursor: default; }
+.multilayer-curve-clear {
+  font-size: 11px; padding: 4px 10px; border-radius: 4px; cursor: pointer;
+  background: transparent; color: var(--text-dim); border: 1px solid var(--border, #444);
 }
 
 /* ── §6.19 step 8 — fusion-comparison panel ─────────────────────────── */

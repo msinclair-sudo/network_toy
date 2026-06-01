@@ -38,7 +38,9 @@
 
 import { getAlgorithm as getClusteringAlgorithm } from "../clustering-registry.js";
 import { runClusterLevels }                        from "../clustering-cascade.js";
-import { inferHdbscanMultiLevel }                  from "../clustering-hdbscan.js";
+import { inferHdbscanMultiLevel, buildHdbscanModel } from "../clustering-hdbscan.js";
+import { runPhase1 }                               from "../eval/multilayer-sweep.js";
+import { pairwiseDistancesParallel }               from "./parallel-distance.js";
 import { validateClusterResult }                   from "../contracts/cluster.js";
 
 self.addEventListener("message", async (ev) => {
@@ -93,6 +95,36 @@ self.addEventListener("message", async (ev) => {
         if (b) transfer.push(b);
       }
       self.postMessage({ ok: true, result: out }, transfer);
+      return;
+    }
+
+    if (mode === "multilayer") {
+      // Multi-layer-from-sweep, Phase 1 (§9 revamp). Build the HDBSCAN model
+      // ONCE (distance matrix fans out to nested distance-workers), then
+      // extract a partition at many minClusterSize values and collapse to
+      // plateau candidates. Phase 2 (bootstrap-scoring the candidates) runs
+      // on the MAIN thread, where it can fan its re-clusterings out across
+      // clustering-workers — so it stays out of here.
+      const { nodesSlim, dimredResult, params, opts, n } = data;
+      if (!Array.isArray(nodesSlim)) {
+        throw new Error("clustering-worker: payload.nodesSlim must be an array");
+      }
+      const genStub = { nodes: nodesSlim };
+      const dist = await pairwiseDistancesParallel(dimredResult, n | 0, opts || {});
+      const model = buildHdbscanModel(genStub, params || {}, dimredResult, { dist });
+      const candidates = runPhase1({
+        model, params: params || {}, sizeGridCount: (opts && opts.sizeGridCount) || 25,
+      });
+      // Each candidate partition is a global, noise-free (absorbed) clustering.
+      for (const c of candidates) {
+        validateClusterResult(c.clusterResult, n | 0, { allowNoise: false });
+      }
+      const transfer = [];
+      for (const c of candidates) {
+        const b = c.clusterResult.nodeCluster && c.clusterResult.nodeCluster.buffer;
+        if (b) transfer.push(b);
+      }
+      self.postMessage({ ok: true, result: { candidates } }, transfer);
       return;
     }
 

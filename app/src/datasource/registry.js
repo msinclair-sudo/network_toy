@@ -14,6 +14,7 @@
 
 import { produceToy,  defaultToyParams  } from "./toy.js";
 import { produceReal, defaultRealParams, SUBSET_IDS, SUBSET_LABELS } from "./real.js";
+import { produceSqlite, defaultSqliteParams, DATASET_IDS, DATASET_LABELS } from "./sqlite.js";
 
 export const DATA_SOURCES = [
   {
@@ -66,6 +67,22 @@ export const DATA_SOURCES = [
         kind: "select",
         options: SUBSET_IDS.map(id => ({ value: id, label: SUBSET_LABELS[id] || id })),
         hint: "Which slice to load. The random 1000-paper subset shatters citation neighbourhoods (~3 within-subset edges); the BFS 5000-paper subset preserves topology (~12,000 within-subset edges, 100% node coverage). Carve more via literture-network/scripts/make_dev_subset_bfs.py.",
+      },
+    ],
+  },
+  {
+    id: "sqlite",
+    label: "Real data (biblion corpus)",
+    description: "Loads a biblion SQLite corpus (papers + citations) built by tools/ingest/, with SPECTER2 embeddings injected from a sibling .npy. Read in-browser via sql.js — titles/abstracts/authors are queried on demand, which unlocks c-TF-IDF / TF-IDF labelling and real titles. Switching to this drops the toy/real data; only one source is loaded at a time. The viewer stays empty until you pick a 3-d visualisation reduction in the dim-reduction layer.",
+    defaultParams: defaultSqliteParams,
+    produce: (params) => produceSqlite(params),
+    modalSchema: [
+      {
+        key: "dataset",
+        label: "Dataset",
+        kind: "select",
+        options: DATASET_IDS.map(id => ({ value: id, label: DATASET_LABELS[id] || id })),
+        hint: "Which biblion corpus to load. Build new ones with tools/ingest/extract_corpus.py + embed_specter2.py, then add an entry to DATASETS in datasource/sqlite.js.",
       },
     ],
   },

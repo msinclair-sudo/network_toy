@@ -1,54 +1,64 @@
-// Multi-level clustering runner (MLC §9 / §4).
+// Multi-layer SWEEP runner — the producer half of the §9 producer/picker
+// split (2026-06-01).
 //
-// Wraps engine.recomputeMultiLevel — ONE HDBSCAN run whose condensed
-// tree is cut into a coarse→fine ladder of partitions (with bridge-
-// producing absorption). Like the other analysis runners it's a
-// queue-job factory; the descriptor (layer-descriptors.js) creates the
-// `multiLevel` card under the selected dimred ancestor and enqueues this.
+// Wraps engine.recomputeMultiLevelSweep, which:
+//   Phase 1 (worker)  builds ONE HDBSCAN model + plateau candidates;
+//   Phase 2 (main)    bootstrap-scores EVERY candidate (reproducibility).
 //
-// The lane mutates the legacy state slots (state.clusterLevels etc.) so
-// the viewer updates live; we then snapshot those into the card result so
-// the projection layer can replay them when the card is re-selected.
+// It does NOT select layers and does NOT build clusterLevels — selection is
+// a manual click on the reproducibility curve in the picker card (which
+// auto-spawns after this job; see multiLevelDescriptor). The lane writes
+// state.multiLevelSweep = { candidates, curve, … }; we snapshot that into the
+// card result so projection can replay it when the card is re-selected.
 
 import { getState } from "../state.js";
 import * as engine  from "../engine.js";
 
-const SCORE_VERSION = 1;
+const SCORE_VERSION = 3;   // bumped: produce-only sweep, manual layer pick
 
 /**
  * @param {object} opts
- * @param {{minSamples:number, minClusterSize:number}} opts.params  HDBSCAN params.
- * @param {number} opts.capLayers     hard cap on discovered layers (≤ 5).
- * @param {number} [opts.minClusters] minimum clusters for a layer to count.
- * @param {string} opts.uidPrefix     unique per-card prefix for level uids.
+ * @param {{minSamples:number, selectionMethod:string}} opts.params  shared HDBSCAN params (leaf).
+ * @param {number} [opts.floor=0.6]          reproducibility guide line on the curve.
+ * @param {number} [opts.sizeGridCount=25]   Phase-1 grid resolution.
+ * @param {object} [opts.bootstrapOpts]      { B, subsampleFrac }.
+ * @param {string} opts.uidPrefix            unique per-card prefix for level uids.
  * @returns {(ctx:{signal,setPhase,setProgress}) => Promise<object>}
  */
-export function buildMultiLevelJob({ params, capLayers, minClusters, uidPrefix }) {
-  return async function runMultiLevelJob(ctx) {
-    ctx.setPhase    && ctx.setPhase("HDBSCAN → layers");
-    ctx.setProgress && ctx.setProgress(0.1);
+export function buildMultiLevelJob({ params, floor, sizeGridCount, bootstrapOpts, uidPrefix }) {
+  return async function runMultiLevelSweepJob(ctx) {
+    ctx.setPhase    && ctx.setPhase("scanning resolutions");
+    ctx.setProgress && ctx.setProgress(0.05);
 
-    const out = await engine.recomputeMultiLevel({
-      params, capLayers, minClusters, uidPrefix,
+    const out = await engine.recomputeMultiLevelSweep({
+      params, floor, sizeGridCount,
+      bootstrapOpts: bootstrapOpts || {},
+      uidPrefix,
+      abortSignal: ctx.signal,
+      onProgress: (phase, idx, total) => {
+        if (!total) return;
+        // Phase 1 (worker) is opaque to us; Phase 2 is the bootstrap loop.
+        if (phase === "phase2") {
+          ctx.setPhase    && ctx.setPhase(`bootstrapping candidate ${idx} / ${total}`);
+          ctx.setProgress && ctx.setProgress(0.2 + 0.75 * (idx / total));
+        }
+      },
     });
 
-    if (!out.levels || out.levels.length === 0) {
+    if (!out.candidates || out.candidates.length === 0) {
       throw new Error(
-        "Multi-level extraction found no stable layers — try a smaller " +
-        "minClusterSize, or a dim-reduction that exposes more structure.");
+        "No clusterable granularities found — try a different dim-reduction " +
+        "or a smaller min-samples.");
     }
     ctx.setProgress && ctx.setProgress(1);
 
     const s = getState();
     return {
-      capturedAt:     new Date().toISOString(),
-      clusterLevels:  s.clusterLevels,
-      clusterResult:  s.clusterResult,
-      bridgeAnalysis: s.bridgeAnalysis,
-      layers:         out.layers,
-      settings:       { ...params, capLayers },
-      nLevels:        out.levels.length,
-      scoreVersion:   SCORE_VERSION,
+      capturedAt:      new Date().toISOString(),
+      multiLevelSweep: s.multiLevelSweep,        // { candidates, curve, uidPrefix, floor }
+      settings:        { ...params, floor },
+      nCandidates:     out.candidates.length,
+      scoreVersion:    SCORE_VERSION,
     };
   };
 }

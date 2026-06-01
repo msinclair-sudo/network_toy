@@ -52,6 +52,12 @@ export const DESCRIPTION = "Live blend visualisation; per-frame interpolation be
 // instance allowed across all slots at any time. The panel-picker
 // modal filters this out when an instance already exists somewhere.
 export const SINGLETON = true;
+// Keep the WebGL viewer ALIVE across tab switches — the panel system
+// detaches/re-attaches its DOM instead of destroy + remount. Tearing
+// 3d-force-graph down and rebuilding it rendered a blank canvas on the
+// first switch back (and leaked WebGL contexts). Never destroyed until its
+// tab is actually closed.
+export const KEEP_ALIVE = true;
 
 const R_GLOBAL = 60;        // matches generation.js's working half-extent
 
@@ -452,27 +458,46 @@ export function mount(container, _state, config = {}, tabContext = null) {
       if (settingsRoot) settingsRoot.remove();
       if (colourOverlay && colourOverlay.root) colourOverlay.root.remove();
 
-      // 3d-force-graph teardown is racy: an in-flight tick (from
-      // TrackballControls' own update loop) can fire after
-      // _destructor() removes the simulation, throwing
-      // "Cannot read properties of undefined (reading 'tick')".
-      // We dampen it with pauseAnimation + controls.dispose() +
-      // a deferred _destructor; one stale tick still leaks through
-      // on some runs. It's a 3d-force-graph internal bug and
-      // doesn't affect the page's behaviour. Smoke tests filter it.
       const g = Graph;
       Graph = null;
-      container.innerHTML = "";
+
       if (g) {
+        // Tear down 3d-force-graph SYNCHRONOUSLY and in an order that
+        // actually stops it. The old code deferred _destructor() to a RAF,
+        // which leaked one WebGL context + a running animation loop PER
+        // teardown — after enough tab switches the browser hits its
+        // ~16-context limit and the live viewer's context is lost (the
+        // "crash" on switching back).
+        //
+        //   1. pause the render/tick loop;
+        //   2. dispose the controls;
+        //   3. run the destructor NOW to release the WebGL context.
+        //
+        // A frame queued just before step 1 can still fire its tick after
+        // the destructor nulled the layout — an unavoidable internal
+        // 3d-force-graph bug. swallowStaleTick() below catches just that
+        // one error for a moment so it can't surface as uncaught.
+        // (Note: do NOT call graphData({}) here — it RESTARTS the animation
+        // loop, undoing pauseAnimation.)
+        const swallowStaleTick = (e) => {
+          const msg = (e && (e.message || (e.error && e.error.message))) || "";
+          if (/reading '?tick'?/.test(msg)) {
+            e.preventDefault();
+            if (e.stopImmediatePropagation) e.stopImmediatePropagation();
+          }
+        };
+        window.addEventListener("error", swallowStaleTick, true);
+        setTimeout(() => window.removeEventListener("error", swallowStaleTick, true), 1500);
+
         try { g.pauseAnimation && g.pauseAnimation(); } catch (_) {}
         try {
           const c = g.controls && g.controls();
           if (c && c.dispose) c.dispose();
         } catch (_) {}
-        requestAnimationFrame(() => {
-          try { g._destructor && g._destructor(); } catch (_) {}
-        });
+        try { g._destructor && g._destructor(); } catch (_) {}
       }
+
+      container.innerHTML = "";
     },
   };
 }

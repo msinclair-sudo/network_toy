@@ -24,8 +24,9 @@
 import { getState, subscribe }            from "./state.js";
 import {
   getRootStep, getStep, getSelectedStep, isStepStale,
-  selectStep, STEP_STATUS,
+  selectStep, deleteStep, getStepDescendants, STEP_STATUS,
 } from "./workflow.js";
+import { openModal }                       from "./modals/modal.js";
 import { migrateLegacyToWorkflowIfNeeded } from "./workflow-migration.js";
 import { projectStepIntoLegacyState }      from "./workflow-projection.js";
 import { getLayerDescriptor, rerunStep }   from "./modals/layer-descriptors.js";
@@ -44,6 +45,8 @@ const DESCRIPTOR_BY_TYPE = {
   "dimSweep":           "dimSweep",
   "fusionComparison":   "fusionComparison",
   "multiLevel":         "multiLevel",
+  "bridgeAnalysis":     "bridgeAnalysis",
+  "labelling":          "labelling",
 };
 
 // Layout constants. Cards are smaller than slice 2.3 since branching
@@ -461,6 +464,26 @@ function renderCard(step, x, y, w, h, selectedId, positionByStep) {
     g.appendChild(gear);
   }
 
+  // "✕" delete button — top-left corner, clear of the gear (bottom-right),
+  // queue badge / re-run (top-right) and the "+" (bottom-centre). Confirms
+  // before cascading the delete.
+  {
+    const del = svgEl("g", {
+      class: "wf-delete-btn",
+      transform: `translate(10, 10)`,
+    });
+    del.appendChild(svgEl("circle", { cx: 0, cy: 0, r: 7, class: "wf-delete-hit" }));
+    del.appendChild(svgEl("path", {
+      d: "M -3 -3 L 3 3 M 3 -3 L -3 3",
+      class: "wf-delete-glyph",
+    }));
+    del.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      confirmDeleteCard(step);
+    });
+    g.appendChild(del);
+  }
+
   // "+" add-step button at the base of the card (UI #2). Opens a menu of
   // valid downstream steps; picking one forks a new child card. Only on
   // cards that have at least one downstream option.
@@ -476,6 +499,13 @@ function renderCard(step, x, y, w, h, selectedId, positionByStep) {
     }));
     plus.addEventListener("click", (ev) => {
       ev.stopPropagation();
+      // Anchor the addition on THIS card. Selection-driven descriptors
+      // (multiLevel / dimSweep / bootstrap) resolve their parent from the
+      // selected card's lineage — without this, clicking "+" on a dimred
+      // card while some other card is selected makes them report "no
+      // dim-reduction card" even though one is right here.
+      selectStep(step.id);
+      projectStepIntoLegacyState(step.id);
       openAddStepModal(step);
     });
     g.appendChild(plus);
@@ -497,14 +527,36 @@ function onCardClick(step) {
   projectStepIntoLegacyState(step.id);
 }
 
-// Open the config modal for a card (the gear-icon action). Cards whose
-// type maps to a layer descriptor get an editable modal; Apply forks a
-// new sibling per the slice 2.5 modal-as-step-creator semantics.
+// Open the config modal for a card (the gear-icon action). The gear EDITS
+// THIS card in place — Apply overwrites the same card (id / parent /
+// children kept) and re-runs it; descendants go stale. Branching is the
+// "+" button's job, not the gear's. (Data is the exception: switching
+// data source rebuilds the whole tree.)
 function openStepModal(step) {
   const descriptorId = DESCRIPTOR_BY_TYPE[step.type];
   if (!descriptorId) return;
-  const desc = getLayerDescriptor(descriptorId);
+  const editStepId = step.type === "data" ? null : step.id;
+  const desc = getLayerDescriptor(descriptorId, editStepId);
   if (desc && desc.openModal) desc.openModal();
+}
+
+// Delete a card (and its descendants) with a confirm. Wired to the per-
+// card ✕ button. deleteStep cascades + rebinds selection/root internally.
+function confirmDeleteCard(step) {
+  const nDesc = getStepDescendants(step.id).length;
+  const body = document.createElement("div");
+  body.className = "delete-card-confirm";
+  body.textContent = nDesc > 0
+    ? `Delete “${step.label}” and its ${nDesc} downstream card${nDesc > 1 ? "s" : ""}? This can't be undone.`
+    : `Delete “${step.label}”? This can't be undone.`;
+  openModal({
+    title: "Delete card",
+    body,
+    actions: [
+      { label: "Cancel" },
+      { label: "Delete", primary: true, onClick: () => { deleteStep(step.id); } },
+    ],
+  });
 }
 
 // ── helpers ──────────────────────────────────────────────────────────

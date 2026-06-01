@@ -212,10 +212,33 @@ also have a scope toggle:
 Mix freely. Add levels with **+ Add level**, remove with **×**.
 Same algorithm shared across all levels.
 
-*Planned:* an **auto multi-layer** mode that discovers the natural
-resolution layers from one HDBSCAN run (no manual level-stacking), with
-layer-by-layer 1–5 scoring and a bridge-cluster panel. Design + locked
-decisions in `doc/plan.md` §9 — not built yet.
+### Optimise multi-layer (auto multi-level)
+
+Instead of stacking levels by hand, the **+** under a dim-reduction card
+offers **Optimise multi-layer clustering**: run HDBSCAN *once* and extract
+a coarse→fine ladder of layers from its condensed tree (no repeated
+sweeps). Set the granularity (min cluster size / min samples) and a layer
+cap (≤ 5); the natural resolution shelves are discovered automatically.
+
+Noise-stripped points are absorbed into the nearest live cluster over the
+MST, so a fine cluster can draw members from **two coarse parents** — a
+genuine *bridge*. The result is a multi-level clustering card; the viewer's
+colour-by-layer mode shows each level. (The dominant distance-matrix cost
+fans out across your CPU cores.)
+
+Two panels consume it (add them from any panel slot's `+`):
+
+- **Bridge analysis** — each fine cluster vs a chosen coarse parent level,
+  split by a dominance threshold **τ** (default 0.8) into *Encapsulated*
+  (one dominant parent) and *Bridges* (spans ≥2 parents below τ).
+- **Tree scoring** — score clusters **1–5, layer by layer**. The top layer
+  first; descending a layer filters the finer clusters by a slider on their
+  dominant parent's score (children of well-scored parents only), with
+  bridges in their own section. Scores persist with the project. Cluster
+  labels come from a multi-method module (representative paper + year on
+  real data; TF-IDF / c-TF-IDF light up once paper titles are materialised).
+
+Design + locked decisions in `doc/plan.md` §9.
 
 ### Optimise tab
 

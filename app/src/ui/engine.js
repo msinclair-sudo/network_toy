@@ -26,6 +26,7 @@ import { assertCitationResult }                                  from "../citati
 import { getAlgorithm as getCitationLayoutAlgorithm }            from "../citation-layout/registry.js";
 import { alignByComponent, alignGlobal }                         from "../blend/align.js";
 import { computeBridgeAnalysis }                                 from "./bridge-analysis.js";
+import { runPhase2Score, buildLayersFromPicks }                 from "../eval/multilayer-sweep.js";
 import { update, getState, setLayerState }                       from "./state.js";
 import { runDAG }                                                from "../workers/dag.js";
 import { slimNodesForClustering }                                from "../clustering-cascade.js";
@@ -742,46 +743,106 @@ export async function recluster(opts = {}) {
 // opts: { params?, capLayers?, minClusters?, uidPrefix? }. Returns the
 // worker output { layers, levels } (levels empty if the tree was
 // structureless) so the runner can snapshot it into the card.
-export async function recomputeMultiLevel(opts = {}) {
+// PRODUCE-ONLY sweep (§9 revamp 2026-06-01). Runs Phase 1 (worker: one
+// HDBSCAN model + plateau candidates) + Phase 2 (main: bootstrap-score EVERY
+// candidate), and stores the whole scored set on state.multiLevelSweep. It
+// does NOT pick layers and does NOT touch clusterLevels — selection is now a
+// manual click on the reproducibility curve (the picker card), which calls
+// commitMultiLevelLayers() below. The candidates retain their clusterResult
+// (nodeCluster), so committing a pick needs no sweep re-run.
+//
+// Returns { candidates, curve } so the runner can snapshot them into the
+// producer card.
+export async function recomputeMultiLevelSweep(opts = {}) {
   const s = getState();
-  if (!s.genResult || !s.dimredResult) return { layers: [], levels: [] };
+  if (!s.genResult || !s.dimredResult) return { candidates: [], curve: [] };
   const n = s.genResult.nodes.length;
-  const params = opts.params || { minSamples: 5, minClusterSize: 5 };
+  const params = opts.params || { minSamples: 15, selectionMethod: "leaf" };
 
   setLayerState("clustering", "running");
   const nodesSlim = slimNodesForClustering(s.genResult.nodes);
 
+  // ── Phase 1 (worker): build the model once + plateau candidates. ──
   const dag = {
     ml: {
       workerUrl: CLUSTERING_WORKER_URL,
       deps: [],
       buildPayload: () => ({
-        mode:         "multilevel",
+        mode:         "multilayer",
         nodesSlim,
         dimredResult: s.dimredResult,
         params,
         n,
-        opts: {
-          capLayers:   opts.capLayers,
-          minClusters: opts.minClusters,
-          uidPrefix:   opts.uidPrefix,
-        },
+        opts: { sizeGridCount: opts.sizeGridCount },
       }),
     },
   };
-
   const r = await runDAG(dag);
-  const out = r.ml || { layers: [], levels: [] };
-  const levels = out.levels || [];
-
-  if (levels.length === 0) {
+  const phase1 = (r.ml && r.ml.candidates) || [];
+  if (phase1.length === 0) {
     setLayerState("clustering", "fresh");
-    return out;
+    update({ multiLevelSweep: { candidates: [], curve: [] }, engineRevision: (getState().engineRevision || 0) + 1 });
+    return { candidates: [], curve: [] };
+  }
+
+  // ── Phase 2 (main thread): bootstrap-score EVERY candidate. The bootstrap
+  //    fans its B re-clusterings out across clustering-workers. ──
+  const { candidates, curve } = await runPhase2Score({
+    candidates:    phase1,
+    genResult:     s.genResult,
+    dimredResult:  s.dimredResult,
+    algo:          getClusteringAlgorithm("hdbscan"),
+    params:        { ...params, uidPrefix: opts.uidPrefix },
+    bootstrapOpts: opts.bootstrapOpts || {},
+    onProgress:    opts.onProgress || null,
+    abortSignal:   opts.abortSignal || null,
+  });
+
+  update({
+    // The whole scored sweep — candidates (with clusterResults) for the
+    // picker's commit, curve for the chart. No layers committed yet.
+    multiLevelSweep: {
+      candidates,
+      curve,
+      uidPrefix: opts.uidPrefix || "ML",
+      floor:     Number.isFinite(opts.floor) ? opts.floor : 0.6,   // guide line on the curve
+    },
+    engineRevision: (getState().engineRevision || 0) + 1,
+  });
+  setLayerState("clustering", "fresh");
+  return { candidates, curve };
+}
+
+// Commit a user-picked set of granularities (by cluster count) into the live
+// clusterLevels[] ladder, then recompute the downstream (bridge analysis +
+// neighbourhoods). Called by the picker card's Apply. Reads the cached
+// candidates off state.multiLevelSweep — no sweep re-run, so re-picking is
+// cheap. Returns the built levels (empty if nothing valid was picked).
+export function commitMultiLevelLayers(pickedCounts, opts = {}) {
+  const s = getState();
+  const sweep = s.multiLevelSweep;
+  if (!sweep || !Array.isArray(sweep.candidates) || sweep.candidates.length === 0) {
+    return { levels: [] };
+  }
+  const uidPrefix = opts.uidPrefix || sweep.uidPrefix || "ML";
+  const levels = buildLayersFromPicks(sweep.candidates, pickedCounts, uidPrefix);
+  if (levels.length === 0) {
+    // Nothing valid picked — clear the ladder so the viewer reflects the
+    // empty selection rather than a stale one.
+    update({
+      clusterLevels:          null,
+      clusterResult:          null,
+      clusterLevelsPreFusion: null,
+      clusterResultPreFusion: null,
+      bridgeAnalysis:         null,
+      engineRevision:         (getState().engineRevision || 0) + 1,
+    });
+    return { levels: [] };
   }
 
   const finest = levels[levels.length - 1].clusterResult;
   const cfgBridge = clampedBridgeConfig(s.bridgeConfig, levels);
-  const bridgeAnalysis = computeBridgeAnalysis(levels, cfgBridge);
+  const bridgeAnalysis = levels.length >= 2 ? computeBridgeAnalysis(levels, cfgBridge) : null;
 
   update({
     clusterLevels:          levels,
@@ -791,13 +852,12 @@ export async function recomputeMultiLevel(opts = {}) {
     clusterResultPreFusion: null,
     bridgeAnalysis,
     bridgeConfig:    cfgBridge,
-    multiLevelLayers: out.layers || [],
     evalResults:     { validate: null, optimise: null },
-    engineRevision:  s.engineRevision + 1,
+    engineRevision:  (getState().engineRevision || 0) + 1,
   });
   setLayerState("clustering", "fresh");
   reneighbour();
-  return out;
+  return { levels };
 }
 
 // Re-run only the bridge analysis lane — used when the user changes

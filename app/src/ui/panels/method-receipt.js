@@ -16,10 +16,18 @@
 // supervisor email.
 
 import { getState, subscribe }    from "../state.js";
+import { getSelectedStep, getStepAncestors, getStep, listSteps } from "../workflow.js";
 import { getAlgorithm as getClusteringAlgo } from "../../clustering-registry.js";
 import {
   SCORE_VERSION, DEFAULT_MIN_MEMBERS, HENNIG_STABLE, HENNIG_DOUBTFUL,
 }                                  from "../../eval/bootstrap.js";
+
+// Clustering output cards — a plain tree-cut clustering and a
+// sweep-selected multi-layer ladder both stand in as "the clustering"
+// for the receipt. Mirrors CLUSTERING_LIKE_TYPES in layer-descriptors.js.
+// The PICKER card materialises clusterLevels (the producer sweep only scores
+// candidates), so it's the clustering-equivalent the receipt describes.
+const CLUSTERING_LIKE_TYPES = ["clustering", "multiLevelPicker"];
 
 export const ID          = "method-receipt";
 export const LABEL       = "Method receipt";
@@ -92,27 +100,21 @@ export function mount(container, _state, _config = {}) {
 function buildReceipt(state) {
   const lines = [];
 
-  // ── Clustering: active algorithm + params + level structure. ──
-  const cfg = state.layerParams && state.layerParams.clustering;
+  // ── Clustering: describe the SELECTED card, not the global config. ──
+  // The workflow tree is the primary surface; a card's params/result are
+  // selection-driven, whereas state.layerParams.clustering is the global
+  // singleton that lags behind whatever card is actually being viewed.
+  // Walk the selection's ancestry to the nearest clustering-like card so
+  // analysis cards (bridge/scoring/labelling) report their upstream
+  // clustering rather than "none".
+  const clustStep = findClusteringCard();
   const lvls = state.clusterLevels || [];
-  if (cfg && lvls.length > 0) {
-    const algoId = cfg.method;
-    let algoLabel = algoId;
-    try {
-      const a = getClusteringAlgo(algoId);
-      algoLabel = a && a.label ? a.label : algoId;
-    } catch (_) { /* registry might not know it; use id */ }
-    const finest = lvls[lvls.length - 1].clusterResult;
-    const nClusters = finest ? finest.clusters.length : "?";
-    lines.push(`Clustering: ${algoLabel} (${algoId}), ${lvls.length} level${lvls.length > 1 ? "s" : ""}, ${nClusters} clusters at the finest level.`);
-
-    cfg.levels.forEach((lvl, i) => {
-      const params = lvl.params ? Object.entries(lvl.params)
-        .map(([k, v]) => `${k}=${formatParamVal(v)}`)
-        .join(", ") : "(defaults)";
-      const scopeTag = i === 0 ? "global" : (lvl.scope || "within-parent");
-      lines.push(`  L${i} [${scopeTag}]: ${params}`);
-    });
+  if (clustStep && lvls.length > 0) {
+    if (clustStep.type === "multiLevelPicker") {
+      describeMultiLevel(lines, clustStep, lvls);
+    } else {
+      describeClustering(lines, clustStep, lvls);
+    }
   } else {
     lines.push("Clustering: none applied yet.");
   }
@@ -162,12 +164,20 @@ function buildReceipt(state) {
   }
   lines.push("");
 
-  // ── Bootstrap protocol (from latest Optimise sweep settings if
-  // present; else defaults). ──
+  // ── Bootstrap protocol. Prefer the SELECTED multi-layer card's own
+  // settings (its ladder was sweep-selected against these), then the
+  // latest Optimise sweep settings, then defaults. ──
   const opt = state.evalResults && state.evalResults.optimise;
   const sweepSettings = opt && opt.settings ? opt.settings : null;
-  const B           = sweepSettings && sweepSettings.B          != null ? sweepSettings.B          : 10;
-  const subFrac     = 0.5;   // hard default; not surfaced in sweep settings yet
+  // The picker card's sweep settings live on its producer parent.
+  const producerCard = clustStep && clustStep.type === "multiLevelPicker" && clustStep.parentId
+    ? getStep(clustStep.parentId) : null;
+  const cardSettings  = producerCard && producerCard.result
+    ? producerCard.result.settings : null;
+  const B = cardSettings   && cardSettings.B   != null ? cardSettings.B
+          : sweepSettings  && sweepSettings.B  != null ? sweepSettings.B
+          : 10;
+  const subFrac     = 0.5;   // hard default; not surfaced in settings yet
   const noiseHandl  = sweepSettings && sweepSettings.noiseHandling || "exclude";
   const minMembers  = DEFAULT_MIN_MEMBERS;
   lines.push(`Bootstrap protocol (SCORE_VERSION ${SCORE_VERSION}):`);
@@ -211,6 +221,87 @@ function buildReceipt(state) {
   lines.push("References: doc/eval.md (full Optimise spec), doc/plan.md §6.18 (hardening pass audit).");
 
   return lines.join("\n");
+}
+
+// Find the clustering output card the receipt should describe:
+//   1. the selected card if it is itself clustering-like;
+//   2. otherwise the nearest clustering-like ancestor (so an analysis
+//      card like bridge/scoring/labelling reports its upstream clustering);
+//   3. otherwise (nothing selected, or a selection off the clustering
+//      branch) the most-recently-completed clustering-like card anywhere
+//      in the tree — so the receipt still describes the applied
+//      clustering rather than "none".
+// Returns null only when no clustering-like card exists at all.
+function findClusteringCard() {
+  const sel = getSelectedStep();
+  if (sel) {
+    if (CLUSTERING_LIKE_TYPES.includes(sel.type)) return sel;
+    const ancestors = getStepAncestors(sel.id);   // root → sel
+    for (let i = ancestors.length - 1; i >= 0; i--) {
+      if (CLUSTERING_LIKE_TYPES.includes(ancestors[i].type)) return ancestors[i];
+    }
+  }
+  // Fallback 1: latest clustering-like card with a result. listSteps is
+  // BFS order; the last match is the deepest/most-recent on the tree.
+  const candidates = CLUSTERING_LIKE_TYPES
+    .flatMap(t => listSteps({ type: t }))
+    .filter(s => s.result);
+  if (candidates.length) return candidates[candidates.length - 1];
+
+  // Fallback 2: no workflow tree in scope (e.g. a freshly-reset test
+  // page, or a project that hasn't migrated). Synthesise a card from the
+  // global layerParams.clustering so the receipt still describes the
+  // applied clustering. Shape matches a plain clustering card's params.
+  const cfg = getState().layerParams && getState().layerParams.clustering;
+  if (cfg && cfg.method) return { type: "clustering", params: cfg, result: null };
+  return null;
+}
+
+// Plain (tree-cut) clustering card: params carry { method, levels }, one
+// config entry per level. Describe each level's algorithm params verbatim.
+function describeClustering(lines, step, lvls) {
+  const cfg = step.params || {};
+  const algoId = cfg.method;
+  let algoLabel = algoId;
+  try {
+    const a = getClusteringAlgo(algoId);
+    algoLabel = a && a.label ? a.label : algoId;
+  } catch (_) { /* registry might not know it; use id */ }
+  const finest = lvls[lvls.length - 1].clusterResult;
+  const nClusters = finest ? finest.clusters.length : "?";
+  lines.push(`Clustering: ${algoLabel} (${algoId}), ${lvls.length} level${lvls.length > 1 ? "s" : ""}, ${nClusters} clusters at the finest level.`);
+
+  const cfgLevels = Array.isArray(cfg.levels) ? cfg.levels : [];
+  cfgLevels.forEach((lvl, i) => {
+    const params = lvl.params ? Object.entries(lvl.params)
+      .map(([k, v]) => `${k}=${formatParamVal(v)}`)
+      .join(", ") : "(defaults)";
+    const scopeTag = i === 0 ? "global" : (lvl.scope || "within-parent");
+    lines.push(`  L${i} [${scopeTag}]: ${params}`);
+  });
+}
+
+// Multi-layer (§9, producer/picker split) card: the ladder is NOT a set of
+// per-level configs — it is one HDBSCAN model (shared minSamples, leaf) whose
+// candidate partitions are bootstrap-scored; the USER then picks granularities
+// off the reproducibility curve as the layers. `step` is the PICKER card; its
+// producer parent carries the sweep settings (minSamples / floor). Describe
+// the selection contract, which is stable; deliberately avoid asserting the
+// internal shelf/absorb mechanism here.
+function describeMultiLevel(lines, step, lvls) {
+  const p = step.params || {};                       // { pickedCounts }
+  // Settings live on the producer (the picker's parent), not the picker.
+  const producer = step.parentId ? getStep(step.parentId) : null;
+  const set = (producer && producer.result && producer.result.settings) || {};
+  const minSamples = set.minSamples;
+  const floor      = set.floor;
+  const finest = lvls[lvls.length - 1].clusterResult;
+  const nClusters = finest ? finest.clusters.length : "?";
+  const picked = Array.isArray(p.pickedCounts) ? p.pickedCounts.slice().sort((a, b) => a - b) : null;
+
+  lines.push(`Clustering: HDBSCAN multi-layer ladder, ${lvls.length} user-picked level${lvls.length > 1 ? "s" : ""}, ${nClusters} clusters at the finest level.`);
+  lines.push(`  One HDBSCAN model (leaf selection, minSamples=${minSamples != null ? minSamples : "?"}); the layers are partitions of that model at the granularities you picked, not independent per-level fits.`);
+  lines.push(`  Selection: candidate partitions bootstrap-scored (reproducibility vs. cluster count); you chose the layers off the curve${picked ? ` (counts ${picked.join(", ")})` : ""}. Guide floor=${floor != null ? floor : "?"}.`);
 }
 
 function noiseHandlingExplanation(mode) {

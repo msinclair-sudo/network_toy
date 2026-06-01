@@ -14,6 +14,7 @@
 // New layer kinds plug in here without touching workflow-chart.js.
 
 import { listDataSources, getDataSource }           from "../../datasource/registry.js";
+import { getNodeText, hasSqliteText }               from "../../datasource/sqlite.js";
 import { listAlgorithms as listDimredAlgos,
          getAlgorithm   as getDimredAlgo }         from "../../dimred/registry.js";
 import { listAlgorithms as listClusteringAlgos,
@@ -22,8 +23,9 @@ import { listAlgorithms as listLayoutAlgos,
          getAlgorithm   as getLayoutAlgo }         from "../../citation-layout/registry.js";
 import { getState, update, setDataSourceMode, setDataSourceConfig } from "../state.js";
 import { createStep, listSteps, clearWorkflow, getStep,
-         getStepAncestors, getSelectedStep, selectStep } from "../workflow.js";
-import { enqueueJob }                              from "../queue.js";
+         getStepAncestors, getSelectedStep, selectStep,
+         rearmStep }                              from "../workflow.js";
+import { enqueueJob, listJobs, cancelJob }        from "../queue.js";
 import { openAlgorithmModal }                       from "./algorithm-modal.js";
 import { openClusteringModal }                      from "./clustering-modal.js";
 import { openDimredModal }                          from "./dimred-modal.js";
@@ -38,21 +40,60 @@ import { openFusionComparisonModal }                from "./fusion-comparison-mo
 import { buildFusionComparisonJob }                 from "../runners/fusion-comparison-runner.js";
 import { openMultiLevelModal }                      from "./multi-level-modal.js";
 import { buildMultiLevelJob }                       from "../runners/multi-level-runner.js";
+import { buildMultiLevelPickerJob }                 from "../runners/multi-level-picker-runner.js";
+import { openBridgeAnalysisModal }                  from "./bridge-analysis-modal.js";
+import { buildBridgeAnalysisJob }                   from "../runners/bridge-analysis-runner.js";
+import { openLabellingModal }                       from "./labelling-modal.js";
+import { buildLabellingJob }                        from "../runners/cluster-labels-runner.js";
+import { listLabelMethods }                         from "../../labelling/cluster-labels.js";
+import { buildScoringPrepJob }                      from "../runners/scoring-runner.js";
 import { listComparableClusterings }                from "./step-tree-picker.js";
 import * as engine                                  from "../engine.js";
 
-export function getLayerDescriptor(nodeId) {
+// editStepId !== null puts the descriptor in "edit this card in place"
+// mode (the ⚙ gear path): Apply overwrites the given card rather than
+// forking a new one. null (the default, used by the "+" path) keeps the
+// fork-a-new-card behaviour. Data is excluded — switching data source
+// rebuilds the whole tree, so there's no in-place edit for the root.
+export function getLayerDescriptor(nodeId, editStepId = null) {
   switch (nodeId) {
     case "data":       return dataDescriptor();
-    case "dimred":     return dimredDescriptor();
-    case "clustering": return clusteringDescriptor();
-    case "layout":     return layoutDescriptor();
-    case "bootstrap":  return bootstrapDescriptor();
-    case "dimSweep":   return dimSweepDescriptor();
-    case "fusionComparison": return fusionComparisonDescriptor();
-    case "multiLevel": return multiLevelDescriptor();
+    case "dimred":     return dimredDescriptor(editStepId);
+    case "clustering": return clusteringDescriptor(editStepId);
+    case "layout":     return layoutDescriptor(editStepId);
+    case "bootstrap":  return bootstrapDescriptor(editStepId);
+    case "dimSweep":   return dimSweepDescriptor(editStepId);
+    case "fusionComparison": return fusionComparisonDescriptor(editStepId);
+    case "multiLevel": return multiLevelDescriptor(editStepId);
+    case "multiLevelPicker": return multiLevelPickerDescriptor(editStepId);
+    case "bridgeAnalysis": return bridgeAnalysisDescriptor(editStepId);
+    case "labelling":  return labellingDescriptor(editStepId);
+    case "scoring":    return scoringDescriptor(editStepId);
     default:           return null;
   }
+}
+
+// Cancel any still-live (pending/running) queue jobs bound to a step —
+// used before an in-place edit re-runs it, so we don't leave a stale job
+// racing the fresh one for the same card.
+function cancelBoundJobs(stepId) {
+  for (const j of listJobs()) {
+    if (j.stepId === stepId && (j.status === "pending" || j.status === "running")) {
+      cancelJob(j.id);
+    }
+  }
+}
+
+// Resolve the step a job will bind to: edit-in-place reuses editStepId
+// (re-armed with the new params/label, children kept); otherwise a fresh
+// card is forked under parentId. Returns the step id to enqueue against.
+function beginStep({ editStepId, type, label, params, parentId, refIds = [] }) {
+  if (editStepId && getStep(editStepId)) {
+    cancelBoundJobs(editStepId);
+    rearmStep(editStepId, { params, label, ...(refIds.length ? { refIds } : {}) });
+    return editStepId;
+  }
+  return createStep({ type, label, params, parentId, refIds });
 }
 
 // ── parent-step lookup ───────────────────────────────────────────────
@@ -90,22 +131,36 @@ function findCanonicalParent(childType) {
   return null;
 }
 
+// Step types that materialise a clusterLevels[] ladder and so are
+// interchangeable as the "clustering" a downstream analysis (bootstrap,
+// compare, …) attaches to. A multi-layer card IS a clustering output, so
+// it gets the same downstream affordances. Future analysis layers that
+// produce their own partitions can join this set.
+// The PICKER (not the producer sweep) materialises clusterLevels[], so it's
+// the clustering-equivalent that downstream analyses attach to.
+const CLUSTERING_LIKE_TYPES = ["clustering", "multiLevelPicker"];
+
 // Analysis cards (bootstrap / dim-sweep / future) attach to the
 // nearest matching ancestor of the SELECTED step — not "latest of
 // type". The user's mental model is "I'm looking at this clustering;
 // run a bootstrap on it"; with branching, "latest" picks the wrong
 // sibling when the user has scrolled back.
 //
+// targetType may be a single type string or an array of acceptable
+// types (e.g. CLUSTERING_LIKE_TYPES so bootstrap can sit under either a
+// clustering or a multi-layer card).
+//
 // Returns the ancestor step id, or null if no ancestor of the target
 // type exists in the selected step's lineage.
 function findSelectedAncestorOfType(targetType) {
+  const types = Array.isArray(targetType) ? targetType : [targetType];
   const sel = getSelectedStep();
   if (!sel) return null;
   // Include the selection itself — running a bootstrap from a
   // clustering card should attach right under that card.
   const lineage = [...getStepAncestors(sel.id)];
   for (let i = lineage.length - 1; i >= 0; i--) {
-    if (lineage[i].type === targetType) return lineage[i].id;
+    if (types.includes(lineage[i].type)) return lineage[i].id;
   }
   return null;
 }
@@ -126,16 +181,28 @@ function findSelectedAncestorOfType(targetType) {
 // step completes; rejects on failure or cancel). Modals await this so
 // their Running… indicator stays visible until completion (modals that
 // close on Apply just call it without awaiting).
-function createAndRunStep({ type, label, params, engineFn }) {
-  const parentId = findCanonicalParent(type);
-  if (parentId == null) {
-    // No tree yet (e.g. legacy boot path before migration runs). Fall
-    // back to the legacy behaviour: just call engineFn without
-    // creating a step. The chart will be silent for this work; an
-    // explicit migration on the next state change will rebuild.
-    return engineFn();
+function createAndRunStep({ type, label, params, engineFn, editStepId = null }) {
+  let stepId;
+  if (editStepId && getStep(editStepId)) {
+    // Gear edit: overwrite THIS card in place (same id / parent /
+    // children); just update params + re-run.
+    stepId = beginStep({ editStepId, type, label, params });
+  } else {
+    const parentId = findCanonicalParent(type);
+    if (parentId == null) {
+      // No tree yet (e.g. legacy boot path before migration runs). Fall
+      // back to the legacy behaviour: just call engineFn without
+      // creating a step. The chart will be silent for this work; an
+      // explicit migration on the next state change will rebuild.
+      return engineFn();
+    }
+    stepId = createStep({ type, label, params, parentId });
   }
-  const stepId = createStep({ type, label, params, parentId });
+  // Make the freshly-applied card the active selection so the next "+"
+  // (and selection-driven descriptors like multiLevel / dimSweep) resolve
+  // their parent to THIS card rather than to a stale earlier selection.
+  // Mirrors dataDescriptor / multiLevelDescriptor, which already select.
+  selectStep(stepId);
   const { promise } = enqueueJob({
     type, label,
     stepId,
@@ -263,12 +330,15 @@ function dataDescriptor() {
   return desc;
 }
 
-function dimredDescriptor() {
+function dimredDescriptor(editStepId = null) {
   const desc = {
     label: "Configure: Dim-reduction",
     listAlgos: (slot) => listDimredAlgos(slot),
     getActive: () => {
-      const lp = getState().layerParams.dimred;
+      // When editing a card (gear), prefill from THAT card's stored
+      // params; otherwise fall back to the last-applied live params.
+      const editStep = editStepId ? getStep(editStepId) : null;
+      const lp = (editStep && editStep.params) || getState().layerParams.dimred;
       const fallbackParams = (algoId) => getDimredAlgo(algoId).defaultParams();
       const noiseM  = lp && lp.noise       ? lp.noise.method       : "identity";
       const fusionM = lp && lp.fusion      ? lp.fusion.method      : "identity";
@@ -305,6 +375,7 @@ function dimredDescriptor() {
         type:   "dimred",
         label,
         params: dimredParams,
+        editStepId,
         engineFn: async () => {
           const s = getState();
           update({ layerParams: { ...s.layerParams, dimred: dimredParams } });
@@ -321,12 +392,13 @@ function dimredDescriptor() {
   return desc;
 }
 
-function clusteringDescriptor() {
+function clusteringDescriptor(editStepId = null) {
   const desc = {
     label: "Configure: Clustering",
     listAlgos: () => listClusteringAlgos(),
     getActive: () => {
-      const lp = getState().layerParams.clustering;
+      const editStep = editStepId ? getStep(editStepId) : null;
+      const lp = (editStep && editStep.params) || getState().layerParams.clustering;
       return {
         method: lp ? lp.method : "mutualKNN",
         levels: lp ? lp.levels : [
@@ -348,6 +420,7 @@ function clusteringDescriptor() {
         type:   "clustering",
         label,
         params: clusteringParams,
+        editStepId,
         engineFn: async () => {
           const s = getState();
           update({ layerParams: { ...s.layerParams, clustering: clusteringParams } });
@@ -412,20 +485,35 @@ export function rerunStep(stepId) {
   if (step.type === "multiLevel") {
     const p = step.params || {};
     return multiLevelDescriptor().applyChange({
-      minSamples:     p.minSamples,
-      minClusterSize: p.minClusterSize,
-      capLayers:      p.capLayers,
+      minSamples: p.minSamples,
+      floor:      p.floor,
+      B:          p.B,
     });
+  }
+  if (step.type === "bridgeAnalysis") {
+    const p = step.params || {};
+    return bridgeAnalysisDescriptor().applyChange({
+      fineLevel:   p.fineLevel,
+      coarseLevel: p.coarseLevel,
+    });
+  }
+  if (step.type === "labelling") {
+    const p = step.params || {};
+    return labellingDescriptor().applyChange({ methods: p.methods || [] });
+  }
+  if (step.type === "scoring") {
+    return scoringDescriptor().applyChange();
   }
   throw new Error(`[rerunStep] type "${step.type}" not re-runnable`);
 }
 
-function layoutDescriptor() {
+function layoutDescriptor(editStepId = null) {
   const desc = {
     label: "Configure: Citation layout",
     listAlgos: () => listLayoutAlgos(),
     getActive: () => {
-      const lp = getState().layerParams.layout;
+      const editStep = editStepId ? getStep(editStepId) : null;
+      const lp = (editStep && editStep.params) || getState().layerParams.layout;
       const method = lp ? lp.method : "fruchterman-reingold";
       const params = lp && lp.params ? lp.params : getLayoutAlgo(method).defaultParams();
       return { method, params };
@@ -437,6 +525,7 @@ function layoutDescriptor() {
         type:   "citationLayout",
         label,
         params: layoutParams,
+        editStepId,
         engineFn: async () => {
           const s = getState();
           update({ layerParams: { ...s.layerParams, layout: layoutParams } });
@@ -459,44 +548,58 @@ function layoutDescriptor() {
 //   - doesn't mutate state.layerParams (bootstrap has no spine params);
 //   - uses buildBootstrapJob to wrap the eval engine; the queue runner
 //     auto-publishes setStepResult, so we don't post-process here.
-function bootstrapDescriptor() {
+function bootstrapDescriptor(editStepId = null) {
+  // When editing, keep the card's existing parent + prefill its settings;
+  // otherwise resolve the parent from the current selection.
+  const editStep = () => (editStepId ? getStep(editStepId) : null);
+  const resolveParent = () => {
+    const es = editStep();
+    return es ? es.parentId : findSelectedAncestorOfType(CLUSTERING_LIKE_TYPES);
+  };
   const desc = {
     label: "Run: Bootstrap stability",
     getActive: () => {
-      const parentId = findSelectedAncestorOfType("clustering");
+      const es = editStep();
+      const settings = es && es.params ? { ...es.params } : { ...BOOTSTRAP_DEFAULTS };
+      const parentId = resolveParent();
       if (!parentId) {
-        return { hasClustering: false, settings: { ...BOOTSTRAP_DEFAULTS } };
+        return { hasClustering: false, settings };
       }
       const parent = getStep(parentId);
       const snap = parent && parent.result || {};
       const lvls = snap.clusterLevels || [];
       const finest = lvls.length > 0 ? lvls[lvls.length - 1].clusterResult : null;
-      const algoId = (parent && parent.params && parent.params.method) || "(unknown)";
-      let clusterLabel = algoId;
+      // Multi-layer cards run HDBSCAN but don't store a `method`; label
+      // them explicitly. Clustering cards carry their algo id.
+      const algoId = (parent && parent.params && parent.params.method)
+        || (parent && parent.type === "multiLevel" ? "hdbscan" : "(unknown)");
+      let clusterLabel = parent && parent.type === "multiLevel" ? "HDBSCAN (multi-layer)" : algoId;
       try {
         const a = getClusteringAlgo(algoId);
-        clusterLabel = a && a.label ? a.label : algoId;
+        if (a && a.label && parent.type !== "multiLevel") clusterLabel = a.label;
       } catch (_) {}
       return {
         hasClustering: true,
-        settings:      { ...BOOTSTRAP_DEFAULTS },
+        settings,
         clusterLabel,
         nClusters:     finest ? finest.clusters.length : 0,
         parentId,
       };
     },
     applyChange: async (settings) => {
-      const parentId = findSelectedAncestorOfType("clustering");
+      const parentId = resolveParent();
       if (!parentId) {
         throw new Error("[bootstrap-descriptor] no clustering ancestor to bootstrap against");
       }
       const label = `Bootstrap · B=${settings.B}`;
-      const stepId = createStep({
+      const stepId = beginStep({
+        editStepId,
         type:   "bootstrapStability",
         label,
         params: { ...settings },
         parentId,
       });
+      selectStep(stepId);
       const { promise } = enqueueJob({
         type:  "bootstrapStability",
         label,
@@ -526,11 +629,18 @@ function bootstrapDescriptor() {
 // clustering configs default to the validation-script protocol
 // (PCA / UMAP / HDBSCAN) — rerun via the chart's ↻ honours whatever
 // the step recorded.
-function dimSweepDescriptor() {
+function dimSweepDescriptor(editStepId = null) {
+  const editStep = () => (editStepId ? getStep(editStepId) : null);
+  const resolveParent = () => {
+    const es = editStep();
+    return es ? es.parentId : findSelectedAncestorOfType("dimred");
+  };
   const desc = {
     label: "Run: Dim sweep",
     getActive: () => {
-      const parentId = findSelectedAncestorOfType("dimred");
+      const parentId = resolveParent();
+      const es = editStep();
+      const p = (es && es.params) || {};
       const live = getState();
       const hasStage0Input = !!(
         (live.embedding && live.embedding.data) ||
@@ -544,16 +654,17 @@ function dimSweepDescriptor() {
         hasStage0Input,
         n, d,
         summary:         "PCA noise · UMAP compression · HDBSCAN (minClusterSize=15, minSamples=5)",
-        dimsText:        DIMSWEEP_DEFAULTS.dims.join(", "),
-        seedsText:       DIMSWEEP_DEFAULTS.seeds.join(", "),
-        threshold:       DIMSWEEP_DEFAULTS.verdictThreshold,
+        // When editing, prefill from the card's recorded sweep params.
+        dimsText:        (p.dims  || DIMSWEEP_DEFAULTS.dims).join(", "),
+        seedsText:       (p.seeds || DIMSWEEP_DEFAULTS.seeds).join(", "),
+        threshold:       Number.isFinite(p.verdictThreshold) ? p.verdictThreshold : DIMSWEEP_DEFAULTS.verdictThreshold,
         parentId,
       };
     },
     // settings: { dims, seeds, verdictThreshold } — algo defaults
     // baked here so the modal stays minimal.
     applyChange: async (settings) => {
-      const parentId = findSelectedAncestorOfType("dimred");
+      const parentId = resolveParent();
       if (!parentId) {
         throw new Error("[dim-sweep-descriptor] no dimred ancestor to sweep against");
       }
@@ -566,12 +677,14 @@ function dimSweepDescriptor() {
         clustering:       settings.clustering  || defaultClusteringConfig(),
       };
       const label = `Dim sweep · ${fullSettings.dims.length}d × ${fullSettings.seeds.length}s`;
-      const stepId = createStep({
+      const stepId = beginStep({
+        editStepId,
         type:   "dimSweep",
         label,
         params: { ...fullSettings },
         parentId,
       });
+      selectStep(stepId);
       const { promise } = enqueueJob({
         type:  "dimSweep",
         label,
@@ -600,16 +713,24 @@ function dimSweepDescriptor() {
 // §10.D4); the comparison card parents under the SELECTED clustering
 // ancestor (analysis-card convention, §10.O2). The viewer shows the
 // candidate's geometry via the projection special-case.
-function fusionComparisonDescriptor() {
+function fusionComparisonDescriptor(editStepId = null) {
+  const editStep = () => (editStepId ? getStep(editStepId) : null);
   const desc = {
     label: "Run: Compare clusterings",
     getActive: () => {
       const options = listComparableClusterings();
-      const selClust = findSelectedAncestorOfType("clustering");
-      const defaultRefId  = (selClust && options.some(o => o.id === selClust))
-        ? selClust
-        : (options[0] && options[0].id) || null;
-      const defaultCandId = (options.find(o => o.id !== defaultRefId) || {}).id || null;
+      const es = editStep();
+      const ep = (es && es.params) || {};
+      const selClust = findSelectedAncestorOfType(CLUSTERING_LIKE_TYPES);
+      // When editing, prefill the same pair the card recorded (if still present).
+      const defaultRefId  = (ep.refStepId && options.some(o => o.id === ep.refStepId))
+        ? ep.refStepId
+        : (selClust && options.some(o => o.id === selClust))
+          ? selClust
+          : (options[0] && options[0].id) || null;
+      const defaultCandId = (ep.candStepId && options.some(o => o.id === ep.candStepId) && ep.candStepId !== defaultRefId)
+        ? ep.candStepId
+        : (options.find(o => o.id !== defaultRefId) || {}).id || null;
       return {
         hasEnough:     options.length >= 2,
         options,
@@ -626,24 +747,29 @@ function fusionComparisonDescriptor() {
       }
       const ref  = getStep(refStepId);
       const cand = getStep(candStepId);
-      if (!ref  || ref.type  !== "clustering") {
-        throw new Error("[fusion-comparison-descriptor] ref must be an existing clustering card");
+      if (!ref  || !CLUSTERING_LIKE_TYPES.includes(ref.type)) {
+        throw new Error("[fusion-comparison-descriptor] ref must be an existing clustering or multi-layer card");
       }
-      if (!cand || cand.type !== "clustering") {
-        throw new Error("[fusion-comparison-descriptor] cand must be an existing clustering card");
+      if (!cand || !CLUSTERING_LIKE_TYPES.includes(cand.type)) {
+        throw new Error("[fusion-comparison-descriptor] cand must be an existing clustering or multi-layer card");
       }
-      // Parent = selected clustering ancestor (the branch the user is on);
-      // fall back to the ref card so there's always a valid parent. Both
-      // clusterings are refIds, not the parent.
-      const parentId = findSelectedAncestorOfType("clustering") || refStepId;
+      // Parent = the edited card's own parent, or the selected
+      // clustering-like ancestor; fall back to the ref card so there's
+      // always a valid parent. Both clusterings are refIds, not the parent.
+      const es = editStep();
+      const parentId = (es && es.parentId)
+        || findSelectedAncestorOfType(CLUSTERING_LIKE_TYPES)
+        || refStepId;
       const label = `compare · ${ref.label} vs ${cand.label}`;
-      const stepId = createStep({
+      const stepId = beginStep({
+        editStepId,
         type:   "fusionComparison",
         label,
         params: { refStepId, candStepId },
         parentId,
         refIds: [refStepId, candStepId],
       });
+      selectStep(stepId);
       const { promise } = enqueueJob({
         type:  "fusionComparison",
         label,
@@ -661,39 +787,59 @@ function fusionComparisonDescriptor() {
   return desc;
 }
 
-// Multi-level ("Optimise multi-layer") clustering — MLC §9.
+// Multi-level ("Optimise multi-layer") clustering — §9 revamp.
 //
-// One HDBSCAN run, a coarse→fine ladder of partitions extracted from the
-// condensed tree. Parents under the SELECTED dimred ancestor (like a
-// clustering card, since the ladder is itself a clustering output). The
-// `multiLevel` card lands its clusterLevels[] in the legacy slots so the
-// viewer's colour-by-layer mode + the bridge/scoring panels read it.
-function multiLevelDescriptor() {
+// Sweeps HDBSCAN resolution, bootstrap-scores each granularity's
+// reproducibility, and keeps the most stable partitions at distinct cluster
+// counts as a coarse→fine ladder (eval/multilayer-sweep.js). Parents under
+// the SELECTED dimred ancestor (the ladder is itself a clustering output).
+// Lands clusterLevels[] in the legacy slots so the viewer + bridge/scoring
+// panels read it, plus state.multiLevelSweep for the stability-vs-count panel.
+function multiLevelDescriptor(editStepId = null) {
+  const editStep = () => (editStepId ? getStep(editStepId) : null);
+  const resolveParent = () => {
+    const es = editStep();
+    return es ? es.parentId : findSelectedAncestorOfType("dimred");
+  };
   const desc = {
     label: "Optimise: Multi-layer clustering",
     getActive: () => {
-      const parentId = findSelectedAncestorOfType("dimred");
+      const parentId = resolveParent();
       const live = getState();
       const n = live.genResult ? live.genResult.nodes.length : 0;
-      const isReal = !!(live.dataSource && live.dataSource.mode === "real");
+      const es = editStep();
+      const ep = (es && es.params) || {};
       return {
         hasDimred: parentId != null,
         n,
-        defaults: { minSamples: 5, minClusterSize: isReal ? 15 : 5, capLayers: 5 },
+        // When editing, prefill the card's recorded params.
+        defaults: {
+          // Default minSamples 15 (was 5): probed on biblion n~3109, ms=5
+          // over-fragments to 137 leaves; ms~15 gives a cleaner, more
+          // reproducible ladder. See doc/multilevel-card-split-plan.md.
+          minSamples: Number.isFinite(ep.minSamples) ? ep.minSamples : 15,
+          floor:      Number.isFinite(ep.floor)      ? ep.floor      : 0.6,
+          B:          Number.isFinite(ep.B)          ? ep.B          : 10,
+        },
         parentId,
       };
     },
-    applyChange: async ({ minSamples, minClusterSize, capLayers }) => {
-      const parentId = findSelectedAncestorOfType("dimred");
+    applyChange: async ({ minSamples, floor, B }) => {
+      const parentId = resolveParent();
       if (!parentId) {
         throw new Error("[multi-level-descriptor] no dimred ancestor to cluster against");
       }
-      const params = { minSamples, minClusterSize };
-      const label = `Multi-layer · mcs=${minClusterSize} · ≤${capLayers}`;
-      const stepId = createStep({
+      // leaf, not eom: probed on biblion, eom collapses to ~2 clusters at
+      // every resolution; leaf gives a real coarse→fine ladder. Hardcoded
+      // for the multi-layer sweep (single-run clustering keeps its eom
+      // default). See doc/multilevel-card-split-plan.md.
+      const params = { minSamples, selectionMethod: "leaf" };
+      const label = "Multi-layer sweep";
+      const stepId = beginStep({
+        editStepId,
         type:   "multiLevel",
         label,
-        params: { ...params, capLayers },
+        params: { minSamples, floor, B },
         parentId,
       });
       selectStep(stepId);
@@ -703,15 +849,294 @@ function multiLevelDescriptor() {
         stepId,
         // uidPrefix = stepId keeps each card's level uids globally unique
         // (scoring keys scores by levelUid across the whole workflow).
-        fn:    buildMultiLevelJob({ params, capLayers, uidPrefix: stepId }),
+        fn:    buildMultiLevelJob({ params, floor, bootstrapOpts: { B }, uidPrefix: stepId }),
       });
-      promise.catch((e) => {
+      // When the sweep finishes, auto-spawn a picker card under it (the user
+      // clicks granularities on the curve to choose layers). One picker per
+      // producer; a re-run (gear edit) reuses the existing picker child.
+      promise.then(() => {
+        const existing = listSteps({ type: "multiLevelPicker" })
+          .find(st => st.parentId === stepId);
+        if (existing) { selectStep(existing.id); return; }
+        const pickerId = createStep({
+          type:   "multiLevelPicker",
+          label:  "Pick layers",
+          params: {},
+          parentId: stepId,
+        });
+        selectStep(pickerId);
+      }).catch((e) => {
         if (e && e.name === "AbortError") return;
         console.error("[multi-level-descriptor] job failed:", e);
       });
       return promise;
     },
     openModal: () => openMultiLevelModal(desc),
+  };
+  return desc;
+}
+
+// Layer-picker card (picker half of the §9 producer/picker split). Auto-
+// spawned under a multi-layer SWEEP card. It has no config modal — its UI is
+// the clickable reproducibility curve (the multilayer-picker panel). The
+// panel calls applyChange({pickedCounts}) when the user hits Apply; that
+// commits the picked granularities into clusterLevels[] (no sweep re-run —
+// commitMultiLevelLayers reads the producer's cached candidates).
+function multiLevelPickerDescriptor(editStepId = null) {
+  const step = () => (editStepId ? getStep(editStepId) : getSelectedStep());
+  const desc = {
+    label: "Pick layers",
+    // The panel reads getActive() to render the curve + current picks.
+    getActive: () => {
+      const st = step();
+      const producer = st && st.parentId ? getStep(st.parentId) : null;
+      const sweep = (producer && producer.result && producer.result.multiLevelSweep) || null;
+      const prevPicks = (st && st.result && Array.isArray(st.result.pickedCounts))
+        ? st.result.pickedCounts : [];
+      return {
+        stepId:     st ? st.id : null,
+        producerId: producer ? producer.id : null,
+        sweep,                         // { candidates, curve, uidPrefix, floor }
+        curve:      sweep ? sweep.curve : [],
+        floor:      sweep ? sweep.floor : 0.6,
+        uidPrefix:  (sweep && sweep.uidPrefix) || (producer ? producer.id : "ML"),
+        prevPicks,
+      };
+    },
+    // pickedCounts = the cluster counts the user clicked. Enqueues a tiny
+    // job that commits them; the picker card's result snapshots the ladder.
+    applyChange: async ({ pickedCounts }) => {
+      const st = step();
+      if (!st) throw new Error("[multi-level-picker] no picker card to apply to");
+      const producer = st.parentId ? getStep(st.parentId) : null;
+      const sweep = producer && producer.result && producer.result.multiLevelSweep;
+      const uidPrefix = (sweep && sweep.uidPrefix) || (producer ? producer.id : "ML");
+      const counts = Array.isArray(pickedCounts) ? pickedCounts : [];
+      const label = `Layers · ${counts.length} picked`;
+      const stepId = beginStep({
+        editStepId: st.id,
+        type:   "multiLevelPicker",
+        label,
+        params: { pickedCounts: counts },
+      });
+      selectStep(stepId);
+      const { promise } = enqueueJob({
+        type:  "multiLevelPicker",
+        label,
+        stepId,
+        fn:    buildMultiLevelPickerJob({ pickedCounts: counts, uidPrefix }),
+      });
+      promise.catch((e) => {
+        if (e && e.name === "AbortError") return;
+        console.error("[multi-level-picker] commit failed:", e);
+      });
+      return promise;
+    },
+    // No config modal — the picker's UI is the clickable curve panel. The
+    // "Pick layers" next-step action routes here; resolve to the picker card
+    // (the selected one, or the one under the selected producer) and select
+    // it so its panel comes forward. If the producer's picker was deleted,
+    // recreate it.
+    openModal: () => {
+      const sel = getSelectedStep();
+      if (sel && sel.type === "multiLevelPicker") { selectStep(sel.id); return; }
+      // Selected a producer (or a descendant): find/create its picker.
+      let producer = sel;
+      while (producer && producer.type !== "multiLevel") {
+        producer = producer.parentId ? getStep(producer.parentId) : null;
+      }
+      if (!producer) return;
+      const existing = listSteps({ type: "multiLevelPicker" })
+        .find(st => st.parentId === producer.id);
+      if (existing) { selectStep(existing.id); return; }
+      const pickerId = createStep({
+        type: "multiLevelPicker", label: "Pick layers", params: {}, parentId: producer.id,
+      });
+      selectStep(pickerId);
+    },
+  };
+  return desc;
+}
+
+// Bridge analysis — first "analysis layer" card (user's analysis-layers
+// plan: bridge analysis → centroid density → citation degree → …).
+//
+// Attaches under a clustering-like card (clustering OR multi-layer) and
+// histograms a fine cluster level against a coarser parent level, marking
+// fine clusters that straddle ≥2 coarse parents as bridges. Reuses the
+// existing singleton bridge-analysis PANEL — the projection layer replays
+// the card's result into state.bridgeAnalysis on selection, so no panel
+// changes are needed.
+function bridgeAnalysisDescriptor(editStepId = null) {
+  const editStep = () => (editStepId ? getStep(editStepId) : null);
+  const resolveParent = () => {
+    const es = editStep();
+    return es ? es.parentId : findSelectedAncestorOfType(CLUSTERING_LIKE_TYPES);
+  };
+  const desc = {
+    label: "Run: Bridge analysis",
+    getActive: () => {
+      const parentId = resolveParent();
+      if (!parentId) return { hasClustering: false, nLevels: 0 };
+      const parent = getStep(parentId);
+      const levels = (parent && parent.result && parent.result.clusterLevels) || [];
+      // The materialised committed level count (0 until the picker commits a
+      // ladder; the runner clamps any out-of-range pick).
+      const nLevels = levels.length || 0;
+      const es = editStep();
+      const ep = (es && es.params) || {};
+      const fineLevel = Number.isInteger(ep.fineLevel)
+        ? ep.fineLevel : Math.max(1, nLevels - 1);
+      const coarseLevel = Number.isInteger(ep.coarseLevel)
+        ? ep.coarseLevel : Math.max(0, fineLevel - 1);
+      return { hasClustering: true, nLevels, fineLevel, coarseLevel, parentId };
+    },
+    applyChange: async ({ fineLevel, coarseLevel }) => {
+      const parentId = resolveParent();
+      if (!parentId) {
+        throw new Error("[bridge-analysis-descriptor] no clustering ancestor to analyse");
+      }
+      const params = { fineLevel, coarseLevel };
+      const label = `Bridge · L${fineLevel}→L${coarseLevel}`;
+      const stepId = beginStep({
+        editStepId,
+        type:   "bridgeAnalysis",
+        label,
+        params,
+        parentId,
+      });
+      selectStep(stepId);
+      const { promise } = enqueueJob({
+        type:  "bridgeAnalysis",
+        label,
+        stepId,
+        fn:    buildBridgeAnalysisJob({ parentStepId: parentId, params }),
+      });
+      promise.catch((e) => {
+        if (e && e.name === "AbortError") return;
+        console.error("[bridge-analysis-descriptor] job failed:", e);
+      });
+      return promise;
+    },
+    openModal: () => openBridgeAnalysisModal(desc),
+  };
+  return desc;
+}
+
+// Cluster labelling (MLC §7) — the "analysis layer" that names clusters so
+// a human can score them. Attaches under a clustering-like card and labels
+// EVERY level of its ladder by the chosen methods, storing the result in
+// the card branch. Static: re-run (red dot) when the upstream clustering
+// changes. A downstream scoring card consumes these labels.
+function labellingDescriptor(editStepId = null) {
+  const editStep = () => (editStepId ? getStep(editStepId) : null);
+  const resolveParent = () => {
+    const es = editStep();
+    return es ? es.parentId : findSelectedAncestorOfType(CLUSTERING_LIKE_TYPES);
+  };
+  const desc = {
+    label: "Run: Cluster labelling",
+    getActive: () => {
+      const parentId = resolveParent();
+      if (!parentId) return { hasClustering: false, nLevels: 0, methods: [], selected: [] };
+      const parent = getStep(parentId);
+      const levels = (parent && parent.result && parent.result.clusterLevels) || [];
+      const nLevels = levels.length || 0;
+      // Availability is data-dependent — probe with the same ctx the runner
+      // will use (embedding + node table from live state).
+      const s = getState();
+      const probeCtx = {
+        embedding: s.embedding || (s._basePos ? { d: 3, data: s._basePos } : null),
+        nodes:     (s.genResult && s.genResult.nodes) || [],
+        getText:   hasSqliteText() ? getNodeText : undefined,
+      };
+      const methods = listLabelMethods(probeCtx);
+      const es = editStep();
+      const prev = es && es.params && Array.isArray(es.params.methods) ? es.params.methods : null;
+      // Default selection: the card's prior pick (edit) or every available method.
+      const selected = (prev || methods.filter(m => m.available).map(m => m.id))
+        .filter(id => methods.some(m => m.id === id && m.available));
+      return { hasClustering: true, nLevels, methods, selected, parentId };
+    },
+    applyChange: async ({ methods }) => {
+      const parentId = resolveParent();
+      if (!parentId) {
+        throw new Error("[labelling-descriptor] no clustering ancestor to label");
+      }
+      const params = { methods: [...methods] };
+      const label = `Labels · ${methods.length} method${methods.length === 1 ? "" : "s"}`;
+      const stepId = beginStep({
+        editStepId,
+        type:   "labelling",
+        label,
+        params,
+        parentId,
+      });
+      selectStep(stepId);
+      const { promise } = enqueueJob({
+        type:  "labelling",
+        label,
+        stepId,
+        fn:    buildLabellingJob({ parentStepId: parentId, methods }),
+      });
+      promise.catch((e) => {
+        if (e && e.name === "AbortError") return;
+        console.error("[labelling-descriptor] job failed:", e);
+      });
+      return promise;
+    },
+    openModal: () => openLabellingModal(desc),
+  };
+  return desc;
+}
+
+// Scoring card (MLC §5) — sits downstream of a labelling card and preps the
+// data the scoring panel works through (level ladder + labels + an empty
+// per-card scores map; the 1–5 scores live on this card). Unlike the other
+// cards it has NO config modal: picking it from the "+" just preps and
+// selects the card. The interactive scoring happens in the `scoring` PANEL
+// (opened from the panel "+" picker), which binds to the selected card.
+function scoringDescriptor(editStepId = null) {
+  const editStep = () => (editStepId ? getStep(editStepId) : null);
+  const resolveParent = () => {
+    const es = editStep();
+    return es ? es.parentId : findSelectedAncestorOfType("labelling");
+  };
+  const desc = {
+    label: "Prepare: Scoring",
+    getActive: () => {
+      const parentId = resolveParent();
+      return { hasLabelling: parentId != null, parentId };
+    },
+    applyChange: async () => {
+      const parentId = resolveParent();
+      if (!parentId) {
+        throw new Error("[scoring-descriptor] no labelling ancestor — add a labelling card first");
+      }
+      const label = "Scoring";
+      const stepId = beginStep({
+        editStepId,
+        type:   "scoring",
+        label,
+        params: {},
+        parentId,
+      });
+      selectStep(stepId);
+      const { promise } = enqueueJob({
+        type:  "scoring",
+        label,
+        stepId,
+        fn:    buildScoringPrepJob({ parentLabellingStepId: parentId }),
+      });
+      promise.catch((e) => {
+        if (e && e.name === "AbortError") return;
+        console.error("[scoring-descriptor] prep failed:", e);
+      });
+      return promise;
+    },
+    // No config modal — picking the card preps it directly.
+    openModal: () => desc.applyChange()
+      .catch(e => console.error("[scoring-descriptor] applyChange failed:", e)),
   };
   return desc;
 }

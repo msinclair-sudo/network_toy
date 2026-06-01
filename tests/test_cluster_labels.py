@@ -43,12 +43,55 @@ def test_label_methods_synthetic(clean_page):
             c0Combined: c0.combined,
         };
     }''')
-    assert out["methodsAvail"] == ["representative:true", "year:true", "cTfidf:true", "tfidf:true"]
+    assert out["methodsAvail"] == ["representative:true", "year:true", "cTfidf:true", "tfidf:true", "keybert:true"]
     assert "graph" in out["c0Terms"] and "transformer" not in out["c0Terms"]
     assert "transformer" in out["c1Terms"]
     assert out["c0Rep"] == "P0"
     assert out["c1Rep"] == "P2"
+    # combine() prefers KeyBERT now; both KeyBERT and cTfidf surface "graph".
     assert "graph" in out["c0Combined"]
+
+
+def test_keybert_diverse_keyphrases(clean_page):
+    """KeyBERT-style labels: cluster-distinctive 1–2-gram keyphrases, MMR-
+    diversified (no near-duplicate phrases dominating), and available only
+    with text. Repeats the discriminating bigram heavily so it ranks."""
+    out = clean_page.evaluate(r'''async () => {
+        const { labelClusters } = await import("/app/src/labelling/cluster-labels.js");
+        const cr = { nodeCluster: Int32Array.from([0,0,0,1,1,1]), clusters: [{id:0},{id:1}] };
+        const texts = {
+            0: "soil microbial community structure under tillage management practices",
+            1: "soil microbial community diversity nitrogen fertilizer treatment effects",
+            2: "soil microbial community biomass carbon sequestration cropland soils",
+            3: "arbuscular mycorrhizal fungi root colonization phosphorus uptake plants",
+            4: "arbuscular mycorrhizal fungi spore density host plant symbiosis",
+            5: "arbuscular mycorrhizal fungi hyphal network nutrient transfer roots",
+        };
+        const ctx = {
+            embedding: { d: 1, data: Float32Array.from([0,0,0,1,1,1]) },
+            nodes: [0,1,2,3,4,5].map(id => ({ id, paperId: "P"+id })),
+            getText: (id) => texts[id],
+        };
+        const res = labelClusters(cr, ctx, { methods: ["keybert"] });
+        const c0 = res.perCluster[0].byMethod.keybert;
+        const c1 = res.perCluster[1].byMethod.keybert;
+        // unique tokens across picked phrases (diversity check)
+        const uniqTokens = (terms) => new Set(terms.join(" ").split(" ")).size;
+        return {
+            available: res.methods[0].available,
+            c0Terms: c0.terms, c1Terms: c1.terms,
+            c0HasBigram: c0.terms.some(t => t.includes(" ")),
+            c1Distinctive: c1.terms.some(t => t.includes("mycorrhizal")),
+            c0NotC1: !c0.terms.some(t => t.includes("mycorrhizal")),
+            c0Diverse: uniqTokens(c0.terms) >= c0.terms.length,   // ≥1 unique tok per phrase
+        };
+    }''')
+    assert out["available"] is True
+    assert len(out["c0Terms"]) >= 1 and len(out["c1Terms"]) >= 1
+    assert out["c0HasBigram"] is True            # bigrams generated
+    assert out["c1Distinctive"] is True          # cluster-1 keyphrase is its own topic
+    assert out["c0NotC1"] is True                # distinctive, not shared
+    assert out["c0Diverse"] is True              # MMR avoided near-duplicate phrases
 
 
 def test_text_methods_gate_without_titles(clean_page):

@@ -74,6 +74,10 @@ const state = {
                                   //   Null when fusion=identity OR fusion is set but the cascade
                                   //   hasn't produced one yet.
   clusterLevels:         null,    // Layer 2 output: [{uid, scope, clusterResult}] one per level
+  // Multi-layer-from-sweep diagnostics (§9 revamp): { curve, usedFallback }
+  // where curve = [{count, size, stability, plateauWidth, selected}] — the
+  // stability-vs-count series the multi-layer card's panel (Stage 4) draws.
+  multiLevelSweep:       null,
   clusterLevelsPreFusion:null,    // Same shape as clusterLevels, but computed on dimredResultPreFusion.
                                   //   Drives the "Color by pre-fusion clusters" colour mode. Null when
                                   //   pre-fusion compute didn't run.
@@ -102,6 +106,14 @@ const state = {
   // clustering branch keeps its own scores and they survive a save/load.
   //   clusterScores: { [levelUid]: { [clusterId]: 1..5 } }
   clusterScores:         {},
+
+  // Cluster labels (MLC §7) produced by a labelling CARD and replayed here
+  // by the projection layer when that card (or a downstream scoring card)
+  // is selected. Static — computed once per labelling card; the stale-dot
+  // mechanism flags re-runs when the upstream clustering changes. Keyed by
+  // level uid; value is the multi-method labelClusters() output.
+  //   clusterLabels: { [levelUid]: { methods, perCluster } }
+  clusterLabels:         null,
 
   // Bumps every time the pipeline runs (full or partial).
   // Panels watch this to know when to rebuild their cached views.

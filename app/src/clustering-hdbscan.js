@@ -89,57 +89,88 @@ export function inferHdbscan(genResult, params = {}, dimredResult) {
     };
   }
 
+  // Single-run path = build the model + extract at the one minClusterSize.
+  // (The split lets multi-layer reuse ONE model across many sizes — see
+  // buildHdbscanModel / extractHdbscanLevel below.)
+  const model = buildHdbscanModel(genResult, params, dimredResult);
+  return extractHdbscanLevel(model, params);
+}
+
+// Build the expensive, minClusterSize-INDEPENDENT part of HDBSCAN: the
+// pairwise distances, core distances (depend on minSamples), the
+// mutual-reachability MST, and the single-linkage dendrogram. A multi-
+// layer ladder at a SHARED minSamples reuses one model and only re-runs
+// the cheap per-size extraction (extractHdbscanLevel) for each layer — so
+// the O(n²) distance + MST is paid once, not once per layer.
+//
+// Returns a model object consumed by extractHdbscanLevel. n < 2 is
+// degenerate (no MST); callers handle those tiny cases directly.
+export function buildHdbscanModel(genResult, params = {}, dimredResult, opts = {}) {
+  const nodes = genResult.nodes;
+  const n = nodes.length;
+  const minSamples = Math.max(1, Math.min(Math.max(1, n - 1), (params.minSamples ?? 5) | 0));
+  if (n < 2) return { nodes, n, minSamples, degenerate: true };
+
   // dimredResult is the canonical input from the new shell; legacy
-  // (main.js) calls this without it, in which case we transparently
-  // pack basePos into a flat 3-d buffer.
+  // (main.js) calls without it, so we pack basePos into a flat 3-d buffer.
   if (!dimredResult) dimredResult = packBasePos(nodes);
 
-  // 1. Pairwise Euclidean distance matrix in dim-reduced space.
-  const dist = pairwiseDistances(dimredResult, n);
-
+  // 1. Pairwise Euclidean distance matrix in dim-reduced space. The O(n²·d)
+  //    build is the dominant cost; callers (e.g. the multi-layer worker) can
+  //    fan it out across cores and pass it in via opts.dist to skip the
+  //    single-threaded path here.
+  const dist = (opts.dist instanceof Float32Array && opts.dist.length === n * n)
+    ? opts.dist
+    : pairwiseDistances(dimredResult, n);
   // 2. Core distance per node = distance to the k_min-th nearest other node.
   const coreDist = computeCoreDistances(dist, n, minSamples);
-
   // 3. Prim's MST under d_mreach(i,j) = max(coreDist(i), coreDist(j), dist(i,j)).
-  //    Returned in the order Prim's picked them (≈ ascending weight, but not
-  //    strictly), so we sort ascending below.
   const mstEdges = primMSTMutualReach(dist, coreDist, n);
   const mstAsc = mstEdges.slice().sort((a, b) => a.w - b.w);
-
-  // 4. Build the dendrogram. Each merge gets node id ≥ n; leaves are
-  //    [0, n). For each internal node we track:
-  //      - members[]: every leaf id under this subtree (used for the
-  //        condensation pass)
-  //      - deathWeight: the d_mreach at which this merge happened
-  //      - left / right: child node ids
-  //    "Dead" merge → for its members, λ_falls_out = 1 / deathWeight.
+  // 4. Single-linkage dendrogram over the MST (ascending weight).
   const dendro = buildDendrogram(mstAsc, n);
 
-  // 5. Condense the dendrogram into a tree of "real" cluster nodes,
-  //    gated by minClusterSize. See the function comment for the rules.
+  return { nodes, n, minSamples, dist, coreDist, mstEdges, dendro, degenerate: false };
+}
+
+// Extract one flat partition from a built model at a given minClusterSize
+// (+ selection knobs). Cheap relative to buildHdbscanModel — condense →
+// stabilities → select → resolve noise → clusterResult. Returns the same
+// ClusterResult shape inferHdbscan returns.
+export function extractHdbscanLevel(model, params = {}) {
+  const { nodes, n } = model;
+  const minClusterSize = Math.max(2, Math.min(Math.max(2, n), (params.minClusterSize ?? 5) | 0));
+  const selectionMethod  = (params.selectionMethod === "leaf") ? "leaf" : "eom";
+  const selectionEpsilon = Math.max(0, +params.selectionEpsilon || 0);
+  const noiseMode      = (params.noiseMode === "singletons") ? "singletons" : "absorb";
+  const echoParams = { minSamples: model.minSamples, minClusterSize, selectionMethod, selectionEpsilon, noiseMode };
+
+  if (model.degenerate || n < 2) {
+    // Degenerate model — mirror inferHdbscan's tiny-n outputs.
+    if (n === 0) {
+      return { method: "hdbscan", params: echoParams, clusters: [], nodeCluster: new Int32Array(0), structureEdges: [], noiseFlags: new Uint8Array(0) };
+    }
+    return {
+      method: "hdbscan", params: echoParams,
+      clusters: [trivialCluster(0, (nodes[0] && nodes[0].basePos) || ZERO3, 0, 1, NaN)],
+      nodeCluster: new Int32Array([0]), structureEdges: [], noiseFlags: new Uint8Array([0]),
+    };
+  }
+
+  const { dist, coreDist, mstEdges, dendro } = model;
+
+  // 5. Condense the dendrogram, gated by minClusterSize.
   const condensed = condenseDendrogram(dendro, n, minClusterSize);
-
-  // 6. Compute stability for every condensed cluster.
+  // 6. Stability for every condensed cluster.
   computeStabilities(condensed);
-
   // 7. Cluster selection (EOM or leaf), then optional epsilon merge.
-  let selectedNodes = (selectionMethod === "leaf")
-    ? leafSelect(condensed)
-    : eomSelect(condensed);
+  let selectedNodes = (selectionMethod === "leaf") ? leafSelect(condensed) : eomSelect(condensed);
   if (selectionEpsilon > 0) {
     selectedNodes = applyEpsilonMerge(selectedNodes, condensed, selectionEpsilon);
   }
-
-  // 8. Initial labels — stable points only. Every node not under a
-  //    selected condensed cluster is left as -1 here. We resolve that
-  //    in step 9 via the chosen noiseMode.
+  // 8. Initial labels — stable points only (rest = -1, resolved next).
   const stableLabels = assignStableLabels(selectedNodes, condensed, n);
-
-  // 9. Note who was noise (pre-absorption) and resolve final labels.
-  //    noiseFlags is always populated regardless of mode — it preserves
-  //    the algorithm's pre-absorption decision so debug overlays can
-  //    distinguish "originally classified as noise" from "stable
-  //    member."
+  // 9. Record pre-absorption noise + resolve final labels per noiseMode.
   const noiseFlags = new Uint8Array(n);
   for (let i = 0; i < n; i++) noiseFlags[i] = (stableLabels[i] === -1) ? 1 : 0;
 
@@ -160,19 +191,9 @@ export function inferHdbscan(genResult, params = {}, dimredResult) {
     ));
   }
 
-  // 10. structureEdges = the full MST. The MST is the structural backbone
-  //     the algorithm reasoned over, which is what the debug overlay should
-  //     visualise now that K is no longer a user knob.
+  // 10. structureEdges = the full MST (structural backbone for overlays).
   const structureEdges = mstEdges.map(e => [Math.min(e.i, e.j), Math.max(e.i, e.j)]);
-
-  // 11. Surface the condensed tree (MLC-0). The condensed clusters +
-  //     their stabilities are the hierarchy multi-level extraction
-  //     (doc/plan.md §9 / §4) cuts at different λ. We ship a COMPACT,
-  //     structured-clone-safe projection — node-parallel typed arrays +
-  //     a per-leaf "home" membership — not the bulky internal leafEvents
-  //     (which are O(n·depth)). `selectedNodes` carry their EOM label by
-  //     now (assignStableLabels set it at step 8), so the serialised tree
-  //     records which condensed node became which flat cluster.
+  // 11. Surface the condensed tree (MLC-0) for this size.
   const condensedTree = serializeCondensedTree(condensed, n, minClusterSize);
 
   return {

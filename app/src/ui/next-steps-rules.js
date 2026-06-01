@@ -14,12 +14,14 @@ export const NEXT_STEP_RULES = {
   ],
   dimred: [
     { label: "Configure clustering",    hint: "HDBSCAN / mutual-kNN → a clustering card", modal: "clustering" },
-    { label: "Optimise multi-layer clustering", hint: "One HDBSCAN run → a coarse→fine layer ladder", modal: "multiLevel" },
+    { label: "Optimise multi-layer clustering", hint: "Sweep HDBSCAN (leaf) → pick a coarse→fine layer ladder from the reproducibility curve", modal: "multiLevel" },
     { label: "Run dim sweep",           hint: "ARI stability across embedding dimensions", modal: "dimSweep" },
   ],
   clustering: [
     { label: "Run bootstrap stability", hint: "Per-cluster Jaccard via resampling", modal: "bootstrap" },
     { label: "Compare with another clustering", hint: "ARI / NMI / movers vs a second clustering", modal: "fusionComparison" },
+    { label: "Run bridge analysis",     hint: "Fine clusters straddling ≥2 coarse parents (needs ≥2 levels)", modal: "bridgeAnalysis" },
+    { label: "Label clusters",          hint: "Name clusters (representative paper / year / TF-IDF) for scoring", modal: "labelling" },
     { label: "Run dim sweep",           hint: "ARI stability across embedding dimensions", modal: "dimSweep" },
     { label: "Configure citation layout", hint: "Force-directed layout from citation edges", modal: "layout" },
   ],
@@ -36,8 +38,30 @@ export const NEXT_STEP_RULES = {
     { label: "Re-run this comparison",  hint: "Fork a fresh comparison of the same pair", rerun: true },
     { label: "Compare a different pair", hint: "Pick two clusterings to compare", modal: "fusionComparison" },
   ],
+  // Producer (the sweep) — it does NOT materialise clusterLevels; the picker
+  // child does. So the producer's only follow-on is the picker (auto-spawned
+  // on completion; offered here too in case it was deleted) + re-run.
   multiLevel: [
-    { label: "Re-run multi-layer",      hint: "Fork a fresh run with the same settings", rerun: true },
+    { label: "Re-run multi-layer",      hint: "Fork a fresh sweep with the same settings", rerun: true },
+    { label: "Pick layers",             hint: "Open the reproducibility curve and choose layers", modal: "multiLevelPicker" },
+  ],
+  // Picker — once it commits a ladder (clusterLevels), it's clustering-
+  // equivalent, so the analysis steps a clustering card spawns hang off it.
+  multiLevelPicker: [
+    { label: "Run bootstrap stability", hint: "Per-cluster Jaccard via resampling", modal: "bootstrap" },
+    { label: "Compare with another clustering", hint: "ARI / NMI / movers vs a second clustering", modal: "fusionComparison" },
+    { label: "Run bridge analysis",     hint: "Fine clusters straddling ≥2 coarse parents", modal: "bridgeAnalysis" },
+    { label: "Label clusters",          hint: "Name clusters (representative paper / year / TF-IDF) for scoring", modal: "labelling" },
+  ],
+  bridgeAnalysis: [
+    { label: "Re-run bridge analysis",  hint: "Fork a fresh run with the same level pair", rerun: true },
+  ],
+  labelling: [
+    { label: "Re-run labelling",        hint: "Fork a fresh run with the same methods", rerun: true },
+    { label: "Prepare scoring",         hint: "Score these clusters 1–5 (opens in a Scoring panel)", modal: "scoring" },
+  ],
+  scoring: [
+    { label: "Re-prepare scoring",      hint: "Re-snapshot labels/levels from upstream", rerun: true },
   ],
 };
 
