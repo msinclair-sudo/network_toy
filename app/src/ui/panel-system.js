@@ -253,3 +253,41 @@ function defaultConfigFor(typeId) {
       return {};
   }
 }
+
+// Which panel renders the result of which ANALYSIS card type. Only cards that
+// produce a result a panel can show are listed — data/dimred/clustering and
+// the auto-spawned multiLevelPicker are deliberately absent (the picker opens
+// its own panel; the producer sweep is what surfaces the curve). Keep in sync
+// with panel-picker.js panelTypeForRun (the saved-run analogue).
+const PANEL_FOR_CARD_TYPE = {
+  dimSweep:          "dim-sweep",
+  bootstrapStability:"bootstrap-stability",
+  fusionComparison:  "fusion-comparison",
+  scoring:           "scoring",
+  multiLevel:        "multilayer-curve",   // the sweep producer → Pick layers
+};
+
+// Auto-open the panel for a just-completed analysis card, bound to that card
+// (config.stepId), in the BOTTOM slot. Idempotent: if a tab of the same type
+// already shows this card (or, for singletons, is already open), just make it
+// active rather than stacking duplicates. Does NOT touch the viewer — the
+// viewer follows card SELECTION, which is a separate concern. Safe to call for
+// any step; a no-op for non-analysis cards.
+export function autoOpenPanelForStep(stepId) {
+  const type = getState().workflow?.steps?.[stepId]?.type;
+  const panelType = type && PANEL_FOR_CARD_TYPE[type];
+  if (!panelType) return;
+  const SLOT = "bottom";
+  const meta = getPanelType(panelType);
+
+  const bottom = getState().panels[SLOT];
+  if (bottom && Array.isArray(bottom.tabs)) {
+    // Already showing this card? (or this singleton already open anywhere in
+    // the slot — singletons render whatever card is selected/auto-picked.)
+    const existing = bottom.tabs.find(t =>
+      t.type === panelType &&
+      (meta?.singleton || (t.config && t.config.stepId === stepId)));
+    if (existing) { setActiveTab(SLOT, existing.id); return; }
+  }
+  addTab(SLOT, panelType, { ...defaultConfigFor(panelType), stepId });
+}

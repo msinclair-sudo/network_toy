@@ -185,6 +185,15 @@ async function processNext() {
           if (boundStepId) {
             try { setStepResult(boundStepId, result); }
             catch (e) { console.warn("[queue] step mirror (setResult) failed:", e); }
+            // Surface the result: auto-open the analysis card's panel (bottom
+            // slot) so a completed dim-sweep / bootstrap / scoring / etc. shows
+            // its table instead of needing a separate trip through the panel
+            // picker. A no-op for non-analysis cards. Lazy import to keep the
+            // queue decoupled from the panel system (and dodge any boot
+            // init-order coupling). Fire-and-forget; never block the queue.
+            import("./panel-system.js")
+              .then(m => m.autoOpenPanelForStep(boundStepId))
+              .catch(e => console.warn("[queue] auto-open panel failed:", e));
           }
           rt.resolve(result);
         }
