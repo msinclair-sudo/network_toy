@@ -48,6 +48,7 @@ import { buildLabellingJob }                        from "../runners/cluster-lab
 import { listLabelMethods }                         from "../../labelling/cluster-labels.js";
 import { buildScoringPrepJob }                      from "../runners/scoring-runner.js";
 import { buildExportPrepJob }                       from "../runners/export-runner.js";
+import { buildCrossClusterJob }                     from "../runners/cross-cluster-runner.js";
 import { listComparableClusterings }                from "./step-tree-picker.js";
 import * as engine                                  from "../engine.js";
 
@@ -71,6 +72,7 @@ export function getLayerDescriptor(nodeId, editStepId = null) {
     case "labelling":  return labellingDescriptor(editStepId);
     case "scoring":    return scoringDescriptor(editStepId);
     case "export":     return exportDescriptor(editStepId);
+    case "crossClusterCitations": return crossClusterDescriptor(editStepId);
     default:           return null;
   }
 }
@@ -501,6 +503,12 @@ export function rerunStep(stepId) {
   }
   if (step.type === "scoring") {
     return scoringDescriptor().applyChange();
+  }
+  if (step.type === "export") {
+    return exportDescriptor().applyChange();
+  }
+  if (step.type === "crossClusterCitations") {
+    return crossClusterDescriptor().applyChange();
   }
   throw new Error(`[rerunStep] type "${step.type}" not re-runnable`);
 }
@@ -1204,6 +1212,58 @@ function exportDescriptor(editStepId = null) {
     },
     openModal: () => desc.applyChange()
       .catch(e => console.error("[export-descriptor] applyChange failed:", e)),
+  };
+  return desc;
+}
+
+// Cross-cluster citation degree card — an "analysis layer" attaching under a
+// clustering-like card (the picker). Computes, for every layer, how much each
+// cluster cites every other (directed flow matrix + in/out degree + top
+// links). No config modal — it always runs all layers; picking it preps +
+// selects the card, and the cross-cluster panel renders the result.
+function crossClusterDescriptor(editStepId = null) {
+  const editStep = () => (editStepId ? getStep(editStepId) : null);
+  const resolveParent = () => {
+    const es = editStep();
+    return es ? es.parentId : findSelectedAncestorOfType(CLUSTERING_LIKE_TYPES);
+  };
+  const desc = {
+    label: "Run: Cross-cluster citations",
+    getActive: () => {
+      const parentId = resolveParent();
+      if (!parentId) return { hasClustering: false, nLevels: 0 };
+      const levels = findClusterLevels(parentId).levels;
+      const hasEdges = Array.isArray(getState().rawCitationEdges) && getState().rawCitationEdges.length > 0;
+      return { hasClustering: true, nLevels: levels.length, hasEdges, parentId };
+    },
+    applyChange: async () => {
+      const parentId = resolveParent();
+      if (!parentId) {
+        throw new Error("[cross-cluster-descriptor] no clustering ancestor to analyse");
+      }
+      const label = "Cross-cluster citations";
+      const stepId = beginStep({
+        editStepId,
+        type:   "crossClusterCitations",
+        label,
+        params: {},
+        parentId,
+      });
+      selectStep(stepId);
+      const { promise } = enqueueJob({
+        type:  "crossClusterCitations",
+        label,
+        stepId,
+        fn:    buildCrossClusterJob({ parentStepId: parentId }),
+      });
+      promise.catch((e) => {
+        if (e && e.name === "AbortError") return;
+        console.error("[cross-cluster-descriptor] job failed:", e);
+      });
+      return promise;
+    },
+    openModal: () => desc.applyChange()
+      .catch(e => console.error("[cross-cluster-descriptor] applyChange failed:", e)),
   };
   return desc;
 }

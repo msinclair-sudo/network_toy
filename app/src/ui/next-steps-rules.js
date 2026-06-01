@@ -21,6 +21,7 @@ export const NEXT_STEP_RULES = {
     { label: "Run bootstrap stability", hint: "Per-cluster Jaccard via resampling", modal: "bootstrap" },
     { label: "Compare with another clustering", hint: "ARI / NMI / movers vs a second clustering", modal: "fusionComparison" },
     { label: "Run bridge analysis",     hint: "Fine clusters straddling ≥2 coarse parents (needs ≥2 levels)", modal: "bridgeAnalysis" },
+    { label: "Cross-cluster citations", hint: "How much each cluster cites every other (directed flow)", modal: "crossClusterCitations" },
     { label: "Label clusters",          hint: "Name clusters (representative paper / year / TF-IDF) for scoring", modal: "labelling" },
     { label: "Run dim sweep",           hint: "ARI stability across embedding dimensions", modal: "dimSweep" },
     { label: "Configure citation layout", hint: "Force-directed layout from citation edges", modal: "layout" },
@@ -52,12 +53,16 @@ export const NEXT_STEP_RULES = {
   // Labelling/scoring hang off the bridge card, not the picker directly.
   multiLevelPicker: [
     { label: "Run bridge analysis",     hint: "Per-layer: which clusters straddle ≥2 parents in the layer above", modal: "bridgeAnalysis" },
+    { label: "Cross-cluster citations", hint: "Per-layer: how much each cluster cites every other (directed flow)", modal: "crossClusterCitations" },
     { label: "Run bootstrap stability", hint: "Per-cluster Jaccard via resampling", modal: "bootstrap" },
     { label: "Compare with another clustering", hint: "ARI / NMI / movers vs a second clustering", modal: "fusionComparison" },
   ],
   bridgeAnalysis: [
     { label: "Re-run bridge analysis",  hint: "Recompute per-layer bridges across the ladder", rerun: true },
     { label: "Label clusters",          hint: "Name clusters (representative paper / year / KeyBERT) for scoring", modal: "labelling" },
+  ],
+  crossClusterCitations: [
+    { label: "Re-run cross-cluster citations", hint: "Recompute the per-layer citation flow matrix", rerun: true },
   ],
   labelling: [
     { label: "Re-run labelling",        hint: "Fork a fresh run with the same methods", rerun: true },
