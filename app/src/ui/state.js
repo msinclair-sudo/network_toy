@@ -99,6 +99,11 @@ const state = {
   // totalBridges } — see computeBridgeAnalysisAllLayers. Null until run.
   bridgeAllLayers:       null,
 
+  // Node displacement between the pre- and post-fusion branches:
+  // { dist:Float32Array(n), correlation, max, mean, topMovers:[{id,dist}] }.
+  // Drives the displacement panel + the "displacement" colour mode.
+  nodeDisplacement:      null,
+
   // Which (fineLevel, coarseLevel) pair the bridge analysis runs on.
   // When a field is null/invalid, the engine clamps it to the deepest
   // valid pair (fineLevel = last, coarseLevel = last - 1). The bridge

@@ -267,6 +267,7 @@ const PANEL_FOR_CARD_TYPE = {
   multiLevel:        "multilayer-curve",   // the sweep producer → Pick layers
   export:            "export-ris",         // RIS export picker
   crossClusterCitations: "cross-cluster",  // citation flow matrix
+  nodeDisplacement:      "node-displacement", // pre→post movement
 };
 
 // Auto-open the panel for a just-completed analysis card, bound to that card

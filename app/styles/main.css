@@ -2601,6 +2601,20 @@ td.node-table-spread, td.node-table-stab { width: 50px; }
 .multilayer-curve-summary { font-size: 10px; color: var(--text-faint); font-family: var(--font-mono); }
 .multilayer-curve-empty { color: var(--text-faint); font-style: italic; font-size: 12px; padding: 12px 4px; line-height: 1.5; }
 .multilayer-curve-chart { overflow-x: auto; }
+/* Fusion displacement panel */
+.disp-panel { padding: 10px; display: flex; flex-direction: column; gap: 8px; font-size: 12px; overflow: auto; }
+.disp-title { font-size: 13px; color: var(--text-dim); font-weight: 600; }
+.disp-empty { color: var(--text-faint); font-style: italic; font-size: 12px; line-height: 1.5; }
+.disp-summary { font-size: 10px; color: var(--text-faint); font-family: var(--font-mono); }
+.disp-table { border-collapse: collapse; font-size: 11px; width: 100%; }
+.disp-table th, .disp-table td { padding: 2px 8px; text-align: right; border-bottom: 1px solid rgba(255,255,255,0.05); vertical-align: top; }
+.disp-table th { color: var(--text-dim); font-weight: 600; }
+.disp-cell-title { text-align: left; color: var(--text); white-space: normal; overflow-wrap: anywhere; max-width: 360px; }
+.disp-export {
+  align-self: flex-start; font-size: 12px; padding: 5px 14px; border-radius: 4px;
+  background: var(--accent, #4e79a7); color: #fff; border: none; font-weight: 600; cursor: pointer;
+}
+
 /* Cross-cluster citations panel */
 .xcc-panel { padding: 10px; display: flex; flex-direction: column; gap: 8px; font-size: 12px; overflow: auto; }
 .xcc-title { font-size: 13px; color: var(--text-dim); font-weight: 600; }

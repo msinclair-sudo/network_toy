@@ -20,6 +20,7 @@ import * as Scoring                from "./scoring.js";
 import * as MultilayerCurve        from "./multilayer-curve.js";
 import * as ExportRis              from "./export-ris.js";
 import * as CrossCluster           from "./cross-cluster.js";
+import * as NodeDisplacement       from "./node-displacement.js";
 import * as NextSteps              from "./next-steps.js";
 
 const entries = new Map();
@@ -58,6 +59,7 @@ register(Scoring);
 register(MultilayerCurve);
 register(ExportRis);
 register(CrossCluster);
+register(NodeDisplacement);
 register(NextSteps);
 
 // Future entries (mounted as their modules come online):

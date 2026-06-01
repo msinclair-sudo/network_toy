@@ -31,6 +31,19 @@ export function inDegStats(citationResult) {
   return _inDegStats;
 }
 
+let _dispStats = { ref: null, max: 1, logMax: 1 };
+export function displacementStats(nodeDisplacement) {
+  const arr = nodeDisplacement && nodeDisplacement.dist;
+  if (!arr) return { max: 1, logMax: Math.log1p(1) };
+  if (_dispStats.ref !== arr) {
+    let max = 0;
+    for (let i = 0; i < arr.length; i++) if (arr[i] > max) max = arr[i];
+    max = max || 1;
+    _dispStats = { ref: arr, max, logMax: Math.log1p(max) };
+  }
+  return _dispStats;
+}
+
 let _yearStats = { ref: null, min: null, max: null };
 export function yearStats(genResult) {
   const nodes = genResult && genResult.nodes;
@@ -89,6 +102,11 @@ export function getColourModeOptions(state) {
     opts.push({ value: "inDeg:raw", label: "Citation in-degree (count)" });
     opts.push({ value: "inDeg",     label: "Citation in-degree (normalised)" });
     opts.push({ value: "inDeg:log", label: "Citation in-degree (log)" });
+  }
+  // Pre→post fusion node displacement (when a node-displacement card has run).
+  if (state.nodeDisplacement && state.nodeDisplacement.dist) {
+    opts.push({ value: "displacement",     label: "Fusion displacement (normalised)" });
+    opts.push({ value: "displacement:log", label: "Fusion displacement (log)" });
   }
   return opts;
 }
@@ -149,6 +167,18 @@ export function baseColourFor(node, state, mode) {
       const t = (mode === "inDeg:log")
         ? (logMax > 0 ? Math.log1p(c) / logMax : 0)
         : (max > 0 ? c / max : 0);
+      return inDegGradient(t);
+    }
+    return UNKNOWN_COLOUR;
+  }
+  if (mode === "displacement" || mode === "displacement:log") {
+    const nd = state.nodeDisplacement;
+    if (nd && nd.dist) {
+      const d = nd.dist[node.id] || 0;
+      const { max, logMax } = displacementStats(nd);
+      const t = (mode === "displacement:log")
+        ? (logMax > 0 ? Math.log1p(d) / logMax : 0)
+        : (max > 0 ? d / max : 0);
       return inDegGradient(t);
     }
     return UNKNOWN_COLOUR;

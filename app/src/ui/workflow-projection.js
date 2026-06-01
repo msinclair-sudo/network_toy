@@ -29,6 +29,7 @@ const PROJECTORS = {
   data:           (step, patch) => projectData(step, patch),
   dimred:         (step, patch) => projectDimred(step, patch),
   fusionBranch:   (step, patch) => projectFusionBranch(step, patch),
+  nodeDisplacement: (step, patch) => projectNodeDisplacement(step, patch),
   clustering:     (step, patch) => projectClustering(step, patch),
   multiLevel:       (step, patch) => projectMultiLevel(step, patch),
   multiLevelPicker: (step, patch) => projectMultiLevelPicker(step, patch),
@@ -87,6 +88,13 @@ function projectFusionBranch(step, patch) {
   // (2D pre-fusion basePos isn't separately stored today; the 2D viewer keeps
   // the post 2D until a pre-fusion 2D embedding is carried — acceptable for
   // Phase A, the 3D viewer + clustering use the swapped 3D/compression slots.)
+}
+
+// Node-displacement card → state.nodeDisplacement, the slot the displacement
+// panel + the "displacement" viewer colour mode read.
+function projectNodeDisplacement(step, patch) {
+  const r = step.result;
+  if (r && r.nodeDisplacement) patch.nodeDisplacement = r.nodeDisplacement;
 }
 
 function projectClustering(step, patch) {

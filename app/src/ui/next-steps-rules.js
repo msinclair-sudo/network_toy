@@ -23,6 +23,11 @@ export const NEXT_STEP_RULES = {
   fusionBranch: [
     { label: "Configure clustering",    hint: "Cluster this branch's embedding (pre- or post-fusion)", modal: "clustering" },
     { label: "Optimise multi-layer clustering", hint: "Sweep HDBSCAN on this branch → pick a layer ladder", modal: "multiLevel" },
+    { label: "Node displacement (pre → post)", hint: "Rank papers whose citation context moved them most between the fusion branches", modal: "nodeDisplacement" },
+    { label: "Compare branch clusterings", hint: "ARI / NMI / movers between the pre + post branch clusterings", modal: "fusionComparison" },
+  ],
+  nodeDisplacement: [
+    { label: "Re-run node displacement", hint: "Recompute pre→post per-node movement", rerun: true },
   ],
   clustering: [
     { label: "Run bootstrap stability", hint: "Per-cluster Jaccard via resampling", modal: "bootstrap" },

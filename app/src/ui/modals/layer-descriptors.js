@@ -50,6 +50,7 @@ import { buildScoringPrepJob }                      from "../runners/scoring-run
 import { buildExportPrepJob }                       from "../runners/export-runner.js";
 import { buildCrossClusterJob }                     from "../runners/cross-cluster-runner.js";
 import { buildFusionBranchJob }                     from "../runners/fusion-branch-runner.js";
+import { buildNodeDisplacementJob }                 from "../runners/node-displacement-runner.js";
 import { listComparableClusterings }                from "./step-tree-picker.js";
 import * as engine                                  from "../engine.js";
 
@@ -63,6 +64,7 @@ export function getLayerDescriptor(nodeId, editStepId = null) {
     case "data":       return dataDescriptor();
     case "dimred":     return dimredDescriptor(editStepId);
     case "fusionBranch": return fusionBranchDescriptor(editStepId);
+    case "nodeDisplacement": return nodeDisplacementDescriptor(editStepId);
     case "clustering": return clusteringDescriptor(editStepId);
     case "layout":     return layoutDescriptor(editStepId);
     case "bootstrap":  return bootstrapDescriptor(editStepId);
@@ -483,6 +485,77 @@ function fusionBranchDescriptor(editStepId = null) {
   return desc;
 }
 
+// Find the pre + post fusion-branch pair under the dimred ancestor of a
+// selected step (or the selected branch itself). Returns { dimredId, preId,
+// postId } or null when the pair isn't both present.
+function resolveBranchPair(fromStepId) {
+  const start = fromStepId ? getStep(fromStepId) : getSelectedStep();
+  if (!start) return null;
+  // The dimred ancestor that owns the fork.
+  const anc = getStepAncestors(start.id);
+  let dimredId = null;
+  for (let i = anc.length - 1; i >= 0; i--) {
+    if (anc[i].type === "dimred") { dimredId = anc[i].id; break; }
+  }
+  if (!dimredId) return null;
+  const branches = listSteps({ type: "fusionBranch" }).filter(b => b.parentId === dimredId);
+  const pre  = branches.find(b => b.params && b.params.endpoint === "pre");
+  const post = branches.find(b => b.params && b.params.endpoint === "post");
+  if (!pre || !post) return null;
+  return { dimredId, preId: pre.id, postId: post.id };
+}
+
+// Node-displacement card — a cross-branch comparison. Wires the two fusion
+// branches (refIds: [pre, post]) and measures how far each node moved between
+// the pre- and post-fusion layouts (align + per-node distance). Attaches under
+// the dimred card (the fork owner) so it sees both branches.
+function nodeDisplacementDescriptor(editStepId = null) {
+  const editStep = () => (editStepId ? getStep(editStepId) : null);
+  const desc = {
+    label: "Run: Node displacement (pre → post)",
+    getActive: () => {
+      const es = editStep();
+      const pair = es && es.refIds && es.refIds.length === 2
+        ? { dimredId: es.parentId, preId: es.refIds[0], postId: es.refIds[1] }
+        : resolveBranchPair();
+      return { hasPair: !!pair, pair };
+    },
+    applyChange: async () => {
+      const es = editStep();
+      const pair = (es && es.refIds && es.refIds.length === 2)
+        ? { dimredId: es.parentId, preId: es.refIds[0], postId: es.refIds[1] }
+        : resolveBranchPair();
+      if (!pair) {
+        throw new Error("[node-displacement] needs both pre + post fusion branches (run a graph-diffusion dim-reduction first)");
+      }
+      const label = "Node displacement";
+      const stepId = beginStep({
+        editStepId,
+        type:   "nodeDisplacement",
+        label,
+        params: {},
+        parentId: pair.dimredId,
+        refIds: [pair.preId, pair.postId],
+      });
+      selectStep(stepId);
+      const { promise } = enqueueJob({
+        type:  "nodeDisplacement",
+        label,
+        stepId,
+        fn:    buildNodeDisplacementJob({ preBranchId: pair.preId, postBranchId: pair.postId }),
+      });
+      promise.catch((e) => {
+        if (e && e.name === "AbortError") return;
+        console.error("[node-displacement] job failed:", e);
+      });
+      return promise;
+    },
+    openModal: () => desc.applyChange()
+      .catch(e => console.error("[node-displacement] applyChange failed:", e)),
+  };
+  return desc;
+}
+
 function clusteringDescriptor(editStepId = null) {
   const desc = {
     label: "Configure: Clustering",
@@ -596,6 +669,9 @@ export function rerunStep(stepId) {
   }
   if (step.type === "crossClusterCitations") {
     return crossClusterDescriptor().applyChange();
+  }
+  if (step.type === "nodeDisplacement") {
+    return nodeDisplacementDescriptor(step.id).applyChange();
   }
   throw new Error(`[rerunStep] type "${step.type}" not re-runnable`);
 }
