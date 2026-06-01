@@ -65,6 +65,10 @@ export const NEXT_STEP_RULES = {
   ],
   scoring: [
     { label: "Re-prepare scoring",      hint: "Re-snapshot labels/levels from upstream", rerun: true },
+    { label: "Export to RIS",           hint: "Export high-scoring clusters / a single cluster to a reference manager", modal: "export" },
+  ],
+  export: [
+    { label: "Re-prepare export",       hint: "Re-snapshot the upstream clustering for export", rerun: true },
   ],
 };
 

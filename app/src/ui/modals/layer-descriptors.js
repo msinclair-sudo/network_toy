@@ -47,6 +47,7 @@ import { openLabellingModal }                       from "./labelling-modal.js";
 import { buildLabellingJob }                        from "../runners/cluster-labels-runner.js";
 import { listLabelMethods }                         from "../../labelling/cluster-labels.js";
 import { buildScoringPrepJob }                      from "../runners/scoring-runner.js";
+import { buildExportPrepJob }                       from "../runners/export-runner.js";
 import { listComparableClusterings }                from "./step-tree-picker.js";
 import * as engine                                  from "../engine.js";
 
@@ -69,6 +70,7 @@ export function getLayerDescriptor(nodeId, editStepId = null) {
     case "bridgeAnalysis": return bridgeAnalysisDescriptor(editStepId);
     case "labelling":  return labellingDescriptor(editStepId);
     case "scoring":    return scoringDescriptor(editStepId);
+    case "export":     return exportDescriptor(editStepId);
     default:           return null;
   }
 }
@@ -1147,6 +1149,61 @@ function scoringDescriptor(editStepId = null) {
     // No config modal — picking the card preps it directly.
     openModal: () => desc.applyChange()
       .catch(e => console.error("[scoring-descriptor] applyChange failed:", e)),
+  };
+  return desc;
+}
+
+// Export card (RIS) — sits downstream of a scoring card. Like scoring it has
+// NO config modal: picking it just preps + selects the card; the interactive
+// picking (level / score threshold / single cluster) + Download RIS live in
+// the `export-ris` PANEL, which binds to the selected card and reads the
+// scored clustering above it.
+function exportDescriptor(editStepId = null) {
+  const editStep = () => (editStepId ? getStep(editStepId) : null);
+  const resolveParent = () => {
+    const es = editStep();
+    if (es) return es.parentId;
+    // Prefer a scoring card (export by score); fall back to any clustering-
+    // like card (export a single cluster without scores).
+    const sel = getSelectedStep();
+    if (sel && (sel.type === "scoring" || findClusterLevels(sel.id).levels.length)) return sel.id;
+    return findSelectedAncestorOfType("scoring")
+        || findSelectedAncestorOfType(CLUSTERING_LIKE_TYPES);
+  };
+  const desc = {
+    label: "Prepare: Export (RIS)",
+    getActive: () => {
+      const parentId = resolveParent();
+      return { hasUpstream: parentId != null, parentId };
+    },
+    applyChange: async () => {
+      const parentId = resolveParent();
+      if (!parentId) {
+        throw new Error("[export-descriptor] no scoring/clustering ancestor to export from");
+      }
+      const label = "Export (RIS)";
+      const stepId = beginStep({
+        editStepId,
+        type:   "export",
+        label,
+        params: {},
+        parentId,
+      });
+      selectStep(stepId);
+      const { promise } = enqueueJob({
+        type:  "export",
+        label,
+        stepId,
+        fn:    buildExportPrepJob(),
+      });
+      promise.catch((e) => {
+        if (e && e.name === "AbortError") return;
+        console.error("[export-descriptor] prep failed:", e);
+      });
+      return promise;
+    },
+    openModal: () => desc.applyChange()
+      .catch(e => console.error("[export-descriptor] applyChange failed:", e)),
   };
   return desc;
 }

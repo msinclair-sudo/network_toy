@@ -196,8 +196,50 @@ export function getNodeText(nodeId) {
   return parts.length ? parts.join(". ") : null;
 }
 
+// Full per-node bibliographic record for citation export (RIS/BibTeX). Reads
+// the columns a reference manager needs from the biblion papers table. Reuses
+// one prepared statement across calls (export iterates many nodes). Returns
+// null when no corpus is loaded / the row is missing.
+//
+//   { paperId, title, year, venue, doi, pubType, abstract, authors: string[] }
+//
+// `authors` is biblion's JSON array of display-name strings (parsed here);
+// any parse failure degrades to []. Other fields are null when absent.
+export function getNodeRecord(nodeId) {
+  if (!_handle) return null;
+  const { db, idByRow } = _handle;
+  const paperId = idByRow[nodeId];
+  if (paperId == null) return null;
+  const stmt = _handle.recordStmt ||
+    (_handle.recordStmt = db.prepare(
+      "SELECT title, year, venue, doi, pub_type, abstract, authors " +
+      "FROM papers WHERE id = ?"));
+  stmt.reset();
+  stmt.bind([paperId]);
+  if (!stmt.step()) return null;
+  const [title, year, venue, doi, pubType, abstract, authorsJson] = stmt.get();
+  let authors = [];
+  if (authorsJson) {
+    try {
+      const parsed = JSON.parse(authorsJson);
+      if (Array.isArray(parsed)) authors = parsed.filter(a => typeof a === "string" && a.trim());
+    } catch { /* malformed authors JSON → no authors */ }
+  }
+  return {
+    paperId,
+    title:    title    || null,
+    year:     Number.isFinite(year) ? year : null,
+    venue:    venue    || null,
+    doi:      doi      || null,
+    pubType:  pubType  || null,
+    abstract: abstract || null,
+    authors,
+  };
+}
+
 // Whether a live sqlite corpus is loaded (so callers can decide whether to
-// offer text-based labelling). True after a successful produceSqlite().
+// offer text-based labelling / bibliographic export). True after a successful
+// produceSqlite().
 export function hasSqliteText() {
   return _handle != null;
 }

@@ -2601,6 +2601,35 @@ td.node-table-spread, td.node-table-stab { width: 50px; }
 .multilayer-curve-summary { font-size: 10px; color: var(--text-faint); font-family: var(--font-mono); }
 .multilayer-curve-empty { color: var(--text-faint); font-style: italic; font-size: 12px; padding: 12px 4px; line-height: 1.5; }
 .multilayer-curve-chart { overflow-x: auto; }
+/* Export (RIS) panel */
+.export-panel { padding: 10px; display: flex; flex-direction: column; gap: 8px; font-size: 12px; }
+.export-title { font-size: 13px; color: var(--text-dim); font-weight: 600; }
+.export-empty { color: var(--text-faint); font-style: italic; font-size: 12px; line-height: 1.5; }
+.export-row { display: flex; align-items: center; gap: 8px; }
+.export-row-label { min-width: 64px; color: var(--text-dim); }
+.export-select, .export-number {
+  background: var(--bg-3); color: var(--text);
+  border: 1px solid var(--border-light); border-radius: 3px;
+  padding: 3px 6px; font-size: 12px; font-family: var(--font-mono);
+}
+.export-number { width: 56px; }
+.export-toggle { display: flex; gap: 0; }
+.export-toggle-btn {
+  font-size: 11px; padding: 3px 10px; cursor: pointer;
+  background: var(--bg-2); color: var(--text-dim);
+  border: 1px solid var(--border-light);
+}
+.export-toggle-btn:first-child { border-radius: 4px 0 0 4px; }
+.export-toggle-btn:last-child  { border-radius: 0 4px 4px 0; border-left: none; }
+.export-toggle-btn.active { background: var(--accent, #4e79a7); color: #fff; border-color: var(--accent, #4e79a7); }
+.export-count { font-size: 11px; color: var(--text); font-family: var(--font-mono); }
+.export-download {
+  align-self: flex-start; font-size: 12px; padding: 5px 14px; border-radius: 4px;
+  background: var(--accent, #4e79a7); color: #fff; border: none; font-weight: 600; cursor: pointer;
+}
+.export-download:disabled { opacity: 0.45; cursor: default; }
+.export-result { font-size: 11px; color: var(--success, #59a14f); }
+
 .multilayer-curve-controls { display: flex; gap: 6px; align-items: center; margin-top: 4px; }
 .multilayer-curve-apply {
   font-size: 11px; padding: 4px 10px; border-radius: 4px; cursor: pointer;

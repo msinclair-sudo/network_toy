@@ -265,6 +265,7 @@ const PANEL_FOR_CARD_TYPE = {
   fusionComparison:  "fusion-comparison",
   scoring:           "scoring",
   multiLevel:        "multilayer-curve",   // the sweep producer → Pick layers
+  export:            "export-ris",         // RIS export picker
 };
 
 // Auto-open the panel for a just-completed analysis card, bound to that card

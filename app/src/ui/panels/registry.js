@@ -18,6 +18,7 @@ import * as DimSweep               from "./dim-sweep.js";
 import * as FusionComparison       from "./fusion-comparison.js";
 import * as Scoring                from "./scoring.js";
 import * as MultilayerCurve        from "./multilayer-curve.js";
+import * as ExportRis              from "./export-ris.js";
 import * as NextSteps              from "./next-steps.js";
 
 const entries = new Map();
@@ -54,6 +55,7 @@ register(DimSweep);
 register(FusionComparison);
 register(Scoring);
 register(MultilayerCurve);
+register(ExportRis);
 register(NextSteps);
 
 // Future entries (mounted as their modules come online):
