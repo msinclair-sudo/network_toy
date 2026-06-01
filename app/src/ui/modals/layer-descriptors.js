@@ -24,7 +24,7 @@ import { listAlgorithms as listLayoutAlgos,
 import { getState, update, setDataSourceMode, setDataSourceConfig } from "../state.js";
 import { createStep, listSteps, clearWorkflow, getStep,
          getStepAncestors, getSelectedStep, selectStep,
-         rearmStep }                              from "../workflow.js";
+         findClusterLevels, rearmStep }           from "../workflow.js";
 import { enqueueJob, listJobs, cancelJob }        from "../queue.js";
 import { openAlgorithmModal }                       from "./algorithm-modal.js";
 import { openClusteringModal }                      from "./clustering-modal.js";
