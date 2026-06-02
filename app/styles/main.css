@@ -2594,6 +2594,17 @@ td.node-table-spread, td.node-table-stab { width: 50px; }
   stroke: var(--text-faint);
   stroke-dasharray: 1.5 1.5;
 }
+.chart-line-dot.highlighted {
+  stroke: var(--accent, #4e79a7);
+  stroke-width: 2;
+}
+/* Heatmap cross-binding highlights */
+.chart-heatmap-highlight-row,
+.chart-heatmap-highlight-col {
+  stroke: var(--accent, #4e79a7);
+  stroke-width: 2;
+}
+.chart-heatmap-cell.inactive { opacity: 0.4; }
 
 /* multi-layer stability-curve panel */
 .multilayer-curve-panel { padding: 8px; display: flex; flex-direction: column; gap: 6px; }
@@ -2601,6 +2612,25 @@ td.node-table-spread, td.node-table-stab { width: 50px; }
 .multilayer-curve-summary { font-size: 10px; color: var(--text-faint); font-family: var(--font-mono); }
 .multilayer-curve-empty { color: var(--text-faint); font-style: italic; font-size: 12px; padding: 12px 4px; line-height: 1.5; }
 .multilayer-curve-chart { overflow-x: auto; }
+/* Picker: two-column body (curve | heatmap) + bottom readout */
+.multilayer-curve-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+}
+.multilayer-curve-bridge-empty {
+  color: var(--text-faint); font-style: italic; font-size: 11px;
+  padding: 12px 4px; line-height: 1.5;
+}
+.multilayer-curve-readout {
+  font-size: 11px; color: var(--text-dim); font-family: var(--font-mono);
+  border-top: 1px solid var(--border-light);
+  padding-top: 6px; margin-top: 2px;
+  display: flex; flex-direction: column; gap: 3px;
+}
+.multilayer-curve-readout-line { color: var(--text); }
+.multilayer-curve-readout-label { color: var(--text-faint); margin-right: 6px; }
 /* Fusion displacement panel */
 .disp-panel { padding: 10px; display: flex; flex-direction: column; gap: 8px; font-size: 12px; overflow: auto; }
 .disp-title { font-size: 13px; color: var(--text-dim); font-weight: 600; }

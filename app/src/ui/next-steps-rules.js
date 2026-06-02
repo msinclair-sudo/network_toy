@@ -23,7 +23,6 @@ export const NEXT_STEP_RULES = {
   fusionBranch: [
     { label: "Configure clustering",    hint: "Cluster this branch's embedding (pre- or post-fusion)", modal: "clustering" },
     { label: "Optimise multi-layer clustering", hint: "Sweep HDBSCAN on this branch → pick a layer ladder", modal: "multiLevel" },
-    { label: "Node displacement (pre → post)", hint: "Rank papers whose citation context moved them most between the fusion branches", modal: "nodeDisplacement" },
     { label: "Compare branch clusterings", hint: "ARI / NMI / movers between the pre + post branch clusterings", modal: "fusionComparison" },
   ],
   nodeDisplacement: [
@@ -64,8 +63,8 @@ export const NEXT_STEP_RULES = {
   // → scoring (a bridge card auto-spawns; offered here too if it was deleted).
   // Labelling/scoring hang off the bridge card, not the picker directly.
   multiLevelPicker: [
-    { label: "Run bridge analysis",     hint: "Per-layer: which clusters straddle ≥2 parents in the layer above", modal: "bridgeAnalysis" },
-    { label: "Cross-cluster citations", hint: "Per-layer: how much each cluster cites every other (directed flow)", modal: "crossClusterCitations" },
+    { label: "Run bridge analysis",     hint: "Per-layer: which clusters straddle ≥2 parents in the layer above (auto-fires; this re-runs)", modal: "bridgeAnalysis" },
+    { label: "Cross-cluster citations", hint: "Per-layer directed flow (auto-fires when citation edges exist; toy data needs manual add)", modal: "crossClusterCitations" },
     { label: "Run bootstrap stability", hint: "Per-cluster Jaccard via resampling", modal: "bootstrap" },
     { label: "Compare with another clustering", hint: "ARI / NMI / movers vs a second clustering", modal: "fusionComparison" },
   ],

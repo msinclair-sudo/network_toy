@@ -173,6 +173,72 @@ export function computeBridgeAnalysis(clusterLevels, config = {}) {
 //     }],
 //     totalBridges,                     // Σ bridgeCount over layers
 //   }
+// Lean per-pair bridge count between two candidate partitions of the same n
+// nodes. Used to populate the multiLevelPicker heatmap: for every (child,
+// parent) where child is finer than parent, count fine clusters that straddle
+// ≥ 2 parent clusters. Returns just the count — no perCluster / perNode
+// surface — because the heatmap stores L² counts and the full structure would
+// be wasteful.
+//
+// Inputs are bare clusterResults ({ nodeCluster, clusters }), not level
+// objects, so the picker can call this over the raw sweep candidates.
+export function computeBridgeCountForPair(parentCr, childCr) {
+  if (!parentCr || !childCr) return 0;
+  const nc = childCr.nodeCluster;
+  const pc = parentCr.nodeCluster;
+  if (!nc || !pc || nc.length !== pc.length) return 0;
+  const n = nc.length;
+
+  // Group node ids by child cluster id, recording the set of parent ids they
+  // map to. A child cluster bridges if its members map to ≥ 2 distinct parents.
+  const parentsByChild = new Map();
+  for (let i = 0; i < n; i++) {
+    const cid = nc[i];
+    if (cid < 0) continue;
+    const pid = pc[i];
+    if (pid < 0) continue;
+    let set = parentsByChild.get(cid);
+    if (!set) { set = new Set(); parentsByChild.set(cid, set); }
+    set.add(pid);
+  }
+  let bridges = 0;
+  for (const parents of parentsByChild.values()) {
+    if (parents.size >= 2) bridges++;
+  }
+  return bridges;
+}
+
+// Compute bridge counts for every (childIdx, parentIdx) pair where
+// childIdx > parentIdx (finer than coarser) across the multiLevel sweep
+// candidates. Candidates must be in coarse → fine order (the sweep already
+// returns them so).
+//
+// Returns:
+//   {
+//     n,                          // candidate count
+//     counts: Int32Array(n*n),    // row-major; counts[child * n + parent]
+//                                 // only the strict upper triangle is filled
+//                                 // (childIdx > parentIdx); other cells 0.
+//   }
+//
+// O(n² · |nodes|) total — for n ≈ 15 candidates and |nodes| ≈ 5000 this is
+// ~100 × 5000 = 500k ops, well under a frame.
+export function computeBridgesPerPair(candidates) {
+  const m = candidates ? candidates.length : 0;
+  const counts = new Int32Array(m * m);
+  if (m < 2) return { n: m, counts };
+  for (let child = 1; child < m; child++) {
+    const childCr = candidates[child] && candidates[child].clusterResult;
+    if (!childCr) continue;
+    for (let parent = 0; parent < child; parent++) {
+      const parentCr = candidates[parent] && candidates[parent].clusterResult;
+      if (!parentCr) continue;
+      counts[child * m + parent] = computeBridgeCountForPair(parentCr, childCr);
+    }
+  }
+  return { n: m, counts };
+}
+
 export function computeBridgeAnalysisAllLayers(clusterLevels) {
   if (!clusterLevels || clusterLevels.length < 2) return null;
   const last = clusterLevels.length - 1;

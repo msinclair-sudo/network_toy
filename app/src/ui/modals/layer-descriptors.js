@@ -406,12 +406,27 @@ function dimredDescriptor(editStepId = null) {
       // workflow into a pre branch + a post branch under this dimred card and
       // select the POST one (the fused result). Identity fusion → no fork
       // (one embedding); the user adds clustering under the dimred directly.
+      //
+      // Once both branches exist we also auto-spawn a nodeDisplacement card
+      // under the dimred (Pass 1d) — it's a property of the fork itself
+      // (needs only the two branches' positions, no clustering), so it
+      // shouldn't sit behind a manual "+".
+      const spawnNodeDispIfMissing = (dimredCard) => {
+        const existingND = listSteps({ type: "nodeDisplacement" })
+          .find(d => d.parentId === dimredCard.id);
+        if (existingND) return;
+        nodeDisplacementDescriptor().applyChange()
+          .catch(e => { if (!(e && e.name === "AbortError")) console.error("[dimred-descriptor] auto node-displacement failed:", e); });
+      };
       promise.then(() => {
         const dimredCard = listSteps({ type: "dimred" }).slice(-1)[0];
         if (!dimredCard || !(dimredCard.result && dimredCard.result.fusionActive)) return;
         const existing = listSteps({ type: "fusionBranch" })
           .filter(b => b.parentId === dimredCard.id);
         if (existing.length) {
+          // Branches already in place (e.g. re-run of an existing dimred) —
+          // make sure nodeDisplacement is too, then select POST.
+          spawnNodeDispIfMissing(dimredCard);
           const post = existing.find(b => b.params && b.params.endpoint === "post");
           if (post) selectStep(post.id);
           return;
@@ -423,6 +438,8 @@ function dimredDescriptor(editStepId = null) {
             const post = listSteps({ type: "fusionBranch" })
               .find(b => b.parentId === dimredCard.id && b.params.endpoint === "post");
             if (post) selectStep(post.id);
+            // Both branches now exist — spawn the cross-branch analysis.
+            spawnNodeDispIfMissing(dimredCard);
           })
           .catch(() => {});
       }).catch(() => { /* dimred failure already logged */ });
@@ -1099,18 +1116,44 @@ function multiLevelPickerDescriptor(editStepId = null) {
         stepId,
         fn:    buildMultiLevelPickerJob({ pickedCounts: counts, uidPrefix }),
       });
-      // Once the ladder is committed, auto-spawn a bridge-analysis card under
-      // the picker (the per-layer bridge step sits picker → bridge → labelling
-      // → scoring). Mirrors how the sweep auto-spawns this picker. One bridge
-      // card per picker (re-pick reuses it); needs ≥ 2 committed layers.
+      // Once the ladder is committed, auto-spawn the analysis cards that
+      // hang off the picker:
+      //   - bridgeAnalysis  (needs ≥ 2 committed layers; one per picker)
+      //   - crossClusterCitations  (needs the committed ladder; one per picker)
+      // Mirrors how the sweep auto-spawns this picker; re-pick reuses the
+      // existing card.
       promise.then(() => {
         const picker = step();
-        if (!picker || counts.length < 2) return;
-        const existing = listSteps({ type: "bridgeAnalysis" })
-          .find(b => b.parentId === picker.id);
-        if (existing) { selectStep(existing.id); return; }
-        bridgeAnalysisDescriptor().applyChange()
-          .catch(e => { if (!(e && e.name === "AbortError")) console.error("[multi-level-picker] auto bridge failed:", e); });
+        if (!picker) return;
+
+        // Bridge analysis — needs ≥ 2 committed layers.
+        if (counts.length >= 2) {
+          const existingBridge = listSteps({ type: "bridgeAnalysis" })
+            .find(b => b.parentId === picker.id);
+          if (existingBridge) {
+            selectStep(existingBridge.id);
+          } else {
+            bridgeAnalysisDescriptor().applyChange()
+              .catch(e => { if (!(e && e.name === "AbortError")) console.error("[multi-level-picker] auto bridge failed:", e); });
+          }
+        }
+
+        // Cross-cluster citations — no params; needs the committed ladder.
+        // Gated on citation edges existing in live state: toy data without
+        // synthetic citations has none, and the runner would fail. Real-data
+        // sources (biblion) ship edges at ingest, so the auto-spawn fires
+        // there. Users can still manually add the card on toy data once
+        // they've generated citations.
+        const edges = getState().rawCitationEdges;
+        const hasEdges = Array.isArray(edges) && edges.length > 0;
+        if (hasEdges) {
+          const existingXcc = listSteps({ type: "crossClusterCitations" })
+            .find(b => b.parentId === picker.id);
+          if (!existingXcc) {
+            crossClusterDescriptor().applyChange()
+              .catch(e => { if (!(e && e.name === "AbortError")) console.error("[multi-level-picker] auto cross-cluster failed:", e); });
+          }
+        }
       }).catch((e) => {
         if (e && e.name === "AbortError") return;
         console.error("[multi-level-picker] commit failed:", e);

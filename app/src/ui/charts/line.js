@@ -11,7 +11,9 @@
 /**
  * @param {HTMLElement} host
  * @param {object} opts
- * @param {Array<{x:number, y:number|null, selected?:boolean, size?:number, label?:string}>} opts.points
+ * @param {Array<{x:number, y:number|null, selected?:boolean, highlighted?:boolean, size?:number, label?:string}>} opts.points
+ *   `selected` = committed pick (filled larger dot). `highlighted` = transient
+ *   hover/cross-binding (outline stroke); orthogonal to `selected`.
  * @param {number} [opts.yMin=0]
  * @param {number} [opts.yMax=1]
  * @param {boolean} [opts.xLog=true]      log-scale the x axis.
@@ -132,9 +134,10 @@ export function renderLine(host, opts = {}) {
     const x = xScale(p.x);
     const finite = Number.isFinite(p.y);
     const y = finite ? yScale(p.y) : (M_TOP + gridH);   // park nulls on the axis
-    const r = p.selected ? 5 : 3.2;
+    const r = p.selected ? 5 : (p.highlighted ? 4.2 : 3.2);
     const cls = "chart-line-dot"
       + (p.selected ? " selected" : "")
+      + (p.highlighted ? " highlighted" : "")
       + (finite ? "" : " null");
     const g = el("g", { class: "chart-line-marker" });
     const dot = el("circle", { cx: x, cy: y, r }, cls);

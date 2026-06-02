@@ -132,6 +132,20 @@ def test_multilevel_sweep_then_commit_toy(toy_page):
             }
             for (let c = 0; c <= max; c++) if (!seen.has(c)) contiguous = false;
         }
+        // Per-pair bridge counts populated by the sweep — feed the picker
+        // heatmap. Shape is { n, counts: Int32Array(n*n) } with only the
+        // strict upper triangle (child > parent) filled.
+        const bpp = sweep.bridgesPerPair || null;
+        let upperOnly = true;
+        if (bpp && bpp.counts) {
+            for (let i = 0; i < bpp.n; i++) {
+                for (let j = i; j < bpp.n; j++) {
+                    // diag + lower triangle (parent ≥ child) must be 0
+                    if (bpp.counts[i * bpp.n + j] !== 0) { upperOnly = false; }
+                }
+            }
+        }
+
         return {
             candCount: cands.length,
             candHaveCR: cands.every(c => c.clusterResult && c.clusterResult.nodeCluster),
@@ -146,6 +160,10 @@ def test_multilevel_sweep_then_commit_toy(toy_page):
             hasBridge: !!s.bridgeAnalysis,
             allHaveStability: lv.every(l => l.stability === null || Number.isFinite(l.stability)),
             method: lv[0] && lv[0].clusterResult.method,
+            // Per-pair bridge heatmap data — Pass 1a.
+            bppN: bpp ? bpp.n : null,
+            bppLen: bpp && bpp.counts ? bpp.counts.length : null,
+            bppUpperOnly: upperOnly,
         };
     }''')
     assert out["candCount"] >= 2, f"expected ≥2 candidates, got {out['candCount']}"
@@ -159,6 +177,10 @@ def test_multilevel_sweep_then_commit_toy(toy_page):
     assert out["contiguous"] is True
     assert out["hasBridge"] is True
     assert out["allHaveStability"] is True
+    # Per-pair bridge counts (Pass 1a) — populated alongside the sweep.
+    assert out["bppN"] == out["candCount"]
+    assert out["bppLen"] == out["candCount"] ** 2
+    assert out["bppUpperOnly"] is True
 
 
 def test_multilevel_producer_picker_cards_toy(toy_page):
@@ -230,6 +252,79 @@ def test_multilevel_producer_picker_cards_toy(toy_page):
     assert out["pickerLevels"] == len(out["picks"])
     assert out["projectedLevels"] == out["pickerLevels"]
     assert out["projectedSweep"] is True            # producer ancestor projects the curve
+
+
+def test_picker_commit_auto_spawns_bridge_and_crosscite(toy_page):
+    """Pass 1c: after the picker commits a ladder, bridgeAnalysis always
+    auto-spawns under it. crossClusterCitations auto-spawns ONLY when citation
+    edges are present in live state (gated to avoid a perma-failed card on
+    toy data). Toggling state.rawCitationEdges between two commits proves the
+    gate works."""
+    out = toy_page.evaluate(r'''async () => {
+        const ld = await import("/app/src/ui/modals/layer-descriptors.js");
+        const wf = await import("/app/src/ui/workflow.js");
+        const st = await import("/app/src/ui/state.js");
+
+        // Build producer → picker.
+        const clust = wf.listSteps().filter(s => s.type === "clustering").pop();
+        wf.selectStep(clust.id);
+        const desc = ld.getLayerDescriptor("multiLevel");
+        const active = desc.getActive();
+        await desc.applyChange({
+            minSamples: active.defaults.minSamples,
+            floor: 0.5, B: 5,
+        });
+        const producer = wf.listSteps().filter(s => s.type === "multiLevel").pop();
+        await new Promise(r => setTimeout(r, 30));
+        const picker = wf.listSteps().filter(s => s.type === "multiLevelPicker" && s.parentId === producer.id).pop();
+        wf.selectStep(picker.id);
+        const cands = producer.result.multiLevelSweep.candidates || [];
+        const picks = [...new Set(cands.map(c => c.count).sort((a,b)=>a-b))].slice(0, 2);
+        const pdesc = ld.getLayerDescriptor("multiLevelPicker");
+
+        // ── Phase 1: no edges (toy default) — only bridge should auto-spawn.
+        const edgesBefore = st.getState().rawCitationEdges;
+        st.update({ rawCitationEdges: null });
+        await pdesc.applyChange({ pickedCounts: picks });
+        for (let i = 0; i < 25; i++) {
+            await new Promise(r => setTimeout(r, 40));
+            const bridge = wf.listSteps().filter(s => s.type === "bridgeAnalysis" && s.parentId === picker.id);
+            if (bridge.length && bridge[0].status === "done") break;
+        }
+        const bridge1 = wf.listSteps().filter(s => s.type === "bridgeAnalysis" && s.parentId === picker.id);
+        const xcc1    = wf.listSteps().filter(s => s.type === "crossClusterCitations" && s.parentId === picker.id);
+
+        // ── Phase 2: synthesise edges + re-pick — crossCluster should join.
+        // The auto-spawn fires inside the picker's .then(); we trigger it by
+        // re-applying with edges present.
+        st.update({ rawCitationEdges: [[0, 1], [1, 2], [2, 0]] });
+        await pdesc.applyChange({ pickedCounts: picks });
+        for (let i = 0; i < 25; i++) {
+            await new Promise(r => setTimeout(r, 40));
+            const xcc = wf.listSteps().filter(s => s.type === "crossClusterCitations" && s.parentId === picker.id);
+            if (xcc.length && xcc[0].status === "done") break;
+        }
+        const xcc2 = wf.listSteps().filter(s => s.type === "crossClusterCitations" && s.parentId === picker.id);
+
+        // Restore so we don't bleed into later tests.
+        st.update({ rawCitationEdges: edgesBefore });
+
+        return {
+            phase1_bridgeCount: bridge1.length,
+            phase1_bridgeStatus: bridge1[0] && bridge1[0].status,
+            phase1_xccCount: xcc1.length,            // expected: 0 (gated out)
+            phase2_xccCount: xcc2.length,            // expected: 1 (auto-spawned)
+            phase2_xccStatus: xcc2[0] && xcc2[0].status,
+        };
+    }''')
+    # Bridge auto-spawns regardless of edges.
+    assert out["phase1_bridgeCount"] == 1
+    assert out["phase1_bridgeStatus"] == "done"
+    # CrossCluster gated out when no edges.
+    assert out["phase1_xccCount"] == 0
+    # ...and auto-spawns when edges are present.
+    assert out["phase2_xccCount"] == 1
+    assert out["phase2_xccStatus"] == "done"
 
 
 def test_bridge_panel_sections_and_tau(toy_page):

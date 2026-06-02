@@ -25,7 +25,7 @@ import { getAlgorithm as getCitationAlgorithm }                  from "../citati
 import { assertCitationResult }                                  from "../citations/contract.js";
 import { getAlgorithm as getCitationLayoutAlgorithm }            from "../citation-layout/registry.js";
 import { alignByComponent, alignGlobal }                         from "../blend/align.js";
-import { computeBridgeAnalysis }                                 from "./bridge-analysis.js";
+import { computeBridgeAnalysis, computeBridgesPerPair }          from "./bridge-analysis.js";
 import { runPhase2Score, buildLayersFromPicks }                 from "../eval/multilayer-sweep.js";
 import { update, getState, setLayerState }                       from "./state.js";
 import { runDAG }                                                from "../workers/dag.js";
@@ -748,8 +748,11 @@ export async function recomputeMultiLevelSweep(opts = {}) {
   const phase1 = (r.ml && r.ml.candidates) || [];
   if (phase1.length === 0) {
     setLayerState("clustering", "fresh");
-    update({ multiLevelSweep: { candidates: [], curve: [] }, engineRevision: (getState().engineRevision || 0) + 1 });
-    return { candidates: [], curve: [] };
+    update({
+      multiLevelSweep: { candidates: [], curve: [], bridgesPerPair: { n: 0, counts: new Int32Array(0) } },
+      engineRevision: (getState().engineRevision || 0) + 1,
+    });
+    return { candidates: [], curve: [], bridgesPerPair: { n: 0, counts: new Int32Array(0) } };
   }
 
   // ── Phase 2 (main thread): bootstrap-score EVERY candidate. The bootstrap
@@ -765,19 +768,26 @@ export async function recomputeMultiLevelSweep(opts = {}) {
     abortSignal:   opts.abortSignal || null,
   });
 
+  // Per-pair bridge counts across every (child > parent) candidate pair —
+  // populates the picker's heatmap so the user picks layers with stability
+  // AND bridge density visible at once. Cheap (~O(m²·n)); stored alongside
+  // the candidates so the picker can render and live-filter without recompute.
+  const bridgesPerPair = computeBridgesPerPair(candidates);
+
   update({
     // The whole scored sweep — candidates (with clusterResults) for the
-    // picker's commit, curve for the chart. No layers committed yet.
+    // picker's commit, curve for the chart, bridgesPerPair for the heatmap.
     multiLevelSweep: {
       candidates,
       curve,
+      bridgesPerPair,
       uidPrefix: opts.uidPrefix || "ML",
       floor:     Number.isFinite(opts.floor) ? opts.floor : 0.6,   // guide line on the curve
     },
     engineRevision: (getState().engineRevision || 0) + 1,
   });
   setLayerState("clustering", "fresh");
-  return { candidates, curve };
+  return { candidates, curve, bridgesPerPair };
 }
 
 // Commit a user-picked set of granularities (by cluster count) into the live

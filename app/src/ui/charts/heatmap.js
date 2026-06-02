@@ -35,6 +35,16 @@ import { heatmapCell } from "../gradients.js";
  * @param {(rowLabel, colLabel, value) => string} [opts.cellTitle]
  *                                    SVG `<title>` element per cell for
  *                                    native browser tooltip on hover.
+ * @param {(rowIdx, colIdx, value) => void} [opts.onCellClick]
+ *                                    Click handler per cell.
+ * @param {Set<number>|null} [opts.highlightedRows]
+ *                                    Row indices to outline (cross-binding).
+ * @param {Set<number>|null} [opts.highlightedCols]
+ *                                    Col indices to outline (cross-binding).
+ * @param {(rowIdx, colIdx) => boolean} [opts.cellEnabled]
+ *                                    Return false to render a cell as
+ *                                    inactive (no fill, no overlay text).
+ *                                    Useful for triangular matrices.
  */
 export function renderHeatmap(host, opts = {}) {
   host.innerHTML = "";
@@ -51,6 +61,10 @@ export function renderHeatmap(host, opts = {}) {
     legendLabel = "value",
     formatCell = (v) => v.toFixed(2),
     cellTitle,
+    onCellClick = null,
+    highlightedRows = null,
+    highlightedCols = null,
+    cellEnabled = null,
   } = opts;
 
   if (!Array.isArray(matrix) || matrix.length === 0) {
@@ -113,6 +127,7 @@ export function renderHeatmap(host, opts = {}) {
   const range = (vmax - vmin) || 1;
   for (let r = 0; r < nRows; r++) {
     for (let c = 0; c < nCols; c++) {
+      const enabled = cellEnabled ? cellEnabled(r, c) : true;
       const v = matrix[r][c];
       const t = clamp01((v - vmin) / range);
 
@@ -121,26 +136,68 @@ export function renderHeatmap(host, opts = {}) {
       cell.setAttribute("y", String(M_TOP  + r * cellSize));
       cell.setAttribute("width",  String(cellSize - 1));
       cell.setAttribute("height", String(cellSize - 1));
-      cell.setAttribute("fill", Number.isFinite(v) ? heatmapCell(t, palette) : "rgb(50,50,50)");
-      cell.setAttribute("class", "chart-heatmap-cell");
+      const fill = !enabled
+        ? "rgb(28,28,28)"
+        : (Number.isFinite(v) ? heatmapCell(t, palette) : "rgb(50,50,50)");
+      cell.setAttribute("fill", fill);
+      cell.setAttribute("class", "chart-heatmap-cell" + (enabled ? "" : " inactive"));
       if (typeof cellTitle === "function") {
         const titleEl = document.createElementNS(SVG_NS, "title");
         titleEl.textContent = cellTitle(rowLabels[r], colLabels[c], v);
         cell.appendChild(titleEl);
       }
+      if (enabled && typeof onCellClick === "function") {
+        cell.style.cursor = "pointer";
+        const rr = r, cc = c, vv = v;
+        cell.addEventListener("click", () => onCellClick(rr, cc, vv));
+      }
       svg.appendChild(cell);
 
-      if (formatCell && Number.isFinite(v)) {
+      if (enabled && formatCell && Number.isFinite(v)) {
         const txt = document.createElementNS(SVG_NS, "text");
         txt.setAttribute("x", String(M_LEFT + c * cellSize + cellSize / 2));
         txt.setAttribute("y", String(M_TOP  + r * cellSize + cellSize / 2 + 4));
         txt.setAttribute("text-anchor", "middle");
         txt.setAttribute("class", "chart-heatmap-overlay");
+        // Click-through: the overlay text shouldn't intercept the cell click.
+        if (typeof onCellClick === "function") txt.setAttribute("pointer-events", "none");
         // Pick black or white for legibility based on cell luminance.
         txt.setAttribute("fill", luminanceContrast(heatmapCell(t, palette)));
         txt.textContent = formatCell(v);
         svg.appendChild(txt);
       }
+    }
+  }
+
+  // Cross-binding highlight: outline highlighted rows / columns over the grid.
+  const hiRows = highlightedRows instanceof Set ? highlightedRows : null;
+  const hiCols = highlightedCols instanceof Set ? highlightedCols : null;
+  if (hiRows && hiRows.size) {
+    for (const r of hiRows) {
+      if (r < 0 || r >= nRows) continue;
+      const rect = document.createElementNS(SVG_NS, "rect");
+      rect.setAttribute("x", String(M_LEFT));
+      rect.setAttribute("y", String(M_TOP + r * cellSize));
+      rect.setAttribute("width",  String(gridW));
+      rect.setAttribute("height", String(cellSize - 1));
+      rect.setAttribute("class", "chart-heatmap-highlight-row");
+      rect.setAttribute("fill", "none");
+      rect.setAttribute("pointer-events", "none");
+      svg.appendChild(rect);
+    }
+  }
+  if (hiCols && hiCols.size) {
+    for (const c of hiCols) {
+      if (c < 0 || c >= nCols) continue;
+      const rect = document.createElementNS(SVG_NS, "rect");
+      rect.setAttribute("x", String(M_LEFT + c * cellSize));
+      rect.setAttribute("y", String(M_TOP));
+      rect.setAttribute("width",  String(cellSize - 1));
+      rect.setAttribute("height", String(gridH));
+      rect.setAttribute("class", "chart-heatmap-highlight-col");
+      rect.setAttribute("fill", "none");
+      rect.setAttribute("pointer-events", "none");
+      svg.appendChild(rect);
     }
   }
 
