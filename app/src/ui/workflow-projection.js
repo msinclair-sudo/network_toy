@@ -33,7 +33,6 @@ const PROJECTORS = {
   clustering:     (step, patch) => projectClustering(step, patch),
   multiLevel:       (step, patch) => projectMultiLevel(step, patch),
   multiLevelPicker: (step, patch) => projectMultiLevelPicker(step, patch),
-  bridgeAnalysis:   (step, patch) => projectBridgeAnalysis(step, patch),
   labelling:      (step, patch) => projectLabelling(step, patch),
   citations:      (step, patch) => projectCitations(step, patch),
   citationLayout: (step, patch) => projectCitationLayout(step, patch),
@@ -131,19 +130,9 @@ function projectMultiLevelPicker(step, patch) {
   if (Array.isArray(r.pickedCounts))  patch.multiLevelPicked = r.pickedCounts;
 }
 
-// Bridge-analysis card → state.bridgeAnalysis (+ bridgeConfig pair), the
-// slots the singleton bridge-analysis panel reads. The clustering-like
-// ancestor already projected state.clusterLevels, which the panel also
-// needs. No legacy geometry of its own.
-function projectBridgeAnalysis(step, patch) {
-  const r = step.result;
-  if (!r) return;
-  // Finest-layer pair view drives the viewer + the (legacy) singleton panel.
-  if (r.bridgeAnalysis) patch.bridgeAnalysis = r.bridgeAnalysis;
-  // Per-layer breakdown (bridges are computed for every layer i ≥ 1 vs i − 1)
-  // rides alongside for the per-layer bridge panel + downstream consumers.
-  if (r.bridgeAllLayers) patch.bridgeAllLayers = r.bridgeAllLayers;
-}
+// (projectBridgeAnalysis removed in cards.md Pass 2a, 2026-06-02. The
+// bridgeAnalysis card type no longer exists; the picker's projector now
+// surfaces state.bridgeAnalysis directly from its own result.)
 
 // Labelling card → state.clusterLabels (keyed by level uid), the slot the
 // scoring panel reads. The clustering-like ancestor already projected

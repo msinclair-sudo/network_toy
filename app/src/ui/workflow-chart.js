@@ -45,7 +45,6 @@ const DESCRIPTOR_BY_TYPE = {
   "dimSweep":           "dimSweep",
   "fusionComparison":   "fusionComparison",
   "multiLevel":         "multiLevel",
-  "bridgeAnalysis":     "bridgeAnalysis",
   "labelling":          "labelling",
 };
 

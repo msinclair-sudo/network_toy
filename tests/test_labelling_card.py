@@ -91,24 +91,22 @@ def test_labelling_card_labels_all_levels_and_gates_text(clean_page):
 
 
 def test_labelling_in_next_steps(clean_page):
-    """Labelling is offered where it belongs in the pipeline. Single-run
-    clustering offers it directly; the multi-layer path routes through the
-    bridge card (picker → bridge → labelling), so labelling hangs off the
-    bridge card, not the picker."""
+    """Labelling is offered where it belongs in the pipeline: directly under
+    single-run clustering AND directly under the multiLevelPicker (the bridge
+    intermediary card was removed in Pass 2a — bridges now compute inside
+    the picker's commit and surface on state.bridgeAnalysis)."""
     out = clean_page.evaluate(
         '''async () => {
             const ns = await import("/app/src/ui/next-steps-rules.js");
             return {
                 clustering: ns.addStepRulesFor("clustering").map(r => r.modal),
                 picker:     ns.addStepRulesFor("multiLevelPicker").map(r => r.modal),
-                bridge:     ns.addStepRulesFor("bridgeAnalysis").map(r => r.modal),
                 labelling:  ns.addStepRulesFor("labelling").map(r => r.modal),
             };
         }'''
     )
     assert "labelling" in out["clustering"]        # single-run path: direct
-    assert "bridgeAnalysis" in out["picker"]       # multi-layer path: → bridge
-    assert "labelling" in out["bridge"]            # → labelling
+    assert "labelling" in out["picker"]            # multi-layer path: direct (no bridge intermediary)
     # A labelling card's add-step follow-on is the scoring card.
     assert out["labelling"] == ["scoring"]
 

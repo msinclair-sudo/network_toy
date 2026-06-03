@@ -31,7 +31,6 @@ export const NEXT_STEP_RULES = {
   clustering: [
     { label: "Run bootstrap stability", hint: "Per-cluster Jaccard via resampling", modal: "bootstrap" },
     { label: "Compare with another clustering", hint: "ARI / NMI / movers vs a second clustering", modal: "fusionComparison" },
-    { label: "Run bridge analysis",     hint: "Fine clusters straddling ≥2 coarse parents (needs ≥2 levels)", modal: "bridgeAnalysis" },
     { label: "Cross-cluster citations", hint: "How much each cluster cites every other (directed flow)", modal: "crossClusterCitations" },
     { label: "Label clusters",          hint: "Name clusters (representative paper / year / TF-IDF) for scoring", modal: "labelling" },
     { label: "Run dim sweep",           hint: "ARI stability across embedding dimensions", modal: "dimSweep" },
@@ -63,14 +62,10 @@ export const NEXT_STEP_RULES = {
   // → scoring (a bridge card auto-spawns; offered here too if it was deleted).
   // Labelling/scoring hang off the bridge card, not the picker directly.
   multiLevelPicker: [
-    { label: "Run bridge analysis",     hint: "Per-layer: which clusters straddle ≥2 parents in the layer above (auto-fires; this re-runs)", modal: "bridgeAnalysis" },
+    { label: "Label clusters",          hint: "Name clusters (representative paper / year / KeyBERT) for scoring", modal: "labelling" },
     { label: "Cross-cluster citations", hint: "Per-layer directed flow (auto-fires when citation edges exist; toy data needs manual add)", modal: "crossClusterCitations" },
     { label: "Run bootstrap stability", hint: "Per-cluster Jaccard via resampling", modal: "bootstrap" },
     { label: "Compare with another clustering", hint: "ARI / NMI / movers vs a second clustering", modal: "fusionComparison" },
-  ],
-  bridgeAnalysis: [
-    { label: "Re-run bridge analysis",  hint: "Recompute per-layer bridges across the ladder", rerun: true },
-    { label: "Label clusters",          hint: "Name clusters (representative paper / year / KeyBERT) for scoring", modal: "labelling" },
   ],
   crossClusterCitations: [
     { label: "Re-run cross-cluster citations", hint: "Recompute the per-layer citation flow matrix", rerun: true },

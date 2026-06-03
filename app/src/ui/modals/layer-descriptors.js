@@ -41,8 +41,9 @@ import { buildFusionComparisonJob }                 from "../runners/fusion-comp
 import { openMultiLevelModal }                      from "./multi-level-modal.js";
 import { buildMultiLevelJob }                       from "../runners/multi-level-runner.js";
 import { buildMultiLevelPickerJob }                 from "../runners/multi-level-picker-runner.js";
-import { openBridgeAnalysisModal }                  from "./bridge-analysis-modal.js";
-import { buildBridgeAnalysisJob }                   from "../runners/bridge-analysis-runner.js";
+// bridge analysis is no longer a card type (cards.md Pass 2a, 2026-06-02);
+// the algorithm + runner remain available for the picker's commit job, but
+// nothing here imports them anymore.
 import { openLabellingModal }                       from "./labelling-modal.js";
 import { buildLabellingJob }                        from "../runners/cluster-labels-runner.js";
 import { listLabelMethods }                         from "../../labelling/cluster-labels.js";
@@ -72,7 +73,6 @@ export function getLayerDescriptor(nodeId, editStepId = null) {
     case "fusionComparison": return fusionComparisonDescriptor(editStepId);
     case "multiLevel": return multiLevelDescriptor(editStepId);
     case "multiLevelPicker": return multiLevelPickerDescriptor(editStepId);
-    case "bridgeAnalysis": return bridgeAnalysisDescriptor(editStepId);
     case "labelling":  return labellingDescriptor(editStepId);
     case "scoring":    return scoringDescriptor(editStepId);
     case "export":     return exportDescriptor(editStepId);
@@ -671,9 +671,6 @@ export function rerunStep(stepId) {
       B:          p.B,
     });
   }
-  if (step.type === "bridgeAnalysis") {
-    return bridgeAnalysisDescriptor().applyChange();
-  }
   if (step.type === "labelling") {
     const p = step.params || {};
     return labellingDescriptor().applyChange({ methods: p.methods || [] });
@@ -1116,27 +1113,14 @@ function multiLevelPickerDescriptor(editStepId = null) {
         stepId,
         fn:    buildMultiLevelPickerJob({ pickedCounts: counts, uidPrefix }),
       });
-      // Once the ladder is committed, auto-spawn the analysis cards that
-      // hang off the picker:
-      //   - bridgeAnalysis  (needs ≥ 2 committed layers; one per picker)
-      //   - crossClusterCitations  (needs the committed ladder; one per picker)
-      // Mirrors how the sweep auto-spawns this picker; re-pick reuses the
-      // existing card.
+      // Once the ladder is committed, auto-spawn the cross-cluster citations
+      // card. Mirrors how the sweep auto-spawns this picker; re-pick reuses
+      // the existing card. Bridge analysis is no longer a card type
+      // (cards.md Pass 2a) — bridges are computed inside the picker's
+      // commit job and surfaced on state.bridgeAnalysis for the panel.
       promise.then(() => {
         const picker = step();
         if (!picker) return;
-
-        // Bridge analysis — needs ≥ 2 committed layers.
-        if (counts.length >= 2) {
-          const existingBridge = listSteps({ type: "bridgeAnalysis" })
-            .find(b => b.parentId === picker.id);
-          if (existingBridge) {
-            selectStep(existingBridge.id);
-          } else {
-            bridgeAnalysisDescriptor().applyChange()
-              .catch(e => { if (!(e && e.name === "AbortError")) console.error("[multi-level-picker] auto bridge failed:", e); });
-          }
-        }
 
         // Cross-cluster citations — no params; needs the committed ladder.
         // Gated on citation edges existing in live state: toy data without
@@ -1186,64 +1170,10 @@ function multiLevelPickerDescriptor(editStepId = null) {
   return desc;
 }
 
-// Bridge analysis — first "analysis layer" card (user's analysis-layers
-// plan: bridge analysis → centroid density → citation degree → …).
-//
-// Attaches under a clustering-like card (clustering OR multi-layer) and
-// histograms a fine cluster level against a coarser parent level, marking
-// fine clusters that straddle ≥2 coarse parents as bridges. Reuses the
-// existing singleton bridge-analysis PANEL — the projection layer replays
-// the card's result into state.bridgeAnalysis on selection, so no panel
-// changes are needed.
-function bridgeAnalysisDescriptor(editStepId = null) {
-  const editStep = () => (editStepId ? getStep(editStepId) : null);
-  const resolveParent = () => {
-    const es = editStep();
-    return es ? es.parentId : findSelectedAncestorOfType(CLUSTERING_LIKE_TYPES);
-  };
-  const desc = {
-    label: "Run: Bridge analysis",
-    getActive: () => {
-      const parentId = resolveParent();
-      if (!parentId) return { hasClustering: false, nLevels: 0 };
-      const parent = getStep(parentId);
-      const levels = (parent && parent.result && parent.result.clusterLevels) || [];
-      // Per-layer model: bridges are computed for every layer i ≥ 1 vs the
-      // layer above (i − 1). No fine/coarse pair to pick.
-      return { hasClustering: true, nLevels: levels.length || 0, parentId };
-    },
-    // No params — bridges run across ALL layers (i ≥ 1 vs i − 1). Kept async
-    // + arg-tolerant so the modal/auto-spawn callers can invoke it bare.
-    applyChange: async () => {
-      const parentId = resolveParent();
-      if (!parentId) {
-        throw new Error("[bridge-analysis-descriptor] no clustering ancestor to analyse");
-      }
-      const label = "Bridges · all layers";
-      const stepId = beginStep({
-        editStepId,
-        type:   "bridgeAnalysis",
-        label,
-        params: {},
-        parentId,
-      });
-      selectStep(stepId);
-      const { promise } = enqueueJob({
-        type:  "bridgeAnalysis",
-        label,
-        stepId,
-        fn:    buildBridgeAnalysisJob({ parentStepId: parentId }),
-      });
-      promise.catch((e) => {
-        if (e && e.name === "AbortError") return;
-        console.error("[bridge-analysis-descriptor] job failed:", e);
-      });
-      return promise;
-    },
-    openModal: () => openBridgeAnalysisModal(desc),
-  };
-  return desc;
-}
+// (bridgeAnalysis card type removed in cards.md Pass 2a, 2026-06-02. The
+// algorithm + runner remain; the picker's commit job populates
+// state.bridgeAnalysis directly, and the singleton bridge-analysis panel
+// reads it from there as before.)
 
 // Cluster labelling (MLC §7) — the "analysis layer" that names clusters so
 // a human can score them. Attaches under a clustering-like card and labels

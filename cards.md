@@ -210,7 +210,7 @@ Split into two passes:
 4. Auto-spawn `nodeDisplacement` from `dimred` when fusion forks.
 
 **Pass 2 — breaking (after Pass 1 proven):**
-5. Delete `bridgeAnalysis` card type (runner stays).
+5. ~~Delete `bridgeAnalysis` card type~~ ✓ (Pass 2a complete — runner stays callable; bridges now compute inside `multiLevelPicker.applyChange` and surface on `state.bridgeAnalysis`).
 6. Delete `bootstrapStability` card type (runner stays). Bootstrap knobs fold into clustering modal. Single-level clustering calls the bootstrap algorithm after HDBSCAN.
 7. **Hard break on old saves** — no migration shim; pre-change zips may not load cleanly.
 

@@ -254,12 +254,13 @@ def test_multilevel_producer_picker_cards_toy(toy_page):
     assert out["projectedSweep"] is True            # producer ancestor projects the curve
 
 
-def test_picker_commit_auto_spawns_bridge_and_crosscite(toy_page):
-    """Pass 1c: after the picker commits a ladder, bridgeAnalysis always
-    auto-spawns under it. crossClusterCitations auto-spawns ONLY when citation
-    edges are present in live state (gated to avoid a perma-failed card on
-    toy data). Toggling state.rawCitationEdges between two commits proves the
-    gate works."""
+def test_picker_commit_populates_bridges_and_auto_spawns_crosscite(toy_page):
+    """Pass 1c + Pass 2a: after the picker commits a ladder, bridgeAnalysis
+    is computed inline (no separate card — Pass 2a removed it) and surfaced
+    on state.bridgeAnalysis. crossClusterCitations auto-spawns ONLY when
+    citation edges are present in live state (gated to avoid a perma-failed
+    card on toy data). Toggling state.rawCitationEdges between two commits
+    proves the gate works."""
     out = toy_page.evaluate(r'''async () => {
         const ld = await import("/app/src/ui/modals/layer-descriptors.js");
         const wf = await import("/app/src/ui/workflow.js");
@@ -282,21 +283,24 @@ def test_picker_commit_auto_spawns_bridge_and_crosscite(toy_page):
         const picks = [...new Set(cands.map(c => c.count).sort((a,b)=>a-b))].slice(0, 2);
         const pdesc = ld.getLayerDescriptor("multiLevelPicker");
 
-        // ── Phase 1: no edges (toy default) — only bridge should auto-spawn.
+        // ── Phase 1: no edges (toy default) — picker commits + bridges land
+        //    on state.bridgeAnalysis, but crossCluster is gated out.
         const edgesBefore = st.getState().rawCitationEdges;
         st.update({ rawCitationEdges: null });
         await pdesc.applyChange({ pickedCounts: picks });
+        // wait for the picker job to commit
         for (let i = 0; i < 25; i++) {
             await new Promise(r => setTimeout(r, 40));
-            const bridge = wf.listSteps().filter(s => s.type === "bridgeAnalysis" && s.parentId === picker.id);
-            if (bridge.length && bridge[0].status === "done") break;
+            const p = wf.listSteps().filter(s => s.type === "multiLevelPicker" && s.parentId === producer.id).pop();
+            if (p && p.status === "done") break;
         }
-        const bridge1 = wf.listSteps().filter(s => s.type === "bridgeAnalysis" && s.parentId === picker.id);
-        const xcc1    = wf.listSteps().filter(s => s.type === "crossClusterCitations" && s.parentId === picker.id);
+        const phase1_state = st.getState();
+        const phase1_hasBridge = !!phase1_state.bridgeAnalysis;
+        // No separate bridgeAnalysis card should exist (Pass 2a deleted the type).
+        const phase1_bridgeCards = wf.listSteps().filter(s => s.type === "bridgeAnalysis").length;
+        const xcc1 = wf.listSteps().filter(s => s.type === "crossClusterCitations" && s.parentId === picker.id);
 
         // ── Phase 2: synthesise edges + re-pick — crossCluster should join.
-        // The auto-spawn fires inside the picker's .then(); we trigger it by
-        // re-applying with edges present.
         st.update({ rawCitationEdges: [[0, 1], [1, 2], [2, 0]] });
         await pdesc.applyChange({ pickedCounts: picks });
         for (let i = 0; i < 25; i++) {
@@ -310,16 +314,16 @@ def test_picker_commit_auto_spawns_bridge_and_crosscite(toy_page):
         st.update({ rawCitationEdges: edgesBefore });
 
         return {
-            phase1_bridgeCount: bridge1.length,
-            phase1_bridgeStatus: bridge1[0] && bridge1[0].status,
+            phase1_hasBridge,
+            phase1_bridgeCards,                      // expected: 0 (card type removed)
             phase1_xccCount: xcc1.length,            // expected: 0 (gated out)
             phase2_xccCount: xcc2.length,            // expected: 1 (auto-spawned)
             phase2_xccStatus: xcc2[0] && xcc2[0].status,
         };
     }''')
-    # Bridge auto-spawns regardless of edges.
-    assert out["phase1_bridgeCount"] == 1
-    assert out["phase1_bridgeStatus"] == "done"
+    # Bridge computed inline + surfaced on state, no separate card.
+    assert out["phase1_hasBridge"] is True
+    assert out["phase1_bridgeCards"] == 0
     # CrossCluster gated out when no edges.
     assert out["phase1_xccCount"] == 0
     # ...and auto-spawns when edges are present.
