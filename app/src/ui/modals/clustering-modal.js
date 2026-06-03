@@ -184,7 +184,7 @@ export function openClusteringModal(descriptor) {
           // bottom busy bar mirrors the running job.
           const w = tabHandles.configure && tabHandles.configure.getWorking();
           if (w) {
-            descriptor.applyChange(w.algoId, w.levels)
+            descriptor.applyChange(w.algoId, w.levels, { bootstrap: w.bootstrap })
               .catch(e => console.error("[clustering-modal] applyChange failed:", e));
           }
           // returning undefined → modal closes

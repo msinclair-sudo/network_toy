@@ -11,55 +11,66 @@ save/load mechanic (no data needed).
 import pytest
 
 
-def test_bootstrap_descriptor_creates_card_under_clustering(toy_page):
-    """Phase 2 slice 2.9.a — running a bootstrap forks a
-    bootstrapStability card under the selected clustering ancestor,
-    populates the card's result, and auto-saves a linked validationRun.
-    """
+def test_bootstrap_sidecar_runs_with_clustering(toy_page):
+    """cards.md Pass 2b — bootstrap is no longer a standalone card. It's a
+    sidecar to single-level clustering: knobs live in the clustering modal,
+    engine.recluster runs bootstrap after HDBSCAN, the result lands on
+    state.bootstrapStability for the panel to render. There must be NO
+    bootstrapStability card on the tree (the type was removed)."""
     out = toy_page.evaluate(
         '''async () => {
             const ld = await import("/app/src/ui/modals/layer-descriptors.js");
             const st = await import("/app/src/ui/state.js");
             const wf = await import("/app/src/ui/workflow.js");
 
-            // Run bootstrap with the smallest meaningful config (B=5)
-            // so the test finishes quickly on the slow CI PC. The
-            // toy_page already has data + a baseline clustering from
-            // migration.
-            const desc = ld.getLayerDescriptor("bootstrap");
+            // Clear any prior bootstrap (toy_page may carry one from a
+            // previous test) so we can assert this clustering produced it.
+            st.update({ bootstrapStability: null });
+
+            // Re-run the clustering with bootstrap enabled (B=5 keeps the
+            // test quick on the slow CI PC). Re-applying writes a fresh
+            // clustering card + runs recluster, which fires the sidecar.
+            const desc = ld.getLayerDescriptor("clustering");
             const active = desc.getActive();
-            if (!active.hasClustering) return { error: "no clustering ancestor" };
-
-            await desc.applyChange({
-                B: 5, subsampleFrac: 0.5, minMembers: 3, noiseHandling: "exclude",
+            await desc.applyChange(active.method, active.levels, {
+                bootstrap: {
+                    enabled: true, B: 5, subsampleFrac: 0.5,
+                    minMembers: 3, noiseHandling: "exclude",
+                },
             });
+            // Bootstrap sidecar is detached from the descriptor's promise,
+            // so wait for state.bootstrapStability to populate.
+            let slot = null;
+            for (let i = 0; i < 30; i++) {
+                await new Promise(r => setTimeout(r, 80));
+                slot = st.getState().bootstrapStability;
+                if (slot && slot.bootstrapResult) break;
+            }
 
+            // No bootstrapStability cards should exist after Pass 2b.
             const cards = Object.values(st.getState().workflow.steps)
                 .filter(s => s.type === "bootstrapStability");
-            const card = cards[cards.length - 1];
-            const runs = (st.getState().validationRuns || [])
-                .filter(r => r.type === "bootstrapStability");
-            const run = runs[runs.length - 1];
+            // Latest clustering card carries the bootstrap settings on its
+            // params (recorded by clusteringDescriptor.applyChange).
+            const clustCards = Object.values(st.getState().workflow.steps)
+                .filter(s => s.type === "clustering");
+            const latestClust = clustCards[clustCards.length - 1];
 
             return {
-                cardStatus:           card && card.status,
-                cardParentMatches:    card && card.parentId === active.parentId,
-                resultHasBootstrap:   !!(card && card.result && card.result.bootstrapResult),
-                resultHasAggregate:   !!(card && card.result && card.result.aggregate),
-                aggMacroIsFinite:     card && card.result && card.result.aggregate
-                                       && Number.isFinite(card.result.aggregate.meanJaccard_macro),
-                runLinkedToParent:    run && run.inputs && run.inputs.parentStepId === active.parentId,
-                runHasValidationLink: !!(card && card.result && card.result.validationRunId),
+                hasLiveSlot:        !!(slot && slot.bootstrapResult),
+                aggMacroIsFinite:   slot && slot.aggregate
+                                     && Number.isFinite(slot.aggregate.meanJaccard_macro),
+                noLegacyCard:       cards.length === 0,
+                clusteringStored_B: latestClust && latestClust.params
+                                     && latestClust.params.bootstrap
+                                     && latestClust.params.bootstrap.B,
             };
         }'''
     )
-    assert out["cardStatus"] == "done"
-    assert out["cardParentMatches"] is True
-    assert out["resultHasBootstrap"] is True
-    assert out["resultHasAggregate"] is True
+    assert out["hasLiveSlot"] is True
     assert out["aggMacroIsFinite"] is True
-    assert out["runLinkedToParent"] is True
-    assert out["runHasValidationLink"] is True
+    assert out["noLegacyCard"] is True
+    assert out["clusteringStored_B"] == 5
 
 
 def test_dim_sweep_descriptor_creates_card_under_dimred(toy_page):

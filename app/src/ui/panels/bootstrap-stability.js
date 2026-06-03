@@ -1,19 +1,13 @@
-// Panel: bootstrap stability — saved-mode renderer for a card or a
-// legacy validationRun.
+// Panel: bootstrap stability — renders the sidecar result of the live
+// clustering OR a legacy validationRun.
 //
-// Phase 2 slice 2.9.a removed the panel's live tab. Bootstrap is now
-// kicked off from the workflow chart (bootstrap card → modal → Apply)
-// — the panel renders results only.
-//
-// Two binding modes, picked by config:
-//   - **Step-bound** (config.stepId): renders state.workflow.steps[stepId].result.
-//     This is the canonical new path — the chart creates a card and
-//     the panel auto-binds to it.
-//   - **Legacy run-bound** (config.runId): renders the matching
-//     state.validationRuns entry. Kept so saved projects from before
-//     2.9.a continue to render their bootstrap runs.
-//
-// Both shapes share the same renderer; only the lookup differs.
+// cards.md Pass 2b (2026-06-03): bootstrap is no longer a standalone card.
+// It runs as a sidecar to clustering — knobs in the clustering modal's
+// Configure tab — and lands on state.bootstrapStability. The panel
+// auto-binds to that slot. Two legacy paths are kept for older saves:
+//   - **Step-bound** (config.stepId): renders a bootstrapStability card's
+//     result on a pre-Pass-2b workflow.
+//   - **Run-bound** (config.runId): renders a saved validationRuns entry.
 
 import {
   getState, subscribe, setSelection,
@@ -24,7 +18,7 @@ import { SCORE_VERSION, DEFAULT_MIN_MEMBERS,
 
 export const ID          = "bootstrap-stability";
 export const LABEL       = "Bootstrap stability";
-export const DESCRIPTION = "Per-cluster bootstrap-Jaccard stability for a bootstrapStability card or a legacy saved validationRun. Run a new bootstrap from the workflow chart's Bootstrap card.";
+export const DESCRIPTION = "Per-cluster bootstrap-Jaccard stability for the live clustering (run it from the Clustering modal's Stability section) or a legacy saved validationRun.";
 export const SINGLETON   = true;
 
 export function mount(container, _state, config = {}) {
@@ -36,10 +30,9 @@ export function mount(container, _state, config = {}) {
   const stepId = (config && config.stepId) || null;
   const runId  = (config && config.runId)  || null;
 
-  // Auto-bind: if no explicit binding, prefer the latest done
-  // bootstrapStability step on the tree (the user's just-finished run).
-  // Falls back to the latest matching validationRun if no card exists
-  // (a legacy save loaded into a Phase-2 build).
+  // Auto-bind: prefer the live state.bootstrapStability (the sidecar from
+  // the most recent clustering); fall back to legacy card / validationRun
+  // shapes for older saves.
   function resolveBinding() {
     if (stepId) {
       const s = getStep(stepId);
@@ -53,10 +46,12 @@ export function mount(container, _state, config = {}) {
       if (r) return { kind: "run", id: runId, source: runToSource(r) };
       return { kind: "missing", id: runId };
     }
-    // Auto-pick: latest done bootstrapStability card, else latest
-    // saved validationRun of that type. Auto-pick is for usability
-    // when the panel is dropped in without explicit config; an
-    // explicit stepId/runId always wins.
+    // Auto-pick: live state slot wins (clustering sidecar, cards.md Pass 2b);
+    // then legacy bootstrap card if one survives an old save; then validationRun.
+    const live = getState().bootstrapStability;
+    if (live && live.bootstrapResult) {
+      return { kind: "live", id: "live", source: liveStateToSource(live) };
+    }
     const w = getState().workflow;
     if (w && w.steps) {
       const cards = Object.values(w.steps)
@@ -105,7 +100,7 @@ export function mount(container, _state, config = {}) {
       title.textContent = "Bootstrap stability";
       const empty = document.createElement("div");
       empty.className = "panel-bs-empty";
-      empty.textContent = "No bootstrap runs yet. Open the Bootstrap card on the workflow chart and click Apply to run one.";
+      empty.textContent = "No bootstrap runs yet. Open the Clustering modal → Stability section, make sure 'Run bootstrap stability' is on, and Apply.";
       wrap.appendChild(empty);
       return;
     }
@@ -139,6 +134,21 @@ export function mount(container, _state, config = {}) {
 //   { label, bootstrapResult, cluster: {label, nClusters}, settings,
 //     runtimeSec, savedAt, dataSourceMode, dataSourceConfig }
 // step-bound and run-bound bindings both flatten to this.
+
+// Live state slot — populated by engine.recluster's bootstrap sidecar
+// (cards.md Pass 2b). Same renderer shape; no validationRun id.
+function liveStateToSource(slot) {
+  return {
+    label:           slot.label || "bootstrap (live)",
+    bootstrapResult: slot.bootstrapResult,
+    cluster:         slot.cluster || {},
+    settings:        slot.settings || {},
+    runtimeSec:      slot.runtimeSec || 0,
+    savedAt:         slot.capturedAt || null,
+    dataSourceMode:  liveDataSourceMode(),
+    dataSourceConfig: {},
+  };
+}
 
 function stepResultToSource(step) {
   const r = step.result || {};

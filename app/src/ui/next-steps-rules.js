@@ -29,7 +29,6 @@ export const NEXT_STEP_RULES = {
     { label: "Re-run node displacement", hint: "Recompute pre→post per-node movement", rerun: true },
   ],
   clustering: [
-    { label: "Run bootstrap stability", hint: "Per-cluster Jaccard via resampling", modal: "bootstrap" },
     { label: "Compare with another clustering", hint: "ARI / NMI / movers vs a second clustering", modal: "fusionComparison" },
     { label: "Cross-cluster citations", hint: "How much each cluster cites every other (directed flow)", modal: "crossClusterCitations" },
     { label: "Label clusters",          hint: "Name clusters (representative paper / year / TF-IDF) for scoring", modal: "labelling" },
@@ -38,9 +37,6 @@ export const NEXT_STEP_RULES = {
   ],
   citationLayout: [
     { label: "Reconfigure layout",      hint: "Tune the citation-layout algorithm", modal: "layout" },
-  ],
-  bootstrapStability: [
-    { label: "Re-run this bootstrap",   hint: "Fork a fresh run with the same settings", rerun: true },
   ],
   dimSweep: [
     { label: "Re-run this dim sweep",   hint: "Fork a fresh sweep with the same settings", rerun: true },
@@ -64,7 +60,6 @@ export const NEXT_STEP_RULES = {
   multiLevelPicker: [
     { label: "Label clusters",          hint: "Name clusters (representative paper / year / KeyBERT) for scoring", modal: "labelling" },
     { label: "Cross-cluster citations", hint: "Per-layer directed flow (auto-fires when citation edges exist; toy data needs manual add)", modal: "crossClusterCitations" },
-    { label: "Run bootstrap stability", hint: "Per-cluster Jaccard via resampling", modal: "bootstrap" },
     { label: "Compare with another clustering", hint: "ARI / NMI / movers vs a second clustering", modal: "fusionComparison" },
   ],
   crossClusterCitations: [

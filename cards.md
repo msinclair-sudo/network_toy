@@ -211,7 +211,7 @@ Split into two passes:
 
 **Pass 2 — breaking (after Pass 1 proven):**
 5. ~~Delete `bridgeAnalysis` card type~~ ✓ (Pass 2a complete — runner stays callable; bridges now compute inside `multiLevelPicker.applyChange` and surface on `state.bridgeAnalysis`).
-6. Delete `bootstrapStability` card type (runner stays). Bootstrap knobs fold into clustering modal. Single-level clustering calls the bootstrap algorithm after HDBSCAN.
+6. ~~Delete `bootstrapStability` card type~~ ✓ (Pass 2b complete — runner + eval module stay callable; bootstrap knobs live in the clustering modal's Stability section; `engine.recluster` runs the sidecar after HDBSCAN; result on `state.bootstrapStability` for the panel).
 7. **Hard break on old saves** — no migration shim; pre-change zips may not load cleanly.
 
 ## Out of scope for this palette

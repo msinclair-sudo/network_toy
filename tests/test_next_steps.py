@@ -30,9 +30,10 @@ _BUILD_TREE = '''
 
 def test_next_steps_lists_clustering_followons(clean_page):
     """Selecting a clustering card surfaces its follow-on actions:
-    bootstrap, compare-with-another-clustering, cross-cluster citations,
-    label clusters, dim sweep, citation layout. (Bridge analysis is no
-    longer a card type — Pass 2a moved it inside the picker.)"""
+    compare-with-another-clustering, cross-cluster citations, label clusters,
+    dim sweep, citation layout. (Bridge analysis was removed in Pass 2a;
+    bootstrap was removed in Pass 2b — it's a sidecar inside the clustering
+    modal now, not a separate card.)"""
     out = clean_page.evaluate(
         '''async () => {
             ''' + _BUILD_TREE + '''
@@ -55,15 +56,15 @@ def test_next_steps_lists_clustering_followons(clean_page):
     )
     assert out["title"] == "What's next?"
     assert "clustering A" in (out["context"] or "")
-    assert out["actionCount"] == 6
+    assert out["actionCount"] == 5
     joined = " | ".join(out["labels"])
-    assert "bootstrap stability" in joined.lower()
     assert "compare with another clustering" in joined.lower()
-    assert "cross-cluster citations" in joined.lower()    # replaced bridge analysis as 3rd entry
+    assert "cross-cluster citations" in joined.lower()
     assert "label clusters" in joined.lower()
     assert "dim sweep" in joined.lower()
     assert "citation layout" in joined.lower()
-    assert "bridge analysis" not in joined.lower()        # bridge is no longer a card type
+    assert "bridge analysis" not in joined.lower()        # Pass 2a: bridge folded into picker
+    assert "bootstrap stability" not in joined.lower()    # Pass 2b: bootstrap folded into clustering modal
 
 
 def test_next_steps_empty_without_selection(clean_page):
@@ -107,13 +108,13 @@ def test_add_step_modal_lists_downstream_options(clean_page):
         }'''
     )
     joined = " | ".join(out["options"]).lower()
-    assert "bootstrap stability" in joined
     assert "compare with another clustering" in joined
-    assert "cross-cluster citations" in joined            # replaced bridge in Pass 2a
+    assert "cross-cluster citations" in joined
     assert "label clusters" in joined
     assert "dim sweep" in joined
     assert "citation layout" in joined
-    assert "bridge analysis" not in joined                # bridge is no longer a card type
+    assert "bridge analysis"     not in joined            # Pass 2a removed
+    assert "bootstrap stability" not in joined            # Pass 2b removed
     # No 'rerun this card' option in the add-step menu.
     assert "re-run" not in joined
     assert 'clustering A' in (out["title"] or "")

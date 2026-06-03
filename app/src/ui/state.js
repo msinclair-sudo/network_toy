@@ -99,6 +99,14 @@ const state = {
   // totalBridges } — see computeBridgeAnalysisAllLayers. Null until run.
   bridgeAllLayers:       null,
 
+  // Per-cluster bootstrap-Jaccard stability for the LIVE single-level
+  // clustering. Populated by engine.recluster when the clustering modal's
+  // "Run bootstrap stability" toggle is on (cards.md Pass 2b: bootstrap
+  // is no longer a standalone card; it's a sidecar to clustering). Shape:
+  // { bootstrapResult, aggregate, cluster, settings, runtimeSec, capturedAt }
+  // — the same shape the bootstrap panel rendered for the old card.
+  bootstrapStability:    null,
+
   // Node displacement between the pre- and post-fusion branches:
   // { dist:Float32Array(n), correlation, max, mean, topMovers:[{id,dist}] }.
   // Drives the displacement panel + the "displacement" colour mode.

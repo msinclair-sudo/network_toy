@@ -30,8 +30,9 @@ import { openAlgorithmModal }                       from "./algorithm-modal.js";
 import { openClusteringModal }                      from "./clustering-modal.js";
 import { openDimredModal }                          from "./dimred-modal.js";
 import { openDataSourceModal }                      from "./data-source-modal.js";
-import { openBootstrapModal, BOOTSTRAP_DEFAULTS }   from "./bootstrap-modal.js";
-import { buildBootstrapJob }                        from "../runners/bootstrap-runner.js";
+// bootstrap is no longer a card type (cards.md Pass 2b, 2026-06-03);
+// it runs as a sidecar to clustering. eval/bootstrap.js + the runner remain
+// callable, but nothing in this module imports them.
 import { openDimSweepModal, DIMSWEEP_DEFAULTS,
          defaultNoiseConfig, defaultCompressionConfig,
          defaultClusteringConfig }                  from "./dim-sweep-modal.js";
@@ -68,7 +69,6 @@ export function getLayerDescriptor(nodeId, editStepId = null) {
     case "nodeDisplacement": return nodeDisplacementDescriptor(editStepId);
     case "clustering": return clusteringDescriptor(editStepId);
     case "layout":     return layoutDescriptor(editStepId);
-    case "bootstrap":  return bootstrapDescriptor(editStepId);
     case "dimSweep":   return dimSweepDescriptor(editStepId);
     case "fusionComparison": return fusionComparisonDescriptor(editStepId);
     case "multiLevel": return multiLevelDescriptor(editStepId);
@@ -573,6 +573,19 @@ function nodeDisplacementDescriptor(editStepId = null) {
   return desc;
 }
 
+// Bootstrap defaults bundled into the clustering modal (cards.md Pass 2b).
+// Bootstrap is no longer a standalone card; engine.recluster runs it as a
+// sidecar when bootstrap.enabled, populating state.bootstrapStability for
+// the panel. Single-level only — multi-level (multiLevel sweep + picker)
+// has its own per-granularity bootstrap built into the curve.
+export const CLUSTERING_BOOTSTRAP_DEFAULTS = {
+  enabled:       true,
+  B:             10,
+  subsampleFrac: 0.5,
+  minMembers:    3,             // matches eval/bootstrap.js DEFAULT_MIN_MEMBERS
+  noiseHandling: "exclude",     // "exclude" | "asCluster" | "penalise"
+};
+
 function clusteringDescriptor(editStepId = null) {
   const desc = {
     label: "Configure: Clustering",
@@ -585,14 +598,23 @@ function clusteringDescriptor(editStepId = null) {
         levels: lp ? lp.levels : [
           { uid: "L0", params: getClusteringAlgo("mutualKNN").defaultParams(), scope: "global" },
         ],
+        // Bootstrap settings ride alongside in the same params bag. When the
+        // card was saved before Pass 2b lp.bootstrap is undefined → defaults.
+        bootstrap: (lp && lp.bootstrap) ? { ...CLUSTERING_BOOTSTRAP_DEFAULTS, ...lp.bootstrap }
+                                        : { ...CLUSTERING_BOOTSTRAP_DEFAULTS },
       };
     },
     // applyChange(algoId, levels, opts?)
     // opts.precomputedCr — passed through to engine.recluster() so per-row
     //   Apply from the Optimise tab can skip the L0 algo.infer when the
     //   sweep already produced a matching cr (A3, §6.18.3).
+    // opts.bootstrap — overrides the active settings (the modal passes the
+    //   working bootstrap section); falls back to defaults.
     applyChange: async (algoId, levels, opts = {}) => {
-      const clusteringParams = { method: algoId, levels };
+      const bootstrap = opts.bootstrap
+        ? { ...CLUSTERING_BOOTSTRAP_DEFAULTS, ...opts.bootstrap }
+        : { ...CLUSTERING_BOOTSTRAP_DEFAULTS };
+      const clusteringParams = { method: algoId, levels, bootstrap };
       const lvlCount = (levels || []).length;
       const label = lvlCount > 1
         ? `Clustering · ${algoId} · ${lvlCount} levels`
@@ -605,7 +627,12 @@ function clusteringDescriptor(editStepId = null) {
         engineFn: async () => {
           const s = getState();
           update({ layerParams: { ...s.layerParams, clustering: clusteringParams } });
-          try { await engine.recluster({ precomputedCr: opts.precomputedCr || null }); }
+          try {
+            await engine.recluster({
+              precomputedCr: opts.precomputedCr || null,
+              bootstrap,
+            });
+          }
           catch (e) { console.error("[clustering-descriptor] recluster failed:", e); throw e; }
         },
       });
@@ -638,16 +665,17 @@ export function rerunStep(stepId) {
   }
   if (step.type === "clustering") {
     const p = step.params || {};
-    return clusteringDescriptor().applyChange(p.method, p.levels || []);
+    return clusteringDescriptor().applyChange(p.method, p.levels || [], {
+      bootstrap: p.bootstrap,                  // preserve the card's settings
+    });
   }
   if (step.type === "citationLayout") {
     const p = step.params || {};
     return layoutDescriptor().applyChange(p.method, p.params || {});
   }
-  if (step.type === "bootstrapStability") {
-    const settings = step.params || BOOTSTRAP_DEFAULTS;
-    return bootstrapDescriptor().applyChange(settings);
-  }
+  // bootstrapStability card type removed in Pass 2b — rerun handled inside
+  // clusteringDescriptor (re-running a clustering re-runs its bootstrap
+  // sidecar).
   if (step.type === "dimSweep") {
     const p = step.params || {};
     return dimSweepDescriptor().applyChange({
@@ -722,88 +750,11 @@ function layoutDescriptor(editStepId = null) {
   return desc;
 }
 
-// Bootstrap stability — Phase 2 slice 2.9.a.
-//
-// Unlike the spine descriptors, this one:
-//   - parents the new card under the SELECTED clustering ancestor (not
-//     "latest clustering"), so the user's mental model "bootstrap THIS
-//     clustering" is honoured;
-//   - doesn't mutate state.layerParams (bootstrap has no spine params);
-//   - uses buildBootstrapJob to wrap the eval engine; the queue runner
-//     auto-publishes setStepResult, so we don't post-process here.
-function bootstrapDescriptor(editStepId = null) {
-  // When editing, keep the card's existing parent + prefill its settings;
-  // otherwise resolve the parent from the current selection.
-  const editStep = () => (editStepId ? getStep(editStepId) : null);
-  const resolveParent = () => {
-    const es = editStep();
-    return es ? es.parentId : findSelectedAncestorOfType(CLUSTERING_LIKE_TYPES);
-  };
-  const desc = {
-    label: "Run: Bootstrap stability",
-    getActive: () => {
-      const es = editStep();
-      const settings = es && es.params ? { ...es.params } : { ...BOOTSTRAP_DEFAULTS };
-      const parentId = resolveParent();
-      if (!parentId) {
-        return { hasClustering: false, settings };
-      }
-      const parent = getStep(parentId);
-      const snap = parent && parent.result || {};
-      const lvls = snap.clusterLevels || [];
-      const finest = lvls.length > 0 ? lvls[lvls.length - 1].clusterResult : null;
-      // Multi-layer cards run HDBSCAN but don't store a `method`; label
-      // them explicitly. Clustering cards carry their algo id.
-      const algoId = (parent && parent.params && parent.params.method)
-        || (parent && parent.type === "multiLevel" ? "hdbscan" : "(unknown)");
-      let clusterLabel = parent && parent.type === "multiLevel" ? "HDBSCAN (multi-layer)" : algoId;
-      try {
-        const a = getClusteringAlgo(algoId);
-        if (a && a.label && parent.type !== "multiLevel") clusterLabel = a.label;
-      } catch (_) {}
-      return {
-        hasClustering: true,
-        settings,
-        clusterLabel,
-        nClusters:     finest ? finest.clusters.length : 0,
-        parentId,
-      };
-    },
-    applyChange: async (settings) => {
-      const parentId = resolveParent();
-      if (!parentId) {
-        throw new Error("[bootstrap-descriptor] no clustering ancestor to bootstrap against");
-      }
-      const label = `Bootstrap · B=${settings.B}`;
-      const stepId = beginStep({
-        editStepId,
-        type:   "bootstrapStability",
-        label,
-        params: { ...settings },
-        parentId,
-      });
-      selectStep(stepId);
-      const { promise } = enqueueJob({
-        type:  "bootstrapStability",
-        label,
-        stepId,
-        fn:    buildBootstrapJob({
-          parentClusteringStepId: parentId,
-          settings: { ...settings },
-        }),
-      });
-      // Detach handling — chart shows the spinner; consumers don't
-      // need to await. Surface errors to the console.
-      promise.catch((e) => {
-        if (e && e.name === "AbortError") return;     // cancelled — silent
-        console.error("[bootstrap-descriptor] job failed:", e);
-      });
-      return promise;
-    },
-    openModal: () => openBootstrapModal(desc),
-  };
-  return desc;
-}
+// (bootstrapDescriptor removed in cards.md Pass 2b, 2026-06-03. Bootstrap
+// is now a sidecar inside clusteringDescriptor — knobs in the clustering
+// modal's Stability section, run by engine.recluster after HDBSCAN
+// completes, result on state.bootstrapStability. eval/bootstrap.js +
+// bootstrap-runner.js stay callable.)
 
 // Dim-sweep — Phase 2 slice 2.9.b.
 //

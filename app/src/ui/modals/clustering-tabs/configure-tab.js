@@ -14,6 +14,12 @@ export function buildConfigureTab(host, descriptor) {
     params: { ...l.params },
     scope:  l.scope,
   }));
+  // Bootstrap settings — folded in from the (now-deleted) bootstrap card per
+  // cards.md Pass 2b. Defaults supplied by clusteringDescriptor.getActive.
+  // Single-level clusterings get a bootstrap-Jaccard sidecar; multi-level
+  // (multiLevel sweep + picker) has its own per-granularity bootstrap, so
+  // this section gates itself off for level counts > 1 below.
+  let chosenBootstrap = { ...(active.bootstrap || {}) };
 
   // ── algorithm dropdown ───────────────────────────────────────────
   const algoRow = document.createElement("div");
@@ -46,6 +52,14 @@ export function buildConfigureTab(host, descriptor) {
   addBtn.textContent = "+ Add level";
   host.appendChild(addBtn);
 
+  // ── Bootstrap stability section ──────────────────────────────────
+  // Sidecar to single-level clustering (cards.md Pass 2b). When ≥ 2 levels,
+  // multi-level's own per-granularity bootstrap takes over — we hide the
+  // knobs to avoid two surfaces competing.
+  const bsHost = document.createElement("div");
+  bsHost.className = "clustering-modal-bootstrap";
+  host.appendChild(bsHost);
+
   function findAlgo(id) {
     return algos.find(a => a.id === id);
   }
@@ -58,6 +72,73 @@ export function buildConfigureTab(host, descriptor) {
     chosenLevels.forEach((lvl, idx) => {
       levelsHost.appendChild(renderLevel(idx, lvl, algo));
     });
+    renderBootstrapSection();
+  }
+
+  function renderBootstrapSection() {
+    bsHost.innerHTML = "";
+    const heading = document.createElement("div");
+    heading.className = "clustering-modal-bootstrap-heading";
+    heading.textContent = "Stability (bootstrap)";
+    bsHost.appendChild(heading);
+
+    // Multi-level path has its own bootstrap built into the sweep curve —
+    // showing the same knobs here would be misleading. Render a hint.
+    if (chosenLevels.length > 1) {
+      const hint = document.createElement("div");
+      hint.className = "clustering-modal-bootstrap-hint";
+      hint.textContent =
+        "Multi-level clusterings get per-granularity bootstrap inside the " +
+        "Optimise multi-layer sweep — knobs there. This section applies to " +
+        "single-level clusterings only.";
+      bsHost.appendChild(hint);
+      return;
+    }
+
+    // Enabled toggle.
+    const enableRow = document.createElement("div");
+    enableRow.className = "clustering-modal-bootstrap-row";
+    const enableLab = document.createElement("label");
+    enableLab.title = "Run bootstrap-Jaccard stability after clustering completes (default on).";
+    const enableCB = document.createElement("input");
+    enableCB.type = "checkbox";
+    enableCB.checked = !!chosenBootstrap.enabled;
+    enableCB.addEventListener("change", () => {
+      chosenBootstrap.enabled = enableCB.checked;
+      renderBootstrapSection();
+    });
+    enableLab.appendChild(enableCB);
+    enableLab.appendChild(document.createTextNode(" Run bootstrap stability"));
+    enableRow.appendChild(enableLab);
+    bsHost.appendChild(enableRow);
+
+    // Disable the rest when not enabled.
+    const knobsHost = document.createElement("div");
+    knobsHost.className = "clustering-modal-bootstrap-knobs";
+    if (!chosenBootstrap.enabled) knobsHost.style.opacity = "0.5";
+    bsHost.appendChild(knobsHost);
+
+    const setKnob = (k, v) => { chosenBootstrap[k] = v; };
+    knobsHost.appendChild(bsSlider("B", 5, 50, 1, chosenBootstrap.B,
+      v => setKnob("B", v),
+      "Bootstrap iterations. Hennig 2007 used 50; 10–25 is a working minimum."));
+    knobsHost.appendChild(bsSlider("subsampleFrac", 0.3, 0.9, 0.05, chosenBootstrap.subsampleFrac,
+      v => setKnob("subsampleFrac", v),
+      "Fraction of nodes resampled (without replacement) per iter. Hennig 2008 recommends 0.5."));
+    knobsHost.appendChild(bsNumber("minMembers", 1, 50, chosenBootstrap.minMembers,
+      v => setKnob("minMembers", v),
+      "Drop reference clusters with fewer than N in-subsample members from per-iter scoring (Hennig 2007 §3.2)."));
+    knobsHost.appendChild(bsSelect("Noise handling", chosenBootstrap.noiseHandling, [
+      { value: "exclude",   label: "Exclude noise" },
+      { value: "asCluster", label: "Treat noise as a cluster" },
+      { value: "penalise",  label: "Penalise (× 1 − noise fraction)" },
+    ], v => setKnob("noiseHandling", v),
+      "How -1 labels participate. Scores under different modes are not directly comparable."));
+
+    // Disable knobs from interaction when toggle is off (visual cue above).
+    if (!chosenBootstrap.enabled) {
+      for (const i of knobsHost.querySelectorAll("input, select")) i.disabled = true;
+    }
   }
 
   function renderLevel(idx, lvl, algo) {
@@ -227,7 +308,11 @@ export function buildConfigureTab(host, descriptor) {
   renderAll();
 
   return {
-    getWorking: () => ({ algoId: chosenAlgoId, levels: chosenLevels }),
+    getWorking: () => ({
+      algoId:    chosenAlgoId,
+      levels:    chosenLevels,
+      bootstrap: { ...chosenBootstrap },
+    }),
     // Allow the Optimise tab to "Apply this row" and overwrite our
     // working state when it does.
     overwrite: (algoId, levels) => {
@@ -236,4 +321,73 @@ export function buildConfigureTab(host, descriptor) {
       renderAll();
     },
   };
+}
+
+// ── Bootstrap-section input helpers ─────────────────────────────────
+// Trimmed copies of the old bootstrap-modal helpers — kept inline so the
+// section is self-contained when the modal file goes away in Pass 2b.
+function bsSlider(labelText, min, max, step, init, onInput, hint) {
+  const row = document.createElement("div");
+  row.className = "clustering-modal-bootstrap-row";
+  const lab = document.createElement("label");
+  lab.textContent = labelText;
+  if (hint) lab.title = hint;
+  row.appendChild(lab);
+  const input = document.createElement("input");
+  input.type = "range";
+  input.min = String(min); input.max = String(max); input.step = String(step);
+  input.value = String(init);
+  row.appendChild(input);
+  const readout = document.createElement("span");
+  readout.className = "clustering-modal-bootstrap-readout";
+  readout.textContent = step < 1 ? Number(init).toFixed(2) : String(init);
+  row.appendChild(readout);
+  input.addEventListener("input", () => {
+    const v = parseFloat(input.value);
+    readout.textContent = step < 1 ? v.toFixed(2) : String(v);
+    onInput(v);
+  });
+  return row;
+}
+
+function bsNumber(labelText, min, max, init, onChange, hint) {
+  const row = document.createElement("div");
+  row.className = "clustering-modal-bootstrap-row";
+  const lab = document.createElement("label");
+  lab.textContent = labelText;
+  if (hint) lab.title = hint;
+  row.appendChild(lab);
+  const inp = document.createElement("input");
+  inp.type = "number";
+  inp.min = String(min); inp.max = String(max);
+  inp.value = String(init);
+  inp.style.width = "60px";
+  row.appendChild(inp);
+  inp.addEventListener("change", () => {
+    let v = parseInt(inp.value, 10);
+    if (!Number.isFinite(v)) v = init;
+    if (v < min) v = min; if (v > max) v = max;
+    inp.value = String(v);
+    onChange(v);
+  });
+  return row;
+}
+
+function bsSelect(labelText, init, options, onChange, hint) {
+  const row = document.createElement("div");
+  row.className = "clustering-modal-bootstrap-row";
+  const lab = document.createElement("label");
+  lab.textContent = labelText;
+  if (hint) lab.title = hint;
+  row.appendChild(lab);
+  const sel = document.createElement("select");
+  for (const opt of options) {
+    const o = document.createElement("option");
+    o.value = opt.value; o.textContent = opt.label;
+    if (opt.value === init) o.selected = true;
+    sel.appendChild(o);
+  }
+  sel.addEventListener("change", () => onChange(sel.value));
+  row.appendChild(sel);
+  return row;
 }

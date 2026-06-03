@@ -27,6 +27,8 @@ import { getAlgorithm as getCitationLayoutAlgorithm }            from "../citati
 import { alignByComponent, alignGlobal }                         from "../blend/align.js";
 import { computeBridgeAnalysis, computeBridgesPerPair }          from "./bridge-analysis.js";
 import { runPhase2Score, buildLayersFromPicks }                 from "../eval/multilayer-sweep.js";
+import { bootstrapStability as runBootstrapStability,
+         SCORE_VERSION as BOOTSTRAP_SCORE_VERSION }             from "../eval/bootstrap.js";
 import { update, getState, setLayerState }                       from "./state.js";
 import { runDAG }                                                from "../workers/dag.js";
 import { slimNodesForClustering }                                from "../clustering-cascade.js";
@@ -609,7 +611,13 @@ export async function recluster(opts = {}) {
   //   redone (A3, §6.18.3). Only L0 is eligible today; deeper levels
   //   are either within-parent (not cacheable) or could be later if a
   //   use case appears.
-  const { precomputedCr = null } = opts;
+  // opts.bootstrap: { enabled, B, subsampleFrac, minMembers, noiseHandling }
+  //   — passed through from clusteringDescriptor.applyChange (cards.md
+  //   Pass 2b: bootstrap is no longer a card, it's a sidecar to clustering).
+  //   Runs after clustering completes, populates state.bootstrapStability.
+  //   Single-level only — multi-level paths have their own per-granularity
+  //   bootstrap inside the sweep curve.
+  const { precomputedCr = null, bootstrap = null } = opts;
 
   const s = getState();
   if (!s.genResult) return;
@@ -684,6 +692,9 @@ export async function recluster(opts = {}) {
     clusterResult:          finest,
     bridgeAnalysis,
     bridgeConfig: cfgBridge,
+    // Drop any prior bootstrap — it's about the previous clustering.
+    // The sidecar block below re-populates it if enabled.
+    bootstrapStability:     null,
     // Stale eval results → previous clustering. Drop them so the
     // Optimise tab doesn't show outdated scores. The user can re-run;
     // we'd rather an empty tab body than misleading data. `validate`
@@ -699,6 +710,56 @@ export async function recluster(opts = {}) {
   });
   setLayerState("clustering", "fresh");
   reneighbour();
+
+  // ── Bootstrap sidecar (cards.md Pass 2b) ─────────────────────────
+  // Single-level only — multi-level paths run their own per-granularity
+  // bootstrap inside the sweep. Skip if disabled or no settings supplied.
+  if (bootstrap && bootstrap.enabled && cfg.levels.length === 1) {
+    runBootstrapSidecar({ levels, algo, levelParams: cfg.levels[0].params, settings: bootstrap })
+      .catch(e => console.error("[recluster] bootstrap sidecar failed:", e));
+  }
+}
+
+// Bootstrap sidecar — wraps eval/bootstrap.js with the live engine inputs
+// and publishes the result to state.bootstrapStability. Detached from
+// recluster's promise so the clustering job completes promptly; the panel
+// re-renders when the bootstrap lands (subscribers fire on every update).
+async function runBootstrapSidecar({ levels, algo, levelParams, settings }) {
+  const live = getState();
+  if (!live.genResult || !live.dimredResult) return;
+  const refCr = levels[0] && levels[0].clusterResult;
+  if (!refCr) return;
+  const t0 = performance.now();
+  const result = await runBootstrapStability({
+    refClusterResult: refCr,
+    genResult:        live.genResult,
+    dimredResult:     live.dimredResult,
+    algo,
+    params:           levelParams,
+    B:                settings.B,
+    subsampleFrac:    settings.subsampleFrac,
+    minMembers:       settings.minMembers,
+    noiseHandling:    settings.noiseHandling,
+    seed:             12345,
+  });
+  const runtimeSec = (performance.now() - t0) / 1000;
+  const cluster = {
+    label:     (algo && algo.label) || (algo && algo.id) || "(unknown)",
+    nClusters: refCr.clusters ? refCr.clusters.length : 0,
+  };
+  update({
+    bootstrapStability: {
+      capturedAt:      new Date().toISOString(),
+      bootstrapResult: result,
+      aggregate:       result.aggregate,
+      cluster,
+      settings:        { ...settings },
+      runtimeSec,
+      label:           `bootstrap ${cluster.label} · B=${settings.B}`,
+      scoreVersion:    BOOTSTRAP_SCORE_VERSION,
+    },
+    engineRevision: getState().engineRevision + 1,
+  });
 }
 
 // Multi-level clustering lane (MLC §9). ONE HDBSCAN run in the worker

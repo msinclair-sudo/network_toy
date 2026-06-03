@@ -41,7 +41,6 @@ const DESCRIPTOR_BY_TYPE = {
   "dimred":             "dimred",
   "clustering":         "clustering",
   "citationLayout":     "layout",
-  "bootstrapStability": "bootstrap",
   "dimSweep":           "dimSweep",
   "fusionComparison":   "fusionComparison",
   "multiLevel":         "multiLevel",
