@@ -325,10 +325,15 @@ The use case is *"resource without recalculating"*: come back next
 week, open the saved sweep, try a different row from the rank,
 re-cluster — without re-running the whole 10-minute sweep.
 
-The same mechanism will host other validations as they come online
-(dim-sweep, bootstrap stability per applied config, fusion comparison
-deltas, etc.). The user-facing pattern is always: run → Save this
-run → re-open from the picker. Doc: `doc/plan.md` §6.19.
+The same mechanism hosts other validations as they come online
+(dim-sweep, fusion comparison deltas, etc.). The user-facing pattern is
+always: run → Save this run → re-open from the picker. Doc:
+`doc/plan.md` §6.19.
+
+Bootstrap stability used to be its own card here; as of `cards.md`
+Pass 2b it's a **sidecar to clustering** — toggle it on in the Clustering
+modal's Stability section and the result lands in the bootstrap-stability
+panel automatically. See `cards.md` for the live palette + ordering.
 
 ### Bridge analysis (Layer 2.5)
 
@@ -494,6 +499,7 @@ Math reference for each layer is in `doc/`. Start with
 
 Doc highlights:
 
+- `cards.md` — **live card palette** (Mermaid + semantics): which cards exist, how they auto-spawn, where they attach. Single source of truth for ordering — keep in sync if you add a card type.
 - `doc/dimred.md` — Layer 1.5 sub-stages, registry contract, engine orchestration, slot-aware defaults
 - `doc/fusion.md` — Layer 1.5 fusion sub-stage: graph-diffusion algorithm, fusion-comparison slider, pre-fusion cluster colour mode, A/B comparison semantics
 - `doc/clustering.md` — Layer 2 contract + algorithms
@@ -643,6 +649,7 @@ validation/                       research scripts that produce shipped evidence
   README.md                       convention + script index (distinct from scratch/)
   dim_sweep_validation.py         §6.9 — is UMAP-50 enough compression?
   compression_redundancy_check.py §6.9 follow-up — is UMAP-after-PCA redundant?
+cards.md                          live card palette (Mermaid + ordering rules)
 doc/
   dynamics.md                     layer index
   dimred.md                       Layer 1.5 — five sub-stages + slot-aware defaults
@@ -653,7 +660,7 @@ doc/
   blend.md                        Layer 5 alignment + per-frame blend
   multi-level.md                  multi-level clustering + bridge analysis
   ui-architecture.md              shell architecture (state, engine, workflow chart, queue, modals)
-  plan.md                         single plan/roadmap: §0 status, §8 workflow-tree, §9 multi-level plan
+  plan.md                         single plan/roadmap: §0 status, §8 workflow-tree, §9 multi-level, §10 cards.md consolidation
   workers.md                      DAG-orchestrated worker port + cancellation
   eval.md                         Optimise tab: bootstrap, scorers, sweep modes
   scaling.md                      toy-vs-real-data scaling

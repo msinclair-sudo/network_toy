@@ -14,10 +14,20 @@ plans were folded in here on 2026-05-30:
 - the **workflow-tree redesign** (Phase 2) → now §8, **shipped**;
 - the **multi-level clustering + tree scoring + bridge clusters** plan →
   now §9, **shipped 2026-05-31** (MLC-0 → MLC-5).
+- the **card palette consolidation** (cards.md) → now §10, **shipped
+  2026-06-03**. Bridge + bootstrap moved from standalone cards into the
+  layers that consume them; per-pair bridge heatmap added to the picker;
+  auto-spawn of analysis cards; per-card-type panel slot routing.
 
 Per-layer reference docs stay separate (`doc/dynamics.md` is their
 index): clustering, dimred, fusion, citations, citation-layout, blend,
 eval, workers, ui-architecture, scaling, multi-level.
+
+The live palette of card choices + valid orderings + auto-spawn rules is
+`cards.md` at the project root (Mermaid diagram + semantics notes). Treat
+it as the single source of truth for **which cards exist** and **which
+parents they attach under** — `doc/plan.md` records the why; `cards.md`
+records the what.
 
 **Shipped:**
 
@@ -1072,3 +1082,101 @@ prototype.
 - New clustering algorithms — we reuse HDBSCAN / mutual-kNN via the
   existing registry + cascade.
 - Changing the global-clustering preference — bridges depend on it.
+
+## 10. Card palette consolidation — shipped 2026-06-03 → 2026-06-04
+
+After §8 + §9 landed, the chart had collected analysis cards
+(`bridgeAnalysis`, `bootstrapStability`, `crossClusterCitations`,
+`nodeDisplacement`, `fusionComparison`) that were either functionally
+redundant with their parent's job (bootstrap was running anyway during
+the multi-level sweep), or sat as their own card when they were really
+sidecars to the card above. A user-driven pass collapsed the palette and
+folded the canonical Mermaid + semantics map into **`cards.md`** at the
+project root — that file is now the live source of truth for which cards
+exist, what they auto-spawn, and how children attach.
+
+**Pass 1 (additive, shipped 2026-06-03):**
+
+- **1a — per-pair bridge counts in the sweep.** `bridge-analysis.js`
+  gained `computeBridgesPerPair(candidates)`: a lean Int32 matrix of
+  bridge counts for every (child, parent) candidate pair. Wired into
+  `engine.recomputeMultiLevelSweep` so the result rides alongside
+  `candidates` + `curve` on `state.multiLevelSweep`.
+- **1b — picker panel reshape.** The multi-layer picker is now a
+  two-column body (stability curve | bridge heatmap) with a live
+  readout of bridge counts between adjacent picks. Curve dots and
+  heatmap rows/cols cross-bind on click. Heatmap reads the per-pair
+  matrix from the producer with no recompute.
+- **1c — crossCluster auto-spawns under the picker** when the ladder
+  commits. Gated on `state.rawCitationEdges` being non-empty so toy
+  data without citations doesn't get a perma-failed card. Still
+  available as a manual `+` option on single-level clustering.
+- **1d — nodeDisplacement auto-spawns from the dimred fork** once both
+  pre + post fusion branches exist (it's a property of the fork itself,
+  no clustering needed). Dropped from the fusionBranch `+` menu.
+
+**Pass 2 (breaking, shipped 2026-06-03 / 2026-06-04):**
+
+- **2a — `bridgeAnalysis` card type deleted.** The algorithm + runner
+  stay callable; the picker's commit job populates `state.bridgeAnalysis`
+  directly (already did via `engine.commitMultiLevelLayers`), and the
+  singleton bridge panel reads it. Labelling now hangs directly off the
+  picker (picker → labelling → scoring → export). Hard break — old saved
+  projects with bridgeAnalysis cards load via migration but the gear
+  opens nothing.
+- **2b — `bootstrapStability` card type deleted.** Knobs (B,
+  subsampleFrac, minMembers, noiseHandling, enabled) moved into the
+  clustering modal's new "Stability (bootstrap)" section. `engine.recluster`
+  runs the bootstrap sidecar after HDBSCAN (single-level only —
+  multi-level paths still bootstrap per granularity inside the sweep
+  curve), writing `state.bootstrapStability` for the panel. Same hard
+  break.
+- **fusionComparison kept as a placeholder.** The full 575 LoC
+  implementation stays — cross-branch comparison is only meaningful when
+  both clusterings used identical settings, and ripping out a working
+  comparator we may want back was the wrong move. Instead the modal,
+  panel, and every next-steps hint carry a `⚠ Placeholder · pending
+  further work` banner.
+
+**Post-pass refinements (2026-06-04):**
+
+- **Per-card-type panel slot routing** (`panel-system.js
+  SLOT_FOR_CARD_TYPE`): the high-touch picker + scoring panels open in
+  `primary`; cross-cluster citations opens in `secondary`; everything
+  else stays in `bottom`.
+- **crossCluster sits on the analysis chain.** New
+  `preferCrossClusterChild(clusteringId)` helper used by labelling /
+  scoring / export's `resolveParent`: when a crossCluster card exists
+  under the clustering ancestor, it becomes the effective parent. Tree
+  fills in as picker → crossCluster → labelling → scoring → export.
+  Added `projectCrossClusterCitations` + `state.crossClusterCitations`
+  slot so any descendant reads the citation-flow matrix via projection
+  rather than walking the tree.
+
+**Decisions locked:**
+
+- **C1 Bridge as algorithm, not card.** The picker curve already shows
+  stability per granularity; the heatmap shows bridge density per
+  granularity pair. A separate "Run bridge analysis" card was a click
+  the user shouldn't have to make.
+- **C2 Bootstrap as a sidecar.** Bootstrap-Jaccard belongs *with* the
+  clustering it's measuring, not as a sibling card the user has to add
+  + configure separately. Multi-level was already doing it; single-level
+  now matches.
+- **C3 Auto-spawn what has no params** (or one canonical config).
+  Bridge (no params), crossCluster (no params), nodeDisplacement (no
+  params). Labelling stays manual (algorithm pick) and stays the only
+  manual `+` between picker and scoring.
+- **C4 Per-pair bridge informs layer picking.** The picker is where the
+  user decides which granularities to commit; surface bridge density
+  there so the decision is informed by both stability *and* structural
+  bridging.
+
+**Out of scope for this pass:**
+
+- `citationLayout` (kept in code; not in the user-driven flow).
+- `citations` / `alignment` / `blend` (toy-graph chain; pinned for future
+  work, untouched).
+- A "select-node" hub that aggregates label / score / citation-degree /
+  displacement signals for filtering — design TBD; shown on the cards.md
+  diagram as a deferred placeholder.
