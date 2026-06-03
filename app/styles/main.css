@@ -2730,6 +2730,18 @@ td.node-table-spread, td.node-table-stab { width: 50px; }
 }
 .panel-fc-title  { font-weight: 600; color: var(--accent); }
 .panel-fc-empty  { color: var(--text-faint); padding: 12px; font-style: italic; }
+/* Placeholder warning banner — fusion-comparison is pending further work; see cards.md */
+.panel-fc-warn-banner,
+.fusion-comparison-modal-warn-banner {
+  background: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(245, 158, 11, 0.4);
+  color: #f59e0b;
+  padding: 6px 10px;
+  border-radius: 4px;
+  font-size: 11px;
+  line-height: 1.4;
+  margin: 4px 0 8px;
+}
 
 .panel-fc-levelpicker {
   display: flex;

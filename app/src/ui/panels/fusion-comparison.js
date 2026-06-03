@@ -115,6 +115,16 @@ export function mount(container, _state, config = {}) {
     header.appendChild(title);
     wrap.appendChild(header);
 
+    // cards.md placeholder banner — comparison only valid with matched
+    // clustering settings. Sits above every render path so it can't be
+    // missed.
+    const warnBanner = document.createElement("div");
+    warnBanner.className = "panel-fc-warn-banner";
+    warnBanner.textContent =
+      "⚠ Placeholder · pending further work. Only meaningful when both " +
+      "clusterings used the SAME algorithm and parameters.";
+    wrap.appendChild(warnBanner);
+
     // Missing binding (a stepId/runId that no longer resolves).
     if (src.kind === "missing") {
       const empty = document.createElement("div");

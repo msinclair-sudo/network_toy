@@ -110,17 +110,23 @@ def test_panel_renders_saved_comparison_card(clean_page):
             const st = await import("/app/src/ui/state.js");
             mount(host, st.getState(), { stepId: card.id });
             await new Promise(r => setTimeout(r, 50));
+            const warn = host.querySelector(".panel-fc-warn-banner");
             return {
                 title:     host.querySelector(".panel-fc-title")?.textContent,
                 aggStrip:  !!host.querySelector(".panel-fc-agg"),
                 rows:      host.querySelectorAll(".panel-fc-row").length,
                 sectionText: host.querySelector(".panel-fc-section")?.textContent,
+                warnText:  warn ? warn.textContent : null,
             };
         }'''
     )
     assert out["title"] == "compare · clustering A vs clustering B"
     assert out["aggStrip"] is True
     assert out["rows"] > 0
+    # cards.md Pass 2 placeholder warning is rendered above every result.
+    assert out["warnText"] is not None
+    assert "Placeholder" in out["warnText"]
+    assert "same" in out["warnText"].lower() or "matching" in out["warnText"].lower()
     # Per-cluster table header uses the ref label ("clustering A" is the
     # ref; the generic "pre"/"post" framing is replaced by the labels).
     assert "best match" in (out["sectionText"] or "")

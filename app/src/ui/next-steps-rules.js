@@ -23,13 +23,13 @@ export const NEXT_STEP_RULES = {
   fusionBranch: [
     { label: "Configure clustering",    hint: "Cluster this branch's embedding (pre- or post-fusion)", modal: "clustering" },
     { label: "Optimise multi-layer clustering", hint: "Sweep HDBSCAN on this branch → pick a layer ladder", modal: "multiLevel" },
-    { label: "Compare branch clusterings", hint: "ARI / NMI / movers between the pre + post branch clusterings", modal: "fusionComparison" },
+    { label: "Compare branch clusterings", hint: "⚠ Placeholder · pending further work — only meaningful when both branches use matching clustering settings", modal: "fusionComparison" },
   ],
   nodeDisplacement: [
     { label: "Re-run node displacement", hint: "Recompute pre→post per-node movement", rerun: true },
   ],
   clustering: [
-    { label: "Compare with another clustering", hint: "ARI / NMI / movers vs a second clustering", modal: "fusionComparison" },
+    { label: "Compare with another clustering", hint: "⚠ Placeholder · pending further work — only meaningful when both clusterings use matching settings", modal: "fusionComparison" },
     { label: "Cross-cluster citations", hint: "How much each cluster cites every other (directed flow)", modal: "crossClusterCitations" },
     { label: "Label clusters",          hint: "Name clusters (representative paper / year / TF-IDF) for scoring", modal: "labelling" },
     { label: "Run dim sweep",           hint: "ARI stability across embedding dimensions", modal: "dimSweep" },
@@ -43,7 +43,7 @@ export const NEXT_STEP_RULES = {
   ],
   fusionComparison: [
     { label: "Re-run this comparison",  hint: "Fork a fresh comparison of the same pair", rerun: true },
-    { label: "Compare a different pair", hint: "Pick two clusterings to compare", modal: "fusionComparison" },
+    { label: "Compare a different pair", hint: "⚠ Placeholder · pending further work — pick two clusterings to compare", modal: "fusionComparison" },
   ],
   // Producer (the sweep) — it does NOT materialise clusterLevels; the picker
   // child does. So the producer's only follow-on is the picker (auto-spawned
@@ -60,7 +60,7 @@ export const NEXT_STEP_RULES = {
   multiLevelPicker: [
     { label: "Label clusters",          hint: "Name clusters (representative paper / year / KeyBERT) for scoring", modal: "labelling" },
     { label: "Cross-cluster citations", hint: "Per-layer directed flow (auto-fires when citation edges exist; toy data needs manual add)", modal: "crossClusterCitations" },
-    { label: "Compare with another clustering", hint: "ARI / NMI / movers vs a second clustering", modal: "fusionComparison" },
+    { label: "Compare with another clustering", hint: "⚠ Placeholder · pending further work — only meaningful when both clusterings use matching settings", modal: "fusionComparison" },
   ],
   crossClusterCitations: [
     { label: "Re-run cross-cluster citations", hint: "Recompute the per-layer citation flow matrix", rerun: true },

@@ -196,7 +196,7 @@ Heatmap and stability curve are bound: clicking a heatmap cell highlights both l
 - **`crossCite` auto-fires under `picker`** when the ladder commits, **gated on `state.rawCitationEdges` being non-empty** (toy data without synthetic citations skips the auto-spawn rather than creating a perma-failed card). Still available as a manual "+" option on `clust` (single-level) and `picker` (for toy data with manually-generated edges).
 - **`label` is the only manual card downstream of clustering** — the user picks the labelling algorithm. `scoring` depends on labels.
 - **`dimSweep` stays on `dimred` only** — embedding-quality check, separate from cluster-quality (which is what bootstrap measures).
-- **`fusionComparison` is a placeholder** — card exists for a future cross-branch comparison, but the runner is a stub. ⚠ Only meaningful when both branches were clustered with the same settings.
+- **`fusionComparison` is a placeholder** — the card and its full runner are still in place (so a user with matching clustering settings can get value), but a ⚠ warning banner sits above every modal + panel render and on its next-steps hints to flag that this is pending further work. Only meaningful when both clusterings used the same algorithm + parameters.
 - **`selectNode` is deferred** — a filter/picker UI that aggregates upstream signals (labels, scores, citation degree, displacement). Design TBD.
 
 ## Implementation order

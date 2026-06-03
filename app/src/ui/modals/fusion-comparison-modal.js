@@ -37,6 +37,19 @@ export function openFusionComparisonModal(descriptor) {
   intro.textContent = "Compare two clusterings of the same network: ARI / NMI / macro-Jaccard, a per-cluster best-match table, and the papers that moved most. The viewer shows the candidate's geometry.";
   body.appendChild(intro);
 
+  // cards.md placeholder warning: cross-branch comparison only makes sense
+  // when both clusterings used the same algorithm + params; otherwise the
+  // similarity scores conflate "branches genuinely disagree" with "different
+  // clustering knobs". Calling out at point-of-use rather than gating it,
+  // so a power user with matched settings can still get value.
+  const warnBanner = document.createElement("div");
+  warnBanner.className = "fusion-comparison-modal-warn-banner";
+  warnBanner.textContent =
+    "⚠ Placeholder · pending further work. Only meaningful when both branches " +
+    "were clustered with the SAME algorithm and parameters — otherwise the " +
+    "similarity scores conflate 'branches disagree' with 'different settings'.";
+  body.appendChild(warnBanner);
+
   const cfg = document.createElement("div");
   cfg.className = "fusion-comparison-modal-cfg";
   body.appendChild(cfg);
