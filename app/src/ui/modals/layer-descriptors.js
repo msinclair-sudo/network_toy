@@ -180,6 +180,20 @@ function findSelectedAncestorOfType(targetType) {
   return null;
 }
 
+// For analysis cards that hang off a clustering ladder (labelling, scoring,
+// export, future siblings), the auto-spawned crossClusterCitations card
+// should become their effective parent so its citation-flow data is
+// projected into state on selection (children read it via projection).
+// Returns the crossCluster's id when one exists under `clusteringId`, else
+// returns `clusteringId` itself (the legacy attach point). Pass-through when
+// clusteringId is null.
+function preferCrossClusterChild(clusteringId) {
+  if (!clusteringId) return clusteringId;
+  const xcc = listSteps({ type: "crossClusterCitations" })
+    .find(c => c.parentId === clusteringId);
+  return xcc ? xcc.id : clusteringId;
+}
+
 // Create a tree step + enqueue a step-bound job that runs `engineFn`.
 // engineFn is an async function — typically it patches state.layerParams
 // then calls one of the engine.* functions. The job's fn closes over
@@ -1133,16 +1147,19 @@ function multiLevelPickerDescriptor(editStepId = null) {
 // changes. A downstream scoring card consumes these labels.
 function labellingDescriptor(editStepId = null) {
   const editStep = () => (editStepId ? getStep(editStepId) : null);
-  // Attach under the SELECTED card (so a labelling can hang off a bridge card
-  // in the picker → bridge → labelling chain), but only when that card has a
-  // clustering ladder reachable above it. Fall back to the nearest
-  // clustering-like ancestor when nothing useful is selected.
+  // Attach under the SELECTED card when it has a clustering ladder reachable;
+  // otherwise fall back to the nearest clustering-like ancestor. preferCross-
+  // ClusterChild bumps the attach point down to the auto-spawned crossCluster
+  // card when one exists, so labelling becomes a child of crossCluster and
+  // can read its citation-flow data via projection.
   const resolveParent = () => {
     const es = editStep();
     if (es) return es.parentId;
     const sel = getSelectedStep();
-    if (sel && findClusterLevels(sel.id).levels.length) return sel.id;
-    return findSelectedAncestorOfType(CLUSTERING_LIKE_TYPES);
+    if (sel && findClusterLevels(sel.id).levels.length) {
+      return preferCrossClusterChild(sel.id);
+    }
+    return preferCrossClusterChild(findSelectedAncestorOfType(CLUSTERING_LIKE_TYPES));
   };
   const desc = {
     label: "Run: Cluster labelling",
@@ -1263,11 +1280,16 @@ function exportDescriptor(editStepId = null) {
     const es = editStep();
     if (es) return es.parentId;
     // Prefer a scoring card (export by score); fall back to any clustering-
-    // like card (export a single cluster without scores).
+    // like card (export a single cluster without scores). The clustering-
+    // fallback path bumps through any auto-spawned crossCluster card so the
+    // export sees its citation-flow data via projection.
     const sel = getSelectedStep();
-    if (sel && (sel.type === "scoring" || findClusterLevels(sel.id).levels.length)) return sel.id;
+    if (sel) {
+      if (sel.type === "scoring")                     return sel.id;
+      if (findClusterLevels(sel.id).levels.length)    return preferCrossClusterChild(sel.id);
+    }
     return findSelectedAncestorOfType("scoring")
-        || findSelectedAncestorOfType(CLUSTERING_LIKE_TYPES);
+        || preferCrossClusterChild(findSelectedAncestorOfType(CLUSTERING_LIKE_TYPES));
   };
   const desc = {
     label: "Prepare: Export (RIS)",

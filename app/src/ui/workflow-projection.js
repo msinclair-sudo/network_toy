@@ -33,6 +33,7 @@ const PROJECTORS = {
   clustering:     (step, patch) => projectClustering(step, patch),
   multiLevel:       (step, patch) => projectMultiLevel(step, patch),
   multiLevelPicker: (step, patch) => projectMultiLevelPicker(step, patch),
+  crossClusterCitations: (step, patch) => projectCrossClusterCitations(step, patch),
   labelling:      (step, patch) => projectLabelling(step, patch),
   citations:      (step, patch) => projectCitations(step, patch),
   citationLayout: (step, patch) => projectCitationLayout(step, patch),
@@ -133,6 +134,16 @@ function projectMultiLevelPicker(step, patch) {
 // (projectBridgeAnalysis removed in cards.md Pass 2a, 2026-06-02. The
 // bridgeAnalysis card type no longer exists; the picker's projector now
 // surfaces state.bridgeAnalysis directly from its own result.)
+
+// CrossClusterCitations card → state.crossClusterCitations. Auto-spawned
+// under multiLevelPicker (and manually addable under single-level clustering),
+// it sits as the parent of labelling / scoring / export so its citation-flow
+// matrix is projected into state for any descendant to read.
+function projectCrossClusterCitations(step, patch) {
+  const r = step.result;
+  if (!r) return;
+  if (r.crossClusterCitations) patch.crossClusterCitations = r.crossClusterCitations;
+}
 
 // Labelling card → state.clusterLabels (keyed by level uid), the slot the
 // scoring panel reads. The clustering-like ancestor already projected

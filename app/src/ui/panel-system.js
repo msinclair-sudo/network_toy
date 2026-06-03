@@ -270,27 +270,40 @@ const PANEL_FOR_CARD_TYPE = {
   nodeDisplacement:      "node-displacement", // pre→post movement
 };
 
+// Per-card-type slot override for auto-open. Defaults to "bottom" when a card
+// type isn't listed. The picker (multilayer-curve, opened off the multiLevel
+// producer) and scoring belong in the PRIMARY slot — they're high-touch
+// surfaces the user works in for the bulk of a session. Cross-cluster
+// citations goes to SECONDARY (right) so it sits alongside the picker without
+// stealing focus.
+const SLOT_FOR_CARD_TYPE = {
+  multiLevel:            "primary",   // → picker panel (multilayer-curve)
+  scoring:               "primary",
+  crossClusterCitations: "secondary",
+};
+
 // Auto-open the panel for a just-completed analysis card, bound to that card
-// (config.stepId), in the BOTTOM slot. Idempotent: if a tab of the same type
-// already shows this card (or, for singletons, is already open), just make it
-// active rather than stacking duplicates. Does NOT touch the viewer — the
-// viewer follows card SELECTION, which is a separate concern. Safe to call for
-// any step; a no-op for non-analysis cards.
+// (config.stepId), in the slot picked from SLOT_FOR_CARD_TYPE (default
+// "bottom"). Idempotent: if a tab of the same type already shows this card
+// (or, for singletons, is already open in the same slot), just make it active
+// rather than stacking duplicates. Does NOT touch the viewer — the viewer
+// follows card SELECTION, which is a separate concern. Safe to call for any
+// step; a no-op for non-analysis cards.
 export function autoOpenPanelForStep(stepId) {
   const type = getState().workflow?.steps?.[stepId]?.type;
   const panelType = type && PANEL_FOR_CARD_TYPE[type];
   if (!panelType) return;
-  const SLOT = "bottom";
+  const slot = SLOT_FOR_CARD_TYPE[type] || "bottom";
   const meta = getPanelType(panelType);
 
-  const bottom = getState().panels[SLOT];
-  if (bottom && Array.isArray(bottom.tabs)) {
+  const existingSlot = getState().panels[slot];
+  if (existingSlot && Array.isArray(existingSlot.tabs)) {
     // Already showing this card? (or this singleton already open anywhere in
     // the slot — singletons render whatever card is selected/auto-picked.)
-    const existing = bottom.tabs.find(t =>
+    const existing = existingSlot.tabs.find(t =>
       t.type === panelType &&
       (meta?.singleton || (t.config && t.config.stepId === stepId)));
-    if (existing) { setActiveTab(SLOT, existing.id); return; }
+    if (existing) { setActiveTab(slot, existing.id); return; }
   }
-  addTab(SLOT, panelType, { ...defaultConfigFor(panelType), stepId });
+  addTab(slot, panelType, { ...defaultConfigFor(panelType), stepId });
 }

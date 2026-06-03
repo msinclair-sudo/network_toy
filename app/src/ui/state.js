@@ -112,6 +112,14 @@ const state = {
   // Drives the displacement panel + the "displacement" colour mode.
   nodeDisplacement:      null,
 
+  // Per-layer cross-cluster citation flow matrix — projected onto state
+  // whenever a crossClusterCitations card sits in the selected ancestry
+  // chain (auto-spawned under multiLevelPicker, optionally added under
+  // single-level clustering). Shape: { nLevels, totalEdges, byLayer:[…] };
+  // see cross-cluster-citations.js. Children of a crossCluster card read
+  // this slot for citation-aware analyses.
+  crossClusterCitations: null,
+
   // Which (fineLevel, coarseLevel) pair the bridge analysis runs on.
   // When a field is null/invalid, the engine clamps it to the deepest
   // valid pair (fineLevel = last, coarseLevel = last - 1). The bridge
