@@ -1,11 +1,13 @@
 # Data ingest — how the toy reads data in (current state)
 
-Reference for wiring the **SQLite data source** next session. Describes the
-Layer-1 contract every data source must satisfy, exactly what the current
-`real` source loads and from where, what each downstream consumer needs,
-and the one real gap (**per-node text**) that blocks c-TF-IDF / TF-IDF
-labelling. The embedding stays a **separate** artifact (not in the db) —
-this doc assumes that split.
+Reference doc for the three Layer-1 sources the toy can ingest from:
+the `toy` Gaussian-mixture generator, the `real` JSON+npy fixture, and
+the `sqlite` biblion corpus (the last shipped 2026-06-01 —
+`app/src/datasource/sqlite.js`). Describes the Layer-1 contract every
+source must satisfy, what each existing source loads and from where,
+and what each downstream consumer needs. The high-dim embedding stays
+a **separate** `.npy` artifact (not in the db) — both `real` and
+`sqlite` assume that split.
 
 ---
 
@@ -43,8 +45,9 @@ this doc assumes that split.
 
 Registration: one entry in `app/src/datasource/registry.js`
 `DATA_SOURCES[]` — `{ id, label, description, defaultParams, produce,
-modalSchema }`. Adding the SQLite source = one new entry; no consumer
-changes for the contract fields.
+modalSchema }`. The shipped registrations are `toy`, `real`, and
+`sqlite`. Adding any new source = one new entry; no consumer changes
+for the contract fields.
 
 ---
 
@@ -92,64 +95,101 @@ the legacy state slots (`update({...})`):
 
 ---
 
-## 4. Who needs what (map the db schema against this)
+## 4. Who needs what (consumer ↔ source field matrix)
 
 | Consumer | Field needed | Source today | Status |
 |---|---|---|---|
 | Dim-reduction (L1.5) | `embedding {d,data}` | `.npy` | ✅ separate file |
-| Fusion / citation layout (L3/L4) | `rawCitationEdges` | `citation_edges.json` | ✅ |
-| FR time anchor `t` | `nodes[i].t` (from year) | `paper_years.json` | ✅ |
-| Labelling · **year** | `nodes[i].year` | `paper_years.json` | ✅ |
-| Labelling · **representative** | `embedding` + `nodes[i].paperId` | `.npy` + index | ✅ (returns a paperId, not a title) |
-| Labelling · **c-TF-IDF / TF-IDF** | **`ctx.getText(nodeId) → string`** | — | ❌ **not materialised** |
-| (mentioned, not yet consumed) | authors, venue, title display | — | ❌ |
+| Fusion / citation layout (L3/L4) | `rawCitationEdges` | `citation_edges.json` (real) / db query (sqlite) | ✅ |
+| FR time anchor `t` | `nodes[i].t` (from year) | `paper_years.json` / db | ✅ |
+| Labelling · **year** | `nodes[i].year` | `paper_years.json` / db | ✅ |
+| Labelling · **representative** | `embedding` + `nodes[i].paperId` | `.npy` + index | ✅ (returns a paperId; the sqlite path can resolve it to a title) |
+| Labelling · **c-TF-IDF / TF-IDF** | `ctx.getText(nodeId) → string` | sqlite (`getNodeText`) | ✅ when the `sqlite` source is the active datasource; ❌ on `real` (no titles in the JSON fixture) |
+| Per-node display fields | authors, venue, title | sqlite only | ⏳ available in the db; not yet surfaced in any panel beyond labelling |
 
-### The text gap (the reason for this whole exercise)
+### Text accessor status
 
-`app/src/labelling/cluster-labels.js` expects a per-node text accessor on
-its ctx: `getText: (nodeId) => string | null`. The two places that build
-that ctx **both hard-code `getText: undefined`**:
-- `app/src/ui/runners/cluster-labels-runner.js` (the labelling card's job)
-- `app/src/ui/panels/cluster-scoring.js` (`levelsAndCtx()`)
+`app/src/labelling/cluster-labels.js` expects `getText: (nodeId) =>
+string | null` on its ctx. The wiring landed with the SQLite source:
 
-So `cTfidf` / `tfidf` report `available:false` with reason *"needs per-node
-text — titles/abstracts are not materialised in this dataset"* and are
-disabled in the labelling modal. Representative-paper currently surfaces a
-**paperId**, not a human title, for the same reason.
+- `app/src/ui/runners/cluster-labels-runner.js` imports `hasSqliteText` +
+  `getNodeText` from `app/src/datasource/sqlite.js` and supplies them as
+  `ctx.getText` when the SQLite source is loaded; otherwise leaves it
+  `undefined` (and `cTfidf` / `tfidf` report `available:false` with a
+  human-readable reason).
+- The scoring panel (`app/src/ui/panels/scoring.js`) only consumes
+  labels produced by the labelling card upstream — it doesn't need its
+  own text accessor.
+
+Result: on the SQLite source, c-TF-IDF / TF-IDF light up automatically;
+on the JSON-backed `real` source they stay gated (same reason text). The
+text gap is closed *for the path that has a db*; bringing a title
+column into the `real` JSON fixture would close it everywhere.
 
 ---
 
-## 5. What the SQLite source must deliver
+## 5. The SQLite source (`datasource/sqlite.js`) — shipped 2026-06-01
 
-A new `datasource/sqlite.js` (registered in `registry.js`) whose
-`produce(params)` returns the **same contract shape**, with:
+`produceSqlite({ dataset })` reads a biblion snapshot in the browser via
+`sql.js` (WASM, fetched from esm.sh) and returns the same Layer-1
+contract shape as `real`. Today the only registered dataset is `biblion`
+(at `/data/biblion/{corpus.sqlite,embeddings.npy,paper_index.json}`); add
+more by extending the `DATASETS` table inside `sqlite.js`.
 
-1. **Required contract fields** — `nodes[i] = {id (0..n-1), t, year,
-   paperId}` and `citationEdges` (flat `[src,dst,…]`), exactly as `real`
-   does. (Embedding stays the separate `.npy`; the db just needs to agree
-   on node ordering / index ↔ paperId so the embedding rows line up.)
-2. **Per-node text** — enough to power `getText`. Two viable shapes:
-   - put `title` (and/or `abstract`) directly on each node object
-     (`nodes[i].title`), **and/or**
-   - return a `getText(nodeId)` / a `nodeText: string[]` on the result.
-   Then wire the two ctx builders (§4) to use it instead of `undefined`.
-   That single change unlocks c-TF-IDF / TF-IDF labelling and lets
-   representative-paper show a real title.
-3. **Authors / venue** — carry on the node object too if we want them for
-   labelling/display later (contract passes unknown fields through).
+### Inputs
 
-**Open questions to resolve against the actual db next session:**
-- How is the db delivered to a static-served ES-module app — `sql.js`
-  (WASM, read the `.sqlite` over fetch) vs a small local query endpoint?
-  (No server code today; everything is static `fetch`.)
-- Node **index ↔ paperId** contract: the embedding `.npy` row order must
-  match `nodes[i].id`. The db must expose the same ordering (or a stable
-  paperId→row map) so embedding and metadata stay aligned.
-- Table/column names for: paper (id, year, title, abstract, authors,
-  venue) and citation edges (src, dst, direction convention).
+| File | Format | Purpose |
+|---|---|---|
+| `corpus.sqlite` | sql.js readable snapshot | `papers` (id, year, title, abstract, …) + `citations` (citing_id, cited_id) |
+| `embeddings.npy` | NumPy `<f4`, shape `(n, d)` | SPECTER2 embedding — **stays a separate file** by design |
+| `paper_index.json` | `{ "<i>": "<paperId>" }` | embedding row → `papers.id` |
+
+### Node-set contract (the hard invariant)
+
+The canonical node set is the `papers` rows passing
+`is_rejected = 0 AND is_stub = 0 AND title IS NOT NULL AND abstract IS NOT NULL`,
+ordered by `id`. `produceSqlite` re-runs that query, compares row-for-row
+against `paper_index.json`, and **fails loud** if they disagree — that's
+how it catches an embedding/db drift (e.g. the db was re-enriched without
+re-embedding). Rebuild via `tools/ingest/{extract_corpus,embed_specter2}`
+to re-align.
+
+### Per-node text (the labelling unlock)
+
+The db handle stays open after `produceSqlite` returns. A prepared
+`SELECT title, abstract FROM papers WHERE id = ?` lookup is exposed via
+two helpers in the same module:
+
+- `getNodeText(nodeId) → "title. abstract" | null`
+- `hasSqliteText() → boolean` (true after the most recent
+  `produceSqlite` succeeds)
+
+`app/src/ui/runners/cluster-labels-runner.js` imports both and supplies
+`ctx.getText = hasSqliteText() ? getNodeText : undefined` to the
+labelling engine. With the SQLite source loaded, c-TF-IDF / TF-IDF light
+up automatically; without it (on `real`), they gate off with a
+human-readable reason.
+
+### Result shape (what hits state)
+
+`produceSqlite` returns `{ method: "sqlite", params, nodes, embedding,
+citationEdges }`:
+
+- `nodes[i] = { id: i, t, year, paperId }` — `t` is min–max-normalised
+  `year` across the surviving set.
+- `embedding = { d, data }` — straight from the `.npy`.
+- `citationEdges` — flat `[src, dst, …]` in **node-index** space.
+  Edges whose endpoint falls outside the node set (the abstract filter
+  can exclude a paper that citations still reference) are dropped and
+  counted in `params.edgesDropped`. biblion's `citing_id → cited_id` is
+  already the toy's "source cites target", so **no direction flip**
+  (unlike `real`).
+- **No `basePos`** — the viewer stays empty until Layer 1.5's viz
+  sub-stage fits a 3-D reduction.
 
 ---
 
 *Companion: `doc/dynamics.md` (layer index), `doc/plan.md` (§9 multi-level
-clustering, analysis-layer cards). Current sources: `datasource/toy.js`,
-`datasource/real.js`. Contract + validator: `datasource/contract.js`.*
+clustering, §10 cards.md consolidation), `cards.md` (live card palette).
+Current sources: `datasource/toy.js`, `datasource/real.js`,
+`datasource/sqlite.js`. Contract + validator: `datasource/contract.js`.*

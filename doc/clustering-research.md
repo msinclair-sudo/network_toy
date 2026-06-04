@@ -21,24 +21,32 @@ dim-reduction tradeoffs, HDBSCAN best practices. Sources at the end.
 |----|-----------|---------|------|
 | `identity` | no-op | — | toy debugging; preserves embedding as-is |
 | `pca` | PCA | `n_components=100` | denoiser before UMAP; cheap baseline alone |
-| `umap` | UMAP | `n_components=50, n_neighbors=50, min_dist=0, init='pca', metric='cosine', random_state=42` | **default for clustering** |
+| `umap` | UMAP | `n_components=100, n_neighbors=50, min_dist=0, init='pca', metric='cosine', random_state=42` | **default for clustering** (bumped 50 → 100 on 2026-05-25; see §2.2) |
 | `pacmap` | PaCMAP | `n_components=50, MN_ratio=0.5` | alternative; preserves both local + global; faster |
 | `viz-umap` | UMAP | `n_components=3, n_neighbors=15, min_dist=0.1` | **toy visualisation only** — separate fit, never used for clustering |
 
-### Clustering algorithms (registry)
+### Clustering algorithms
+
+**Shipped in the toy's registry today** (`app/src/clustering-registry.js`):
 
 | ID | Algorithm | Role |
 |----|-----------|------|
-| `hdbscan` | HDBSCAN on UMAP-50 | **default for the toy + alternative for real pipeline**; density valleys + noise concept |
+| `hdbscan` | HDBSCAN on UMAP-100 | **default for the toy**; density valleys + noise concept; powers the multi-level sweep (§9) |
+| `mutualKNN` | Mutual k-NN connected components | conservative grouper; noise pre-filter |
+| `connected-components` | Connected components | trivial validator stress-test |
+
+**Researched but NOT registered** (kept here for context — we considered
+them and chose not to build them in; see `doc/plan.md` §3.2 / §3.4):
+
+| ID | Algorithm | Role we'd want |
+|----|-----------|------|
 | `leiden-cpm` | Leiden CPM (single-level) | graph backbone; baseline for recursive |
-| `leiden-recursive` | Recursive Leiden CPM | **default for real pipeline**; research focus targets |
+| `leiden-recursive` | Recursive Leiden CPM | candidate default for the real pipeline |
 | `infomap` | Infomap | citation-flow-aware second opinion; native hierarchy |
-| `mutual-knn` | Mutual k-NN connected components | noise pre-filter; complement to Leiden |
 | `sparse-spectral` | sparse-Laplacian spectral via `eigsh` | non-modularity, non-density alternative |
 | `kmeans-cosine` | spherical k-means | toy baseline + cluster-sweep eval |
 | `birch-ward` | BIRCH → Ward agglomerative | hierarchical alternative; scales via composition |
 | `dpc-knn` | Density Peak on sparse k-NN (UP-DPC / ANN-DPC) | interpretable ρ/δ centres |
-| `connected-components` | Connected components | trivial validator stress-test |
 
 ### Stability metrics (two-tier)
 
@@ -259,8 +267,9 @@ For 810 k SPECTER2 papers, the default pipeline:
 2. PCA → 100 components
    (>95% variance retained for BERT-class embeddings; denoiser)
 
-3. UMAP → 50 components for clustering
-   n_components=50         (NOT 5 — BERTopic's 5 is a viz compromise)
+3. UMAP → 100 components for clustering
+   n_components=100        (bumped 50 → 100 on 2026-05-25; see §2.2 +
+                            `doc/dim-sweep-results.md` for the validation)
    n_neighbors=50          (large for global structure at this scale)
    min_dist=0.0            (tight clusters, not viz spread)
    metric='cosine'
@@ -268,10 +277,11 @@ For 810 k SPECTER2 papers, the default pipeline:
    low_memory=True         (required at 810 k)
    random_state=42         (UMAP is stochastic — pin and version-pin umap-learn)
 
-4. HDBSCAN on UMAP-50 output
+4. HDBSCAN on UMAP-100 output
    min_cluster_size=100         (≈ 0.01% of n; raise for fewer/coarser)
    min_samples=10               (decoupled from min_cluster_size — suppresses noise without coarsening)
-   cluster_selection_method='eom'   (or 'leaf' for fine subfields)
+   cluster_selection_method='eom'   (or 'leaf' for fine subfields; the
+                                    multi-level sweep uses leaf per §9)
    metric='euclidean'           (cosine is folded into UMAP already)
    prediction_data=True         (enables soft reassignment)
 
