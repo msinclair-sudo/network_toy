@@ -428,11 +428,12 @@ while the viewer colours by another, and disagreement is
 visually apparent. Quantitative ARI across algorithms is a
 follow-up; currently disagreement is qualitative.
 
-**On-demand stability** — ✓ shipped (beta) as the **Validate tab
-inside the Cluster modal** (not a standalone `Validate ▾` topbar
-button as originally sketched). Bootstrap-Jaccard with Hennig
-thresholds (`HENNIG_STABLE = 0.85`, `HENNIG_DOUBTFUL = 0.60`).
-See §6.5 for the full surface. Beta caveat: interface and scorer
+**On-demand stability** — ✓ shipped (beta) as a **stability-analysis
+sidecar to clustering** via the clustering modal's Configure tab (Validate
+tab retired 2026-05-24 per §6.18.1). Bootstrap-Jaccard with Hennig
+thresholds (`HENNIG_STABLE = 0.85`, `HENNIG_DOUBTFUL = 0.60`). The
+"Stability (bootstrap)" section is folded into Configure as part of the
+cards.md consolidation (plan §10). Beta caveat: interface and scorer
 set will change.
 
 ---
@@ -450,9 +451,9 @@ scale and committed under `app/src/ui/`:
 |-----------|--------------|
 | **Workflow chart** | SVG DAG of the pipeline (left rail). Each method node click opens its algorithm modal. State dots colour-coded fresh / stale / not-run. |
 | **Multi-tab panel system** | Three slots (primary / secondary / bottom). Each holds an array of tabs with × close + + add. + opens the **panel-picker** modal listing registered panel types. Singletons (e.g. viewer-3d) filtered when already mounted. |
-| **Modal infrastructure** | `modals/modal.js` (generic dialog), `modals/algorithm-modal.js` (single-level layer config — used for citation layout), `modals/clustering-modal.js` (**tabbed**: Configure / Optimise / Validate — the only modal with internal tabs today; tab strip styled to match the panel-system tab bar), `modals/dimred-modal.js` (**five-stage** — noise / fusion / compression / viz (3D) / viz2d (2D) sections, slot-filtered dropdowns), `modals/data-source-modal.js` (data-source registry picker + per-source params, opened from the workflow-chart Data card), `modals/panel-picker.js`. All modals show a `Running…` progress indicator on Apply for async work. |
+| **Modal infrastructure** | `modals/modal.js` (generic dialog), `modals/algorithm-modal.js` (single-level layer config — used for citation layout), `modals/clustering-modal.js` (**tabbed**: Configure / Optimise — the only modal with internal tabs today; Configure carries the new "Stability (bootstrap)" section folded in via cards.md Pass 2b. Tab strip styled to match the panel-system tab bar), `modals/dimred-modal.js` (**five-stage** — noise / fusion / compression / viz (3D) / viz2d (2D) sections, slot-filtered dropdowns), `modals/data-source-modal.js` (data-source registry picker + per-source params, opened from the workflow-chart Data card), `modals/panel-picker.js`. All modals show a `Running…` progress indicator on Apply for async work. |
 | **Viewer panels** | `panels/viewer-3d.js` (3d-force-graph WebGL) and `panels/viewer-2d.js` (force-graph canvas) both delegate colour-mode resolution to `viewer-shared/colour-modes.js` — same colour-by dropdown options, same selection-dim logic, same per-cluster palette. Each reads its own positions slot (`_basePos` / `_basePos2d`) populated by the matching Layer 1.5 viz sub-stage. |
-| **Eval engine** | `app/src/eval/{jaccard,bootstrap,scorers,sweep}.js` — pure functions consumed by Validate (single-config bootstrap-Jaccard, B=25) and Optimise (cross-algorithm parameter sweep). Four scorers: `ariScorer` (toy), `stabilityScorer` (Hennig), `numClustersScorer` (raw count), `clusterRichnessScorer` (count × meanJaccard, real-data default). Algorithm registry entries can mark a field `resolution: true` to opt into resolution-only sweeps (default). Hennig thresholds (`HENNIG_STABLE = 0.85`, `HENNIG_DOUBTFUL = 0.60`). |
+| **Eval engine** | `app/src/eval/{jaccard,bootstrap,scorers,sweep}.js` — pure functions consumed by the clustering modal's Stability (bootstrap) sidecar (single-config bootstrap-Jaccard) and Optimise (cross-algorithm parameter sweep). The standalone Validate tab was retired 2026-05-24 (§6.18.1). Four scorers: `ariScorer` (toy), `stabilityScorer` (Hennig), `numClustersScorer` (raw count), `clusterRichnessScorer` (count × meanJaccard, real-data default). Algorithm registry entries can mark a field `resolution: true` to opt into resolution-only sweeps (default). Hennig thresholds (`HENNIG_STABLE = 0.85`, `HENNIG_DOUBTFUL = 0.60`). |
 | **Persistence** | `app/src/persistence/{manifest,serialise,deserialise}.js` — zip-format project save/load. Topbar `File ▾` menu (Save / Save as… / Load…). Strict schema-version refusal. Eval results survive across saves via `state.evalResults`. |
 | **Data panel** | `data-panel.js` is the inline status / quick-edit surface for the active source. Toy: existing seed/N/origins/spread knobs + Generate ▶. Real: read-only stats + Reload ▶. Source SELECTION lives in the Data card modal, not here. |
 | **Lazy-render gate** | viewer-3d shows an empty-state hint when `state._basePos` is null. Real-data ingest hits this until the user picks a 3-d viz reduction. No special gating logic — falls out of the dim-reduction contract. |

@@ -511,11 +511,16 @@ configs, or any param) triggers `recluster()`, which:
    pure module the main thread imports — one source of truth either
    side of the worker boundary).
 3. Validates each level's `ClusterResult` against the contract.
-4. Updates `state.clusterLevels` (+ `clusterLevelsPreFusion` when
-   the pre-fusion side ran), aliases the finest level into
+4. Updates `state.clusterLevels`, aliases the finest level into
    `state.clusterResult`, computes `bridgeAnalysis` when ≥ 2 levels
-   exist, and clears `state.evalResults` so stale Validate /
-   Optimise scores don't survive a config change.
+   exist, and clears `state.evalResults.optimise` + `state.bootstrapStability`
+   so stale Optimise scores and bootstrap results don't survive a
+   config change. The bootstrap sidecar (cards.md Pass 2b) then
+   re-populates `state.bootstrapStability` if the clustering modal's
+   Stability toggle is on. (Pre-fusion clustering is no longer a
+   parallel lane — `clusterLevelsPreFusion` was retired with the
+   fusion fork in commit `ce2de16`; each fusionBranch carries its own
+   clustering card.)
 5. Cascades downstream: `reneighbour() → retaste() →
    resample() / resampleViaImport()`. The cascade stops at Layer 3
    (citation layout is opt-in; see `doc/blend.md` §3).

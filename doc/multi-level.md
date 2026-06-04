@@ -251,9 +251,62 @@ otherwise vanish into one cluster's tail.
 
 ## 5. UI surfaces
 
-The bridge analysis adds two viewer colour modes and two node-table
-sources, all only available when `state.bridgeAnalysis` exists
-(i.e., ≥ 2 cluster levels).
+Multi-level clustering is set up via a producer–picker card pair in
+the workflow. The primary path is the **Optimise multi-layer** sweep,
+which runs an HDBSCAN parameter grid and scores each candidate;
+a fallback manual path exists in the clustering modal for hand-tuned
+configs.
+
+### Primary surface: Optimise multi-layer sweep + picker
+
+Workflow entry point: from a `dimred` (or `fusionBranch`) card's **+**
+menu, select "Optimise multi-layer clustering". This creates a
+`multiLevel` **producer** card.
+
+The producer runs an HDBSCAN sweep across leaf selection methods and
+granularities, scoring each candidate with bootstrap reproducibility
+(details in `doc/plan.md` §9). When complete, the result is stored in
+`state.multiLevelSweep = { candidates, curve, bridgesPerPair,
+uidPrefix, floor }` and a `multiLevelPicker` card auto-spawns beneath it.
+
+**Picker card:** selecting it opens the **multilayer-curve panel** (routed
+to the primary slot) with two columns:
+
+- **Left:** stability curve (reproducibility score vs cluster count) with
+  interactive dots; clicking a dot selects that candidate.
+- **Right:** bridge heatmap — an Int32 matrix `bridgesPerPair.counts` with
+  per-cell raw bridge count and normalised colour; only the strict upper
+  triangle (child > parent) is live; lower triangle and diagonal are
+  inactive. Clicking a heatmap cell highlights the matching layers.
+
+Cross-bindings between curve dots and heatmap rows/cols update in
+real-time. A live readout at the bottom shows the picked layer
+granularities and bridge counts between adjacent picks.
+
+**Apply commit:** pressing Apply runs the picker's commit job, which calls
+`engine.commitMultiLevelLayers`, builds `state.clusterLevels` directly,
+and populates `state.bridgeAnalysis` in the same job (bridge analysis no
+longer runs as a separate card post-pick). When citation edges are
+present (`state.rawCitationEdges` non-empty), a `crossClusterCitations`
+card auto-spawns below the picker to analyse citation flows between
+cluster hierarchy levels.
+
+### Bridge panel
+
+The bridge panel is a singleton viewport that renders when
+`state.bridgeAnalysis` exists. It displays a per-cluster breakdown of
+how fine-cluster members are distributed across coarse parents, split
+by a dominance threshold τ (default 0.8, user-adjustable). Two modes:
+
+- **Encapsulated:** clusters where the dominant parent accounts for ≥ τ
+  of members (cleanly nested).
+- **Bridges:** clusters where no parent reaches τ (spanning multiple
+  coarse boundaries).
+
+The panel complements the picker's per-pair bridge *counts* (heatmap)
+by showing per-cluster *dominance* and sharing. The picker is used for
+layer selection; the bridge panel is used for threshold-based analysis
+of the chosen hierarchy.
 
 ### Viewer colour modes (`viewer-3d.js`)
 
@@ -273,12 +326,11 @@ Selecting a bridge row sets `selection = { type: "cluster", level:
 fineLevel, id: fineId }` — re-uses the existing cluster-level
 selection so dimming works on any colour mode.
 
-### Modal
+### Manual fallback: clustering modal
 
-The clustering modal (`modals/clustering-modal.js`) is the only
-surface for setting up multi-level clustering. See
-`doc/ui-architecture.md` §6 for the modal's behaviour. Reaching
-two levels requires the user to click `+ Add level` once; bridge
+The clustering modal (`modals/clustering-modal.js`) still supports the
+Configure tab's `+ Add level` button for hand-tuned multi-level configs
+(explicit parameter per level). This path bypasses the sweep; bridge
 analysis runs automatically after Apply.
 
 ---
