@@ -54,9 +54,12 @@ export const NEXT_STEP_RULES = {
   ],
   // Picker — once it commits a ladder (clusterLevels), it's clustering-
   // equivalent, so the analysis steps a clustering card spawns hang off it.
-  // After committing a ladder the pipeline flows picker → bridge → labelling
-  // → scoring (a bridge card auto-spawns; offered here too if it was deleted).
-  // Labelling/scoring hang off the bridge card, not the picker directly.
+  // After cards.md Pass 2a the pipeline flows picker → crossCluster (when
+  // citation edges exist; auto-spawned) → labelling → scoring → export.
+  // Bridge analysis runs inside the picker's commit job (no separate card);
+  // its result lives on state.bridgeAnalysis for the singleton bridge panel.
+  // Labelling resolves its parent through preferCrossClusterChild, so a
+  // "+ Label clusters" click attaches under crossCluster when one exists.
   multiLevelPicker: [
     { label: "Label clusters",          hint: "Name clusters (representative paper / year / KeyBERT) for scoring", modal: "labelling" },
     { label: "Cross-cluster citations", hint: "Per-layer directed flow (auto-fires when citation edges exist; toy data needs manual add)", modal: "crossClusterCitations" },

@@ -1,6 +1,16 @@
 # Fusion fork — pre/post-fusion as forked workflow branches
 
-**Status:** plan for review (2026-06-01). Replaces the current automatic
+**Status: SHIPPED 2026-06-01 (Phase A) → 2026-06-01 (Phase B).** This file
+is kept as historical design context. The dual-track was removed in commit
+`ce2de16`; the pre/post fork + cross-branch comparison cards landed in
+`9f228c3` (Phase A) and `ed21f7c` (cross-branch). Live behaviour is now
+documented in `cards.md` (palette) and `doc/plan.md` §8 + §10 (rationale).
+
+---
+
+(Original plan below for historical reference.)
+
+Replaces the current automatic
 dual-track (clusterLevels + clusterLevelsPreFusion in one clustering card).
 
 ## Why

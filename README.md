@@ -46,7 +46,7 @@ from there; see *Workflow chart* below.
 
 Save / Save as… / Load… write or read a `.zip` archive of the
 **entire project state** — every dim-reduction output, every
-cluster level, every bridge analysis, every Validate / Optimise
+cluster level, every bridge analysis, every Optimise sweep
 result. Loading a saved project skips the engine cascade, so you
 pick up exactly where you left off without re-running anything.
 
@@ -106,10 +106,12 @@ The card types and what each configures:
   seeds so they don't sync. When fusion is non-identity, the
   pipeline ALSO runs compression + viz on the pre-fusion data so
   the A/B comparison slider has both endpoints.
-- **Clustering** — tabbed modal: **Configure**, **Optimise**,
-  **Validate**. When fusion is non-identity, clustering runs
-  twice (pre- and post-fusion) so the "Color by pre-fusion
-  cluster" mode is available.
+- **Clustering** — tabbed modal: **Configure** (algorithm + per-level
+  params + a "Stability (bootstrap)" section — cards.md Pass 2b folded
+  the old bootstrap card into here) and **Optimise** (sweeps).
+  When fusion ran, the workflow forks into pre/post-fusion branches
+  (cards.md §10 / plan §8) — cluster each branch independently to get
+  the "Color by pre-fusion cluster" mode.
 - **Cit. layout** — citation-driven 3D arrangement (FR, MDS, or
   UMAP-on-citation-graph). **Opt-in**: the pipeline cascade
   stops at Layer 3 and does not auto-run this layer. Open the
@@ -433,9 +435,11 @@ add a new panel via a picker modal. The picker has two sections:
   - **Optimise results** — latest Optimise sweep table; updates
     when you run a new sweep. Per-row Apply lands the chosen
     config into the active clustering.
-  - **Bootstrap stability** — runs bootstrap-Jaccard on the
-    currently-applied clustering. Config + Run + per-cluster
-    results + Save-this-run.
+  - **Bootstrap stability** — singleton that auto-binds to
+    `state.bootstrapStability` (the sidecar computed by the
+    clustering modal's Stability section — cards.md Pass 2b).
+    Falls back to a saved validationRun when one is picked. Per-
+    cluster reproducibility table + aggregate strip.
   - **Method receipt** (singleton) — auto-generated defensibility
     paragraph describing the active clustering's methodology
     (algorithm, params, bootstrap protocol, fixture, Bayes-

@@ -25,11 +25,15 @@ Section 5 lists the controls and what each one actually drives.
   orchestrator, workflow chart (tree-aware), panel system,
   modals, typed-job queue + per-card status.
 - `doc/plan.md` §8 — the workflow-tree redesign (Phase 1 + 2, shipped):
-  cards as the analysis unit. §9 is the active multi-level plan.
+  cards as the analysis unit. §9 — multi-level clustering + tree
+  scoring + bridges (shipped 2026-05-31). §10 — cards.md card-palette
+  consolidation (shipped 2026-06-03/04). The live palette + ordering
+  rules live in `cards.md` at the project root.
 - `doc/workers.md` — module workers + the DAG that runs heavy
   lanes in parallel with cancellation.
-- `doc/eval.md` — Validate + Optimise (bootstrap-Jaccard,
-  scorers, three sweep modes including target-range LHS).
+- `doc/eval.md` — Optimise (bootstrap-Jaccard, scorers, three sweep
+  modes including target-range LHS). The Validate tab was retired
+  2026-05-24 per `doc/plan.md` §6.18.1.
 
 **For the real-data port (n = 810 k base, 1.82 M filtered hybrid
 edges):** see `doc/scaling.md` for which layers scale unchanged,

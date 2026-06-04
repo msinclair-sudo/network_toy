@@ -1,6 +1,18 @@
 # Multi-level clustering: leaf switch + producer/picker card split
 
-**Status:** plan for review (2026-06-01). Replaces the current single
+**Status: SHIPPED 2026-06-01.** This file is kept as historical design
+context. The producer/picker split + leaf default is live. Subsequent
+cards.md Pass 1b (2026-06-03) added the bridge heatmap to the picker
+panel; Pass 1c auto-spawned crossClusterCitations under the picker;
+Pass 2a moved bridge computation into the picker's commit job (no
+separate bridge card). Live palette + ordering: `cards.md`. Rationale:
+`doc/plan.md` §10.
+
+---
+
+(Original plan below for historical reference.)
+
+Replaces the current single
 `multiLevel` card — no parallel paths, no dead code left behind.
 
 ## Why
