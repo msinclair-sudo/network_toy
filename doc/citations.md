@@ -531,8 +531,9 @@ populated with diagnostic counters (`imported`, `dropped`,
 `O(|E|)` materialisation + `O(n²)` for the `hasCit` matrix. At
 BFS-5000 with |E|=12 268, `hasCit` is 25 MB and materialisation
 is sub-second. The `hasCit` cost is the same scaling-cliff
-liability taste-network has and is what motivates the sparse-
-storage upgrade in `doc/plan.md` §2.4.
+liability taste-network has — a sparse-storage replacement
+(`CSR(rowPtr,colInd)`) is the planned upgrade when n outgrows the
+toy. See `doc/scaling.md` for the broader storage-at-scale picture.
 
 ---
 

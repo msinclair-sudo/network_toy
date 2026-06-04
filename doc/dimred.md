@@ -85,14 +85,15 @@ surface at the engine boundary, not three layers downstream.
 | id                 | Module                               | Families                                  | Notes                                                                  |
 |--------------------|--------------------------------------|-------------------------------------------|------------------------------------------------------------------------|
 | `identity`         | `app/src/dimred/identity.js`         | `["any"]`                                 | No-op pass-through. The "skip this stage" option.                      |
-| `pca`              | `app/src/dimred/pca.js`              | `["noise"]`                               | Recommended `n_components = 100` (clustering-research locked).         |
+| `pca`              | `app/src/dimred/pca.js`              | `["noise"]`                               | Recommended `n_components = 100`.                                      |
 | `umap`             | `app/src/dimred/umap.js`             | `["compression", "viz", "viz2d"]`         | Wraps umap-js. Slot-aware defaults per §3.1 below.                     |
 | `graph-diffusion`  | `app/src/dimred/graph-diffusion.js`  | `["fusion"]`                              | Anchored citation-aware diffusion. See `doc/fusion.md` for the spec.   |
 
 ### 3.1 Slot-aware defaults (recommended)
 
 `defaultParamsForSlot(slot)` returns the locked configuration for
-each slot — picked from `doc/clustering-research.md`:
+each slot (the UMAP-100 compression default is empirically validated
+in `doc/dim-sweep-results.md`):
 
 | Algorithm × slot          | Locked params                                                            |
 |---------------------------|--------------------------------------------------------------------------|
@@ -213,11 +214,7 @@ normalised — they keep their native scale.
   A/B colour mode).
 - `doc/blend.md` §1.8 — `alignGlobal()`, called from redimred()
   to align pre-fusion vs post-fusion basePos.
-- `doc/clustering-research.md` — why the slot-aware defaults are
-  what they are (PCA-100, UMAP-100/50/0 compression, UMAP-3/15/0.1
-  viz).
+- `doc/dim-sweep-results.md` — empirical validation behind the
+  UMAP-100 compression default (ARI saturation curve on BFS-5000).
 - `doc/scaling.md` §2.3 — how each algorithm scales from toy
   (n ≈ 400) to real (n = 810 k).
-- `doc/plan.md` §2.1 — original planning context for the layer.
-- `doc/plan.md` §6.4 — sequencing notes on how each algorithm
-  landed.

@@ -107,10 +107,10 @@ The card types and what each configures:
   pipeline ALSO runs compression + viz on the pre-fusion data so
   the A/B comparison slider has both endpoints.
 - **Clustering** — tabbed modal: **Configure** (algorithm + per-level
-  params + a "Stability (bootstrap)" section — cards.md Pass 2b folded
-  the old bootstrap card into here) and **Optimise** (sweeps).
-  When fusion ran, the workflow forks into pre/post-fusion branches
-  (cards.md §10 / plan §8) — cluster each branch independently to get
+  params + a "Stability (bootstrap)" section — bootstrap runs as a
+  sidecar to clustering, not as a separate card) and **Optimise**
+  (sweeps). When fusion ran, the workflow forks into pre/post-fusion
+  branches (see `cards.md`) — cluster each branch independently to get
   the "Color by pre-fusion cluster" mode.
 - **Cit. layout** — citation-driven 3D arrangement (FR, MDS, or
   UMAP-on-citation-graph). **Opt-in**: the pipeline cascade
@@ -156,7 +156,8 @@ embedding ─▶ noise ─▶ fusion ─┬─▶ compression ──▶ clusteri
 ```
 
 Each algorithm declares which sub-stages it's eligible for via a
-`family` tag. Recommended defaults (clustering-research locked):
+`family` tag. Locked defaults (see `doc/dim-sweep-results.md` for the
+empirical validation behind the 100-d compression pick):
 
 - **PCA** in noise → `n_components = 100`
 - **Graph diffusion** in fusion → `alpha = 0.3, iterations = 4` (real-data only)
@@ -240,7 +241,7 @@ Two panels consume it (add them from any panel slot's `+`):
   labels come from a multi-method module (representative paper + year on
   real data; TF-IDF / c-TF-IDF light up once paper titles are materialised).
 
-Design + locked decisions in `doc/plan.md` §9.
+Full design + math in `doc/multi-level.md`.
 
 ### Optimise tab
 
@@ -327,15 +328,14 @@ The use case is *"resource without recalculating"*: come back next
 week, open the saved sweep, try a different row from the rank,
 re-cluster — without re-running the whole 10-minute sweep.
 
-The same mechanism hosts other validations as they come online
-(dim-sweep, fusion comparison deltas, etc.). The user-facing pattern is
-always: run → Save this run → re-open from the picker. Doc:
-`doc/plan.md` §6.19.
+The same mechanism hosts other validations (dim-sweep, fusion comparison
+deltas, etc.). The user-facing pattern is always: run → Save this run →
+re-open from the picker.
 
-Bootstrap stability used to be its own card here; as of `cards.md`
-Pass 2b it's a **sidecar to clustering** — toggle it on in the Clustering
-modal's Stability section and the result lands in the bootstrap-stability
-panel automatically. See `cards.md` for the live palette + ordering.
+Bootstrap stability runs as a **sidecar to clustering** — toggle it on
+in the Clustering modal's Stability section and the result lands in the
+bootstrap-stability panel automatically. See `cards.md` for the live
+card palette + ordering.
 
 ### Bridge analysis (Layer 2.5)
 
@@ -437,9 +437,9 @@ add a new panel via a picker modal. The picker has two sections:
     config into the active clustering.
   - **Bootstrap stability** — singleton that auto-binds to
     `state.bootstrapStability` (the sidecar computed by the
-    clustering modal's Stability section — cards.md Pass 2b).
-    Falls back to a saved validationRun when one is picked. Per-
-    cluster reproducibility table + aggregate strip.
+    clustering modal's Stability section). Falls back to a saved
+    validationRun when one is picked. Per-cluster reproducibility
+    table + aggregate strip.
   - **Method receipt** (singleton) — auto-generated defensibility
     paragraph describing the active clustering's methodology
     (algorithm, params, bootstrap protocol, fixture, Bayes-
@@ -512,13 +512,10 @@ Doc highlights:
 - `doc/blend.md` — Layer 5 alignment + per-frame blend; covers per-component vs whole-graph (alignGlobal) Procrustes, the nested-lerp formula, and the opt-in cascade policy
 - `doc/multi-level.md` — multi-level clustering + bridge analysis derivation
 - `doc/ui-architecture.md` — shell architecture: state container, engine orchestrator, workflow chart (tree-aware renderer), panel system, modals, queue + per-card job status
-- `doc/plan.md` — the single plan/roadmap. §0 status, §8 the (shipped) workflow-tree redesign, §9 the active multi-level-clustering plan
 - `doc/workers.md` — DAG-orchestrated module workers: runDAG, lane shape, cancellation, transferables
-- `doc/eval.md` — Optimise tab: bootstrap-Jaccard, scorers, the three sweep modes (resolution / full / target-range with LHS), known limitations + audit cross-refs
+- `doc/eval.md` — Optimise tab: bootstrap-Jaccard, scorers, the three sweep modes (resolution / full / target-range with LHS), known limitations
 - `doc/scaling.md` — toy-vs-real-data scaling analysis (`n ≈ 400` toy, `n = 810 k` real)
 - `doc/dim-sweep-results.md` — empirical evidence for the locked compression default (UMAP-100); also confirms UMAP-after-PCA is not redundant. Re-run via `validation/dim_sweep_validation.py` when fixtures or algorithms change.
-- `doc/clustering-research.md` — research record, per-family pros/cons, locked picks, stability metrics
-- `doc/plan.md` — convergence plan with status flags
 - `validation/README.md` — convention for research-validation scripts (tracked, real-data fixtures) vs `scratch/` (gitignored, toy fixtures only)
 
 ## File layout
@@ -664,13 +661,13 @@ doc/
   blend.md                        Layer 5 alignment + per-frame blend
   multi-level.md                  multi-level clustering + bridge analysis
   ui-architecture.md              shell architecture (state, engine, workflow chart, queue, modals)
-  plan.md                         single plan/roadmap: §0 status, §8 workflow-tree, §9 multi-level, §10 cards.md consolidation
   workers.md                      DAG-orchestrated worker port + cancellation
   eval.md                         Optimise tab: bootstrap, scorers, sweep modes
   scaling.md                      toy-vs-real-data scaling
+  data-ingest.md                  Layer 1 datasource contract + the three live sources
+  biblion_data_model_and_query_guide.md   biblion SQLite schema + query recipes
   dim-sweep-results.md            empirical evidence backing locked compression default
-  clustering-research.md
-  plan.md
+  citation-edge-salvage.md        parked design note — citation-edge recovery over filtered nodes
 ```
 
 ## Branches
@@ -683,7 +680,7 @@ doc/
   deterministic blend between precomputed arrangements, adds
   MDS + UMAP-on-citation-graph as additional layout algorithms,
   adds the alignment-correlation metric and cross-algorithm
-  layout sweep, plus all the slices documented in `doc/plan.md`
+  layout sweep, plus the major v3 features documented in `doc/`
   (multi-level clustering, bridge analysis, data-source +
   dim-reduction layers, two viewers, save/load, optimisation +
   validation, citation-aware embedding fusion + comparison

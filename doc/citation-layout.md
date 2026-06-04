@@ -402,8 +402,8 @@ final visible scale.
 `O(|E| + n · k)` for k-NN construction (BFS expansion) +
 `O(iterations · n · k)` for UMAP optimisation. At n=5000,
 |E|=12 268, k=15, iterations=500: ~5–15 s wall time on modern V8,
-main-thread synchronous. Same Web Worker port that helps UMAP-50
-(`doc/plan.md` §6.11) applies here.
+main-thread synchronous. The Web Worker port that wraps the heavy
+dim-reduction algorithms (see `doc/workers.md`) applies here too.
 
 ### 3.8 Failure modes
 

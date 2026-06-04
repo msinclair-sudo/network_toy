@@ -199,21 +199,6 @@ Heatmap and stability curve are bound: clicking a heatmap cell highlights both l
 - **`fusionComparison` is a placeholder** — the card and its full runner are still in place (so a user with matching clustering settings can get value), but a ⚠ warning banner sits above every modal + panel render and on its next-steps hints to flag that this is pending further work. Only meaningful when both clusterings used the same algorithm + parameters.
 - **`selectNode` is deferred** — a filter/picker UI that aggregates upstream signals (labels, scores, citation degree, displacement). Design TBD.
 
-## Implementation order
-
-Split into two passes:
-
-**Pass 1 — additive (low risk):**
-1. Bridge calc into `multiLevel` sweep — store `bridgesPerPair` on the producer.
-2. Picker panel: heatmap + live readout + curve-heatmap binding.
-3. Auto-spawn `crossCluster` under picker.
-4. Auto-spawn `nodeDisplacement` from `dimred` when fusion forks.
-
-**Pass 2 — breaking (after Pass 1 proven):**
-5. ~~Delete `bridgeAnalysis` card type~~ ✓ (Pass 2a complete — runner stays callable; bridges now compute inside `multiLevelPicker.applyChange` and surface on `state.bridgeAnalysis`).
-6. ~~Delete `bootstrapStability` card type~~ ✓ (Pass 2b complete — runner + eval module stay callable; bootstrap knobs live in the clustering modal's Stability section; `engine.recluster` runs the sidecar after HDBSCAN; result on `state.bootstrapStability` for the panel).
-7. **Hard break on old saves** — no migration shim; pre-change zips may not load cleanly.
-
 ## Out of scope for this palette
 
 The following card types exist in code but are **not user-creatable in the new flow**:

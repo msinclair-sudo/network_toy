@@ -100,10 +100,10 @@ Question: if PCA-100 is already producing 100-d output,
 is the UMAP-100 compression stage redundant — or is the
 manifold reshape it does actually load-bearing for clustering?
 
-Per `doc/clustering-research.md` §2.2, prior literature
-(GDELT) found that PCA alone fails for HDBSCAN on
-transformer embeddings. This is the same check on our
-specific BFS-5000 fixture.
+Prior literature on transformer embeddings (GDELT) found that
+PCA alone fails for HDBSCAN — the UMAP non-linear reshape is
+load-bearing. This is the same check on our specific BFS-5000
+fixture.
 
 ## Protocol
 
@@ -154,8 +154,8 @@ The manifold reshape is load-bearing: even at the same
 output dimension, UMAP is rearranging points so that
 Euclidean distance becomes a useful similarity measure for
 density-based clustering. PCA alone preserves variance but
-not cluster boundaries on transformer embeddings, as the
-literature predicted (`doc/clustering-research.md` §2.2).
-Recommendation: keep `compression = UMAP-100` as the default.
+not cluster boundaries on transformer embeddings, as prior work
+on similar corpora predicted. Recommendation: keep
+`compression = UMAP-100` as the default.
 
 Re-run via `python validation/compression_redundancy_check.py`.

@@ -24,16 +24,13 @@ Section 5 lists the controls and what each one actually drives.
 - `doc/ui-architecture.md` — shell, state container, engine
   orchestrator, workflow chart (tree-aware), panel system,
   modals, typed-job queue + per-card status.
-- `doc/plan.md` §8 — the workflow-tree redesign (Phase 1 + 2, shipped):
-  cards as the analysis unit. §9 — multi-level clustering + tree
-  scoring + bridges (shipped 2026-05-31). §10 — cards.md card-palette
-  consolidation (shipped 2026-06-03/04). The live palette + ordering
-  rules live in `cards.md` at the project root.
+- `cards.md` (project root) — live palette of card choices, valid
+  parent–child relationships, and auto-spawn rules.
 - `doc/workers.md` — module workers + the DAG that runs heavy
   lanes in parallel with cancellation.
 - `doc/eval.md` — Optimise (bootstrap-Jaccard, scorers, three sweep
-  modes including target-range LHS). The Validate tab was retired
-  2026-05-24 per `doc/plan.md` §6.18.1.
+  modes including target-range LHS). The standalone Validate tab was
+  retired 2026-05-24.
 
 **For the real-data port (n = 810 k base, 1.82 M filtered hybrid
 edges):** see `doc/scaling.md` for which layers scale unchanged,
@@ -207,8 +204,8 @@ live      = lerp(effective,         alignedCitationLayout, blend)
 When `_basePosPreFusion` is null the inner lerp collapses to
 `_basePos` and the model reduces to the original two-endpoint
 design. When `alignedCitationLayout` is null (citation layout
-not yet applied — see §6.16 in `doc/plan.md`) the hook bails
-entirely.
+not yet applied — the cascade stops at Layer 3 by design; see
+`doc/blend.md` §3) the hook bails entirely.
 
 **See `doc/blend.md`** for:
 

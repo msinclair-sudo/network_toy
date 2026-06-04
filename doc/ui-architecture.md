@@ -118,9 +118,9 @@ state = {
   citationLayout:        null,         // Layer 4 raw
   alignedCitationLayout: null,         // Layer 5a
   alignmentCorrelation:  NaN,          // Layer 5a quality metric
-  bridgeAnalysis:        null,         // Layer 2.5 derivation (≥2 cluster levels only); populated by the picker's commit job (no separate card after cards.md Pass 2a)
-  bootstrapStability:    null,         // sidecar to single-level clustering, populated by engine.recluster when the modal's Stability toggle is on (cards.md Pass 2b)
-  crossClusterCitations: null,         // projected from a crossClusterCitations ancestor on selection (cards.md Pass-2 refinement); descendants read this slot
+  bridgeAnalysis:        null,         // Layer 2.5 derivation (≥2 cluster levels only); populated by the multi-layer picker's commit job
+  bootstrapStability:    null,         // sidecar to single-level clustering; populated by engine.recluster when the clustering modal's Stability toggle is on
+  crossClusterCitations: null,         // projected from a crossClusterCitations card ancestor on selection; descendants read this slot
 
   // Bumps every time the pipeline produces fresh data.
   // Panels track this to know when to rebuild graphData.
@@ -252,7 +252,7 @@ retaste()       taste-network stages 2 + 3        → resample() / resampleViaIm
     ↓
 resample()      Layer 3 final stage               → markCitationLayoutStale()
                                                   (cascade STOPS here; citation layout
-                                                   is opt-in — see doc/plan.md §6.16)
+                                                   is opt-in — see doc/blend.md §3)
 
 relayoutCitations()  Layer 4 + Layer 5a          (writes alignedCitationLayout +
                                                   alignmentCorrelation); fires only on
@@ -314,9 +314,9 @@ metric. Each call also bumps `engineRevision` so panels re-render.
 ## 4. Workflow chart (`ui/workflow-chart.js`)
 
 Tree-aware SVG renderer of `state.workflow` — the typed branching
-DAG that lives in `ui/workflow.js`. Phase 2 of the workflow-tree
-redesign turned this from a fixed 7-node chain into the primary
-analysis surface; full design lives in `doc/plan.md` §8.
+DAG that lives in `ui/workflow.js`. It's the primary analysis
+surface; the live card palette + ordering rules live in `cards.md`
+at the project root.
 
 ### What it renders
 
@@ -368,12 +368,12 @@ canonical parent.
    the original card is never mutated (§10.D1 immutable-once-done).
 
 Analysis cards (`dimSweep`, `fusionComparison`, `labelling`, …) map to
-their own config modals + queue runners (slice 2.9). `save` / `load`
-cards have no modal (they're history markers). The `bootstrapStability`
-and `bridgeAnalysis` card types were removed in cards.md Pass 2 — the
-former runs as a sidecar to `clustering` (knobs in the clustering
-modal); the latter computes inside the picker's commit job and surfaces
-on `state.bridgeAnalysis`. See `cards.md` at the project root for the
+their own config modals + queue runners. `save` / `load` cards have no
+modal (they're history markers). Bootstrap stability and bridge analysis
+are *not* separate cards: bootstrap runs as a sidecar to `clustering`
+(knobs in the clustering modal's Stability section), and bridge
+computes inside the multi-layer picker's commit job, surfacing on
+`state.bridgeAnalysis`. See `cards.md` at the project root for the
 live palette + ordering.
 
 ### Auto-migration on mount
@@ -443,10 +443,10 @@ changes; otherwise its `update()` runs every state tick.
 | `node-table` | mode-aware legend (cluster / cluster-pre-fusion / origin / inDeg / t / bridge / boundaryScore) | see "Node table" below |
 | `validation-run-optimise` | Optimise results (live or saved) | **Dual-mode** — no `config.runId` → reads `state.evalResults.optimise` (live; auto-updates after each sweep). `config.runId` set → renders matching `state.validationRuns` entry. Uses the shared `optimise-results-renderer.js`. Per-row Apply re-infers (no `_cr` persisted in v1). |
 | `method-receipt` | auto-generated defensibility paragraph (§6.19.6) | **Singleton**. Assembles a copy-paste-ready paragraph from active state — clustering algo + params, dim-reduction pipeline, bootstrap protocol, fixture, Bayes-optimal ARI ceiling (toy only). Updates on every state change. Copy-to-clipboard button. |
-| `bootstrap-stability` | bootstrap-Jaccard on the applied clustering | **Singleton + triple-source.** Auto-binds to `state.bootstrapStability` (the sidecar from the clustering modal's Stability section; cards.md Pass 2b). Falls back to a legacy `bootstrapStability` card (`config.stepId`) or a saved `validationRuns` entry (`config.runId`) for old projects. |
-| `bridge-analysis` | Layer 2.5 bridge derivation | **Singleton**. Reads `state.bridgeAnalysis` (populated by the picker's commit job, cards.md Pass 2a — no separate bridge card). Pair selector for `(fineLevel, coarseLevel)`; sortable per-fine-cluster table with per-coarser-level share columns. Click a row → selects that cluster in the viewers. |
-| `multilayer-curve` | reproducibility curve + bridge heatmap for the multi-layer sweep (cards.md Pass 1b) | **Singleton**. Routes to the `primary` slot via `SLOT_FOR_CARD_TYPE` (cards.md refinement). Two-column body — left: stability vs cluster count; right: bridges-per-(child, parent) heatmap. Bottom: live readout of bridge counts between adjacent picks. Curve dots and heatmap rows/cols cross-bind on click. |
-| `cross-cluster` | per-layer directed citation flow (cards.md Pass 1c) | **Singleton**. Auto-spawns under `multiLevelPicker` when the ladder commits + citation edges exist; sits as parent of `labelling` so descendants inherit its data via projection (`state.crossClusterCitations`). Panel routes to the `secondary` slot. |
+| `bootstrap-stability` | bootstrap-Jaccard on the applied clustering | **Singleton.** Auto-binds to `state.bootstrapStability` (the sidecar from the clustering modal's Stability section). Falls back to a saved `validationRuns` entry (`config.runId`) for older projects. |
+| `bridge-analysis` | Layer 2.5 bridge derivation | **Singleton**. Reads `state.bridgeAnalysis` (populated by the multi-layer picker's commit job — no separate bridge card). Pair selector for `(fineLevel, coarseLevel)`; sortable per-fine-cluster table with per-coarser-level share columns. Click a row → selects that cluster in the viewers. |
+| `multilayer-curve` | reproducibility curve + bridge heatmap for the multi-layer sweep | **Singleton**. Routes to the `primary` slot via `SLOT_FOR_CARD_TYPE`. Two-column body — left: stability vs cluster count; right: bridges-per-(child, parent) heatmap. Bottom: live readout of bridge counts between adjacent picks. Curve dots and heatmap rows/cols cross-bind on click. |
+| `cross-cluster` | per-layer directed citation flow | **Singleton**. Auto-spawns under `multiLevelPicker` when the ladder commits + citation edges exist; sits as parent of `labelling` so descendants inherit its data via projection (`state.crossClusterCitations`). Panel routes to the `secondary` slot. |
 
 ### Adding a new panel type
 
@@ -680,7 +680,8 @@ When a new layer or major feature lands:
   state shape, contract, and UI surfaces.
 - Update `doc/dynamics.md` (the layer index) if it's a new pipeline
   layer.
-- Update `doc/plan.md`'s sequencing if the feature was on the plan.
+- Update `cards.md` if the feature adds, removes, or re-parents a
+  workflow card type.
 
 Documentation conventions:
 - Single source of truth per concept. Cross-link rather than

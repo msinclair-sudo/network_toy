@@ -7,7 +7,6 @@ graph crunch. Each lane declares a small **DAG** of work; a generic
 walker fires independent nodes into workers in parallel and threads
 results between them.
 
-Tracked under §6.11 in `doc/plan.md` (Slices 1–3 shipped 2026-05-23).
 
 ---
 
@@ -283,7 +282,6 @@ showstopper bugs documented in `RESUMING.md` (parked branch
 
 ## 10. Cross-references
 
-- `doc/plan.md` §6.11 — slice sequencing + locked decisions.
 - `doc/ui-architecture.md` §3 — engine orchestrator; §12 —
   typed-job queue (worker lanes run inside step-bound jobs whose
   status mirrors to the bound chart card).

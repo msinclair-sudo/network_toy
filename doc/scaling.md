@@ -506,7 +506,7 @@ viable path at giant-component scale.
 The toy's existing `app/` stays as the **methods sandbox** (low-dim,
 3-d, interactive, full-pipeline live). The real-data integration is
 a **separate surface** that shares modules with the toy via the
-registry pattern. Convergence plan in `doc/plan.md`.
+registry pattern.
 
 ---
 
@@ -517,7 +517,7 @@ Open design questions that need decisions when integration starts:
 - **Hierarchical clustering contract.** Toy `ClusterResult` is flat.
   Real pipeline emits L1/L2/L3/... paths. Need to extend the
   contract additively (optional `nodePath` field) without breaking
-  toy consumers. Discussed in `doc/plan.md`.
+  toy consumers.
 - **Two different "α blends".** The real pipeline's α is a graph-
   *construction* parameter (`hybrid_weight = α · sim + (1−α) ·
   default`). The toy's α is a layout-*display* parameter (lerp

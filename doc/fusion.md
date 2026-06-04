@@ -5,9 +5,8 @@ sub-stage: what it does mathematically, why it sits between noise
 and compression, how the fusion-comparison slider works, and what
 the cluster A/B colour mode shows.
 
-Tracked under §6.15 in `doc/plan.md`. Implementation in
-`app/src/dimred/graph-diffusion.js` plus the engine wiring in
-`app/src/ui/engine.js`'s `redimred()` / `recluster()` lanes.
+Implementation in `app/src/dimred/graph-diffusion.js` plus the engine
+wiring in `app/src/ui/engine.js`'s `redimred()` / `recluster()` lanes.
 
 ---
 
@@ -344,8 +343,6 @@ fusion slot into older states on load.
   graph the fusion stage reads (BFS-5000 / sparse n ≥ 1000).
 - `doc/dynamics.md` §4 — the higher-level "layout dynamics"
   picture that the fusion + blend together implement.
-- `doc/plan.md` §6.15 — implementation plan with locked
-  decisions + cost analysis.
-- `doc/plan.md` §6.16 — citation-layout opt-in policy (a
-  fusion-adjacent change: stops the cascade from re-running
-  citation layout every time fusion params change).
+- `doc/blend.md` §3 — citation-layout opt-in policy (cascade stops
+  at Layer 3; fusion-adjacent because it gates whether changing
+  fusion params re-runs the layout).

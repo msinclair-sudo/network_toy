@@ -5,10 +5,9 @@ Clustering modal. Engine code lives in `app/src/eval/`; the UI in
 `app/src/ui/modals/clustering-tabs/optimise-tab.js`. State persists
 across project saves via `state.evalResults.optimise`.
 
-Tracked under §6.5 (Optimise — beta), §6.17 (target-range sweep),
-and §6.18 (audit + hardening pass) in `doc/plan.md`.
+Optimise is in beta — interface, scorers, and sweep modes may shift.
 
-> **Validate tab removed 2026-05-24 (§6.18.1).** Bootstrap-Jaccard
+> **Validate tab removed 2026-05-24.** Bootstrap-Jaccard
 > is reachable from inside Optimise via the `clusterRichnessScorer`
 > / `stabilityScorer` paths and via the target-range sweep's
 > `runBootstrap` flag — same `eval/bootstrap.js` engine, same
@@ -449,9 +448,7 @@ picker's *Validation runs* section — picking one opens it in a
 
 Per-row Apply on a saved run currently re-infers (v1 strips `_cr`
 to match the in-modal cache shape). Persisting `_cr` for instant
-Apply is a §6.19 follow-up.
-
-See `doc/plan.md` §6.19 for the full spec.
+Apply is a follow-up.
 
 ---
 
@@ -520,46 +517,27 @@ As of §6.18.3 (2026-05-24):
 
 ## 10. Known limitations
 
-Most audit findings under `doc/plan.md` §6.18 are tracked there
-with severity tags + fix shapes. After §6.18.7 the residual list
-is shorter:
-- **(Resolved §6.18.7)** ~~Bootstrap protocol caveats~~ —
-  subsampling is now an explicit design choice (Hennig 2008 §3.2);
-  `subsampleFrac` default 0.5; Hennig thresholds kept as a coarse
-  colour code only.
-- **(Resolved §6.18.7)** ~~`bestMatchJaccard` greedy~~ — replaced
-  by `bipartiteMatchJaccard` (Hungarian); greedy legacy kept
-  exported as deprecated.
-- **(Resolved §6.18.7)** ~~Aggregate weighting inconsistency~~ —
-  both `meanJaccard_macro` and `meanJaccard_unweighted` reported;
-  `fractionStable` demoted to the breakdown-bar colour code.
-- **Trivial-partition stability inflation persists** (intrinsic, not
-  a bug). A 1-cluster clustering bootstraps to `meanJaccard_macro =
-  1.0` because the full-data partition is trivially preserved under
-  any subsample. The `clusterRichnessScorer` correctly punishes
-  this (`1 × 1 = 1`); the raw `stabilityScorer` does not. Documented
-  by surfacing both scorers + the cluster-count column so users can
-  spot the failure mode.
-- **Per-row Apply on multi-level configs.** The §6.18.3 cache only
-  covers L0 (its inputs match the sweep's). Multi-level Applies
-  that append a within-parent L1 still recompute L1 from scratch
-  even when L0 is cached. Acceptable; documented.
-- **Beta surface.** Per `doc/plan.md` §6.5: the interface and column
-  choices may continue to evolve as §6.18.8 / .9 / .10 land. Future
-  protocol changes that alter scoring numerics will bump
-  `SCORE_VERSION` and discard old caches the same way §6.18.7 did.
+- **Trivial-partition stability inflation** (intrinsic, not a bug). A
+  1-cluster clustering bootstraps to `meanJaccard_macro = 1.0` because
+  the full-data partition is trivially preserved under any subsample.
+  The `clusterRichnessScorer` correctly punishes this (`1 × 1 = 1`);
+  the raw `stabilityScorer` does not. Documented by surfacing both
+  scorers + the cluster-count column so users can spot the failure
+  mode.
+- **Per-row Apply on multi-level configs.** The L0 precomputed-cr
+  cache only covers L0 (its inputs match the sweep's). Multi-level
+  Applies that append a within-parent L1 still recompute L1 from
+  scratch even when L0 is cached. Acceptable; documented.
+- **Beta surface.** Interface and column choices may continue to
+  evolve. Future protocol changes that alter scoring numerics will
+  bump `SCORE_VERSION` and discard old caches.
 
 ---
 
 ## 11. Cross-references
 
-- `doc/plan.md` §6.5 — sequencing + beta status notes.
-- `doc/plan.md` §6.17 — target-range sweep scope, smoke tests,
-  follow-ups.
-- `doc/plan.md` §6.18 — Optimise hardening pass: audit findings
-  (computational + scientific) and the locked sequencing of fixes.
-- `doc/clustering-research.md` §1 — two-tier stability metric
-  philosophy (always-visible intrinsics vs on-demand bootstrap).
 - `doc/workers.md` §9 — why eval still runs on the main thread.
 - `doc/ui-architecture.md` §6 — Configure / Optimise tabbed
   clustering modal structure.
+- `cards.md` — live card palette; how bootstrap got folded into the
+  clustering modal as a sidecar.

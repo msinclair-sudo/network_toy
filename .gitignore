@@ -27,6 +27,16 @@ CLAUDE.md
 # UI plan — working note, not part of the tracked docs
 doc/ui.md
 
+# private planning / roadmap / research docs — kept local because they
+# describe in-flight design + decision history rather than the shipped
+# technical reality. Public technical docs (current behaviour + future
+# direction) live under doc/ alongside these and ARE tracked. Future
+# planning notes should follow the same convention: any *-plan.md or
+# similarly scoped doc stays local.
+doc/plan.md
+doc/clustering-research.md
+doc/*-plan.md
+
 # diagnostic harnesses and acceptance scripts kept locally, not shared
 scratch/
 

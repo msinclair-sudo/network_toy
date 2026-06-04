@@ -265,7 +265,7 @@ menu, select "Optimise multi-layer clustering". This creates a
 
 The producer runs an HDBSCAN sweep across leaf selection methods and
 granularities, scoring each candidate with bootstrap reproducibility
-(details in `doc/plan.md` §9). When complete, the result is stored in
+(bootstrap protocol in `doc/eval.md`). When complete, the result is stored in
 `state.multiLevelSweep = { candidates, curve, bridgesPerPair,
 uidPrefix, floor }` and a `multiLevelPicker` card auto-spawns beneath it.
 
