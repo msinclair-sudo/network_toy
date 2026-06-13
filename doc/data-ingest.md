@@ -9,6 +9,13 @@ and what each downstream consumer needs. The high-dim embedding stays
 a **separate** `.npy` artifact (not in the db) — both `real` and
 `sqlite` assume that split.
 
+> **Ghost nodes:** `biblion advanced snapshot --include-structural` widens the
+> node set to include metadata-less citation participants (`structural`, surfaced
+> as `isGhost`). They are emitted as the **last** node indices with **no**
+> embedding row, so `embeddings.npy` stays a contiguous `m × d` block (`m` =
+> embedded count) while `citationEdges` still carries their edges. Positioning +
+> clustering treatment: `doc/ghost-nodes.md`.
+
 ---
 
 ## 1. The Layer-1 output contract

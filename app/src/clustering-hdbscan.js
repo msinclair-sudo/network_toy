@@ -22,6 +22,14 @@
 // Reads basePos only. Does NOT mutate the input. Always satisfies the
 // shared cluster-output contract — the caller can swap this with
 // mutual-k-NN with no other code changes.
+//
+// Ghost nodes (ghost-node spec §4.4): this module knows NOTHING about
+// ghosts. The fit is excluded from ghosts upstream — clustering-cascade.js
+// slices the genResult/dimredResult down to the m embedded nodes before
+// calling infer, so the distance matrix here is built over embedded nodes
+// only, and the cascade re-expands the m-node result back to n (assigning
+// each ghost its nearest embedded neighbour's label). Keep it that way: do
+// not add ghost branches to the clustering math.
 
 import { pairwiseDistancesParallel } from "./workers/parallel-distance.js";
 import { buildMultiLevel }           from "./clustering-multilevel.js";

@@ -31,7 +31,8 @@ import { bootstrapStability as runBootstrapStability,
          SCORE_VERSION as BOOTSTRAP_SCORE_VERSION }             from "../eval/bootstrap.js";
 import { update, getState, setLayerState }                       from "./state.js";
 import { runDAG }                                                from "../workers/dag.js";
-import { slimNodesForClustering }                                from "../clustering-cascade.js";
+import { slimNodesForClustering, buildGhostContext, sliceDimred,
+         expandGhostResult }                                     from "../clustering-cascade.js";
 
 // Worker URLs resolved relative to this module so the runtime path
 // matches the project's served file layout regardless of which page
@@ -326,6 +327,18 @@ export async function redimred({ cascade = true } = {}) {
   const fusionCfg     = cfg.fusion || { method: "identity", params: {} };
   const fusionIsActive = fusionCfg.method !== "identity";
 
+  // Ghost mask (ghost-node spec §4.3). The noise stage emitted m embedded
+  // rows; fusion is the stage that expands back to all n nodes, giving each
+  // ghost a position by topology. Build a Uint8Array(n) (1 = ghost) from the
+  // node flags and hand it to the masked operator. ghostFusion is true only
+  // when fusion is active AND ghosts actually exist — when there are no
+  // ghosts the mask is null and graph-diffusion collapses to classic APPNP,
+  // so its output stays m×d and the m-row validation/adoption path below is
+  // unchanged.
+  const ghostMask = buildGhostMask(s.genResult.nodes);
+  const nGhost = ghostMask ? ghostMask.reduce((a, b) => a + b, 0) : 0;
+  const ghostFusion = fusionIsActive && nGhost > 0;
+
   // ── Compute graph for this lane. ─────────────────────────────────
   //
   //   input0 ──▶ noise ──▶ fusion ─┬──▶ compression  (clustering input)
@@ -361,10 +374,17 @@ export async function redimred({ cascade = true } = {}) {
       deps: ["noise"],
       buildPayload: (r) => ({
         algo:   fusionCfg.method,
+        // The fusion input is the m EMBEDDED rows from noise; the masked
+        // operator (spec §4.3) expands the working matrix up to all n nodes
+        // using ghostMask (length n) and re-homes the ghost rows by
+        // propagation. Adjacency + ghostMask are injected here at compute()
+        // time so the algorithm stays pure (no global-state reads in worker).
         input:  { n: r.noise.n, d: r.noise.d, data: r.noise.data },
-        // Adjacency is injected at compute() time; the algorithm
-        // itself stays pure (no global-state reads inside the worker).
-        params: { ...(fusionCfg.params || {}), adjacency: s.rawCitationEdges || [] },
+        params: {
+          ...(fusionCfg.params || {}),
+          adjacency: s.rawCitationEdges || [],
+          ghostMask: ghostFusion ? ghostMask : null,
+        },
       }),
     },
     compression: {
@@ -427,14 +447,24 @@ export async function redimred({ cascade = true } = {}) {
 
   // Validate everything that came back. Contract violations surface
   // here rather than silently corrupting downstream state.
-  validateDimredResult(r.noise,       n);
-  validateDimredResult(r.fusion,      n);
-  validateDimredResult(r.compression, n);
-  validateDimredResult(r.viz,         n);
-  validateDimredResult(r.viz2d,       n);
+  //
+  // Ghost nodes (spec §4.2/§4.3): the noise stage runs on the m EMBEDDED
+  // nodes only, so it (and the pre-fusion siblings, which also branch off
+  // noise) carry m rows. Fusion is the stage that re-expands to all n nodes
+  // (masked operator, §4.3), so when ghost fusion is active fusion and the
+  // post-fusion stages (compression / viz / viz2d) carry n rows. Without
+  // ghosts m == n and every stage is m-row, exactly as before.
+  const mEmbedded = input0.m ?? n;
+  const nPostFusion = ghostFusion ? n : mEmbedded;
+  validateDimredResult(r.noise,       mEmbedded);
+  validateDimredResult(r.fusion,      nPostFusion);
+  validateDimredResult(r.compression, nPostFusion);
+  validateDimredResult(r.viz,         nPostFusion);
+  validateDimredResult(r.viz2d,       nPostFusion);
   if (fusionIsActive) {
-    validateDimredResult(r.compPre, n);
-    validateDimredResult(r.vizPre,  n);
+    // Pre-fusion siblings branch off the noise output → always m rows.
+    validateDimredResult(r.compPre, mEmbedded);
+    validateDimredResult(r.vizPre,  mEmbedded);
   }
 
   // ── Post-fusion viz adoption. Same branching as before — only
@@ -585,14 +615,40 @@ function normaliseToViewerScale(data) {
 //   1. state.embedding   (real-data path; high-dim feature vectors)
 //   2. _basePos          (toy path; basePos doubles as embedding)
 // Returns null when neither is present (degenerate state).
+//
+// Ghost nodes (spec §4.1/§4.2): the embedding is a dense m×d block over the m
+// EMBEDDED nodes only (m = embedding.m, ghosts excluded). The noise (PCA) stage
+// therefore fits + projects on m rows — ghosts get no PCA row and acquire a
+// position later at fusion. We surface `n` = m here so the PCA worker runs on
+// the embedded block; the returned `m` lets the caller validate the m-row
+// noise output (and lets fusion, next agent, expand back to all nodes).
 function pickStage0Input(s) {
   if (s.embedding && s.embedding.data instanceof Float32Array) {
-    return { n: s.genResult.nodes.length, d: s.embedding.d, data: s.embedding.data };
+    // m = embedded count: explicit when the source supplies it, else the full
+    // node count (legacy / ghost-free sources where every node is embedded).
+    const m = Number.isInteger(s.embedding.m)
+      ? s.embedding.m
+      : s.genResult.nodes.length;
+    return { n: m, d: s.embedding.d, data: s.embedding.data, m };
   }
   if (s._basePos instanceof Float32Array) {
-    return { n: s.genResult.nodes.length, d: 3, data: s._basePos };
+    const n = s.genResult.nodes.length;
+    return { n, d: 3, data: s._basePos, m: n };
   }
   return null;
+}
+
+// Build a ghost mask (ghost-node spec §4.3) from the node list: a
+// Uint8Array(n) with 1 = ghost (structural node, isGhost === true), 0 =
+// embedded. Returns null when no node is a ghost, so ghost-free sources
+// pay nothing and the masked fusion operator collapses to classic APPNP.
+function buildGhostMask(nodes) {
+  let any = false;
+  const mask = new Uint8Array(nodes.length);
+  for (let i = 0; i < nodes.length; i++) {
+    if (nodes[i] && nodes[i].isGhost === true) { mask[i] = 1; any = true; }
+  }
+  return any ? mask : null;
 }
 
 // Layer 2 — multi-level.
@@ -639,6 +695,13 @@ export async function recluster(opts = {}) {
   // origin, t, cite lists, …).
   const nodesSlim = slimNodesForClustering(s.genResult.nodes);
 
+  // Ghost-node clustering (ghost-node spec §4.4): exclude isGhost nodes from
+  // the HDBSCAN fit and assign each post-hoc to its nearest embedded citation
+  // neighbour's cluster. Both are null/empty for ghost-free sources, so the
+  // cascade's ghost path is inert there.
+  const ghostMask     = buildGhostMask(s.genResult.nodes);
+  const citationEdges = ghostMask ? (s.rawCitationEdges || null) : null;
+
   // Build the precomputedLevels array (sparse cr cache by level index).
   // Only L0 is currently eligible — and only when the precomputedCr
   // option matches both the algorithm and L0's params verbatim.
@@ -672,6 +735,8 @@ export async function recluster(opts = {}) {
         allowNoise,
         n,
         precomputedLevels,
+        ghostMask,
+        citationEdges,
       }),
     },
   };
@@ -790,6 +855,26 @@ export async function recomputeMultiLevelSweep(opts = {}) {
   setLayerState("clustering", "running");
   const nodesSlim = slimNodesForClustering(s.genResult.nodes);
 
+  // Ghost-node clustering (spec §4.4 / §C.1): exclude isGhost nodes from the
+  // sweep's fit exactly as the normal cascade does. We run the WHOLE sweep
+  // (Phase 1 model + plateau candidates, Phase 2 bootstrap) on the m embedded
+  // nodes, then expand every candidate back to full-n by assigning each ghost
+  // its nearest embedded citation neighbour's label. So the model, the
+  // minClusterSize grid and the stability scores are all computed on real
+  // nodes only, and the candidates the picker commits (and the cached L0) are
+  // ghost-correct. `ghosts` is null for ghost-free sources → identity path.
+  const ghostMask     = buildGhostMask(s.genResult.nodes);
+  const citationEdges = ghostMask ? (s.rawCitationEdges || null) : null;
+  const ghosts        = buildGhostContext(ghostMask, citationEdges, s.dimredResult, n);
+
+  // Inputs the fit runs on: the m embedded nodes when ghosts exist, else all n.
+  const fitN         = ghosts ? ghosts.m : n;
+  const fitDimred    = ghosts ? sliceDimred(s.dimredResult, ghosts.embToFull) : s.dimredResult;
+  const fitNodesSlim = ghosts ? Array.from(ghosts.embToFull, (f) => nodesSlim[f]) : nodesSlim;
+  const fitGenResult = ghosts
+    ? { ...s.genResult, nodes: Array.from(ghosts.embToFull, (f) => s.genResult.nodes[f]) }
+    : s.genResult;
+
   // ── Phase 1 (worker): build the model once + plateau candidates. ──
   const dag = {
     ml: {
@@ -797,10 +882,10 @@ export async function recomputeMultiLevelSweep(opts = {}) {
       deps: [],
       buildPayload: () => ({
         mode:         "multilayer",
-        nodesSlim,
-        dimredResult: s.dimredResult,
+        nodesSlim:    fitNodesSlim,
+        dimredResult: fitDimred,
         params,
-        n,
+        n:            fitN,
         opts: { sizeGridCount: opts.sizeGridCount },
       }),
     },
@@ -818,16 +903,31 @@ export async function recomputeMultiLevelSweep(opts = {}) {
 
   // ── Phase 2 (main thread): bootstrap-score EVERY candidate. The bootstrap
   //    fans its B re-clusterings out across clustering-workers. ──
+  const algo = getClusteringAlgorithm("hdbscan");
   const { candidates, curve } = await runPhase2Score({
     candidates:    phase1,
-    genResult:     s.genResult,
-    dimredResult:  s.dimredResult,
-    algo:          getClusteringAlgorithm("hdbscan"),
+    genResult:     fitGenResult,
+    dimredResult:  fitDimred,
+    algo,
     params:        { ...params, uidPrefix: opts.uidPrefix },
     bootstrapOpts: opts.bootstrapOpts || {},
     onProgress:    opts.onProgress || null,
     abortSignal:   opts.abortSignal || null,
   });
+
+  // Expand every candidate's (embedded) clusterResult back to full-n, placing
+  // each ghost in its nearest embedded neighbour's cluster — so downstream
+  // (bridges, picker commit, the cached L0 reused by recluster) sees full-n
+  // ghost-correct partitions. Identity when there are no ghosts. The candidate
+  // `count` stays the embedded cluster count (the granularity the picker keys on).
+  if (ghosts) {
+    const allowNoise = !!algo.allowsNoise;
+    for (const c of candidates) {
+      if (c && c.clusterResult) {
+        c.clusterResult = expandGhostResult(c.clusterResult, ghosts, n, allowNoise);
+      }
+    }
+  }
 
   // Per-pair bridge counts across every (child > parent) candidate pair —
   // populates the picker's heatmap so the user picks layers with stability

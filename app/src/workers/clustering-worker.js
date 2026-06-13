@@ -49,7 +49,7 @@ self.addEventListener("message", async (ev) => {
 
   try {
     if (mode === "cascade") {
-      const { algoId, nodesSlim, dimredResult, levelCfgs, allowNoise, n, precomputedLevels } = data;
+      const { algoId, nodesSlim, dimredResult, levelCfgs, allowNoise, n, precomputedLevels, ghostMask, citationEdges } = data;
       if (typeof algoId !== "string") {
         throw new Error("clustering-worker: payload.algoId must be a string");
       }
@@ -62,7 +62,11 @@ self.addEventListener("message", async (ev) => {
       const algo   = getClusteringAlgorithm(algoId);
       const levels = runClusterLevels(
         algo, nodesSlim, levelCfgs, dimredResult, !!allowNoise, n | 0,
-        { precomputedLevels: Array.isArray(precomputedLevels) ? precomputedLevels : [] },
+        {
+          precomputedLevels: Array.isArray(precomputedLevels) ? precomputedLevels : [],
+          ghostMask:     ghostMask instanceof Uint8Array ? ghostMask : null,
+          citationEdges: Array.isArray(citationEdges) ? citationEdges : null,
+        },
       );
 
       const transfer = [];

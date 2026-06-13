@@ -23,9 +23,18 @@ import { parseNpy } from "./npy.js";
 
 // Canonical node-set filter + order. MUST match biblion/snapshot.py
 // (NODE_SET_WHERE) — the snapshot, the .npy and this query all have to agree on
-// the node set.
+// the node set. This is the EMBEDDED node set (rows 0..m-1 of embeddings.npy).
 const NODE_SET_WHERE =
   "is_rejected = 0 AND is_stub = 0 AND title IS NOT NULL AND abstract IS NOT NULL";
+
+// Structural ("ghost") node-set filter — the wider set surfaced by
+// `biblion advanced snapshot --include-structural`. A node is structural when
+// it survives rejection + has a title but has NO embedding row (is a stub or
+// lacks an abstract). MUST match biblion/snapshot.py's structural predicate.
+// These nodes carry citation edges but no SPECTER2 vector; the toy renders them
+// as ghosts (isGhost=true, last n-m indices). See ghost-node spec §4.1.
+const STRUCTURAL_WHERE =
+  "is_rejected = 0 AND title IS NOT NULL AND (is_stub = 1 OR abstract IS NULL)";
 
 const DATASETS = {
   // id → {label, sqlitePath, embeddingsPath, indexPath}. Paths are absolute
@@ -78,6 +87,39 @@ export const DATASET_LABELS = Object.fromEntries(
 
 export const defaultSqliteParams = () => ({ dataset: "biblion" });
 
+// Flat option list for the data-source picker: every project, plus each
+// discovered subset addressed as "<project>::<subset>". Seeded with the
+// projects; subset entries are appended by discoverSubsets() (fired at module
+// load). Mutated IN PLACE so the modal — which reads this array fresh each time
+// it opens — reflects whatever subsets existed at page load.
+export const SQLITE_OPTIONS = DATASET_IDS.map(
+  (id) => ({ value: id, label: DATASETS[id].label })
+);
+
+// Best-effort: fetch each project's subsets/index.json and append its embedded
+// subsets to SQLITE_OPTIONS. A project with no subsets/ (404) is skipped.
+export async function discoverSubsets() {
+  await Promise.all(DATASET_IDS.map(async (id) => {
+    let idx;
+    try {
+      const r = await fetch(`/data/${id}/subsets/index.json`);
+      if (!r.ok) return;
+      idx = await r.json();
+    } catch { return; }
+    for (const s of (idx.subsets || [])) {
+      if (!s.embedded) continue;                 // un-embedded subset can't load
+      const value = `${id}::${s.name}`;
+      if (SQLITE_OPTIONS.some((o) => o.value === value)) continue;
+      SQLITE_OPTIONS.push({ value, label: `${DATASETS[id].label} / ${s.label || s.name}` });
+    }
+  }));
+  return SQLITE_OPTIONS;
+}
+
+// Fire discovery at load so subsets are usually present by the time the
+// data-source modal is opened. Fire-and-forget; failures are non-fatal.
+discoverSubsets();
+
 export const sqliteModalSchema = {
   fields: [
     {
@@ -105,9 +147,22 @@ function getSQL() {
 let _handle = null;
 
 export async function produceSqlite(params = {}) {
+  // A subset is addressed as "<project>::<subset>"; a bare id is the full
+  // project. A subset reuses the project's shared snapshot DB and supplies its
+  // own paper_index + embeddings under subsets/<name>/.
   const datasetId = params.dataset || "biblion";
-  const ds = DATASETS[datasetId];
-  if (!ds) throw new Error(`[datasource:sqlite] unknown dataset "${datasetId}"`);
+  const sep = datasetId.indexOf("::");
+  const projectId = sep === -1 ? datasetId : datasetId.slice(0, sep);
+  const subsetName = sep === -1 ? null : datasetId.slice(sep + 2);
+  const base = DATASETS[projectId];
+  if (!base) throw new Error(`[datasource:sqlite] unknown dataset "${projectId}"`);
+  const ds = subsetName ? {
+    label:          `${base.label} / ${subsetName}`,
+    sqlitePath:     base.sqlitePath,   // shared project snapshot DB
+    embeddingsPath: `/data/${projectId}/subsets/${subsetName}/embeddings.npy`,
+    indexPath:      `/data/${projectId}/subsets/${subsetName}/paper_index.json`,
+    subset:         true,
+  } : base;
   assertSnapshotPath(ds.sqlitePath);
 
   const [SQL, embAb, dbAb, indexObj] = await Promise.all([
@@ -127,77 +182,135 @@ export async function produceSqlite(params = {}) {
   ]);
 
   const { shape, data } = parseNpy(embAb);
-  const [n, d] = shape;
+  const [m, d] = shape;   // m = EMBEDDED rows in the .npy (ghosts are not in it)
 
-  // index["i"] → papers.id; defines the canonical node order (the .npy contract)
-  const idByRow = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const id = indexObj[String(i)];
+  // index["i"] → papers.id for the m embedded rows; defines the canonical
+  // embedded-node order (the .npy contract). An index entry may be a bare id
+  // (legacy snapshots) or {id, structural} (--include-structural snapshots);
+  // here we only read the embedded rows 0..m-1, which are never structural.
+  const idOf = (entry) => (entry && typeof entry === "object") ? entry.id : entry;
+  const idByRow = new Array(m);
+  for (let i = 0; i < m; i++) {
+    const id = idOf(indexObj[String(i)]);
     if (id == null) throw new Error(`[datasource:sqlite] paper_index missing row ${i}`);
     idByRow[i] = id;
-  }
-  if (Object.keys(indexObj).length !== n) {
-    throw new Error(`[datasource:sqlite] paper_index has ${Object.keys(indexObj).length} entries, embedding has ${n} rows`);
   }
 
   const db = new SQL.Database(new Uint8Array(dbAb));
 
-  // Re-derive the node set from the snapshot, in the same order, and verify it
-  // matches the embedding's index row-for-row.
-  const nodeRes = db.exec(`SELECT id, year FROM papers WHERE ${NODE_SET_WHERE} ORDER BY id`);
-  const rows = nodeRes.length ? nodeRes[0].values : [];
-  if (rows.length !== n) {
-    throw new Error(`[datasource:sqlite] node-set size ${rows.length} != embedding rows ${n} (db drifted from embedding — re-run \`biblion advanced snapshot\` + \`embedding\`)`);
+  let embRows, ghostRows;
+  if (ds.subset) {
+    // Subset mode: the node set IS the subset's paper_index (m ids), looked up
+    // against the SHARED project snapshot DB; preserve paper_index order. No
+    // structural/ghost nodes. Pull all (id, year) once and project, to dodge
+    // SQLite's 999-param IN() limit for large subsets.
+    const yearById = new Map();
+    const allRes = db.exec("SELECT id, year FROM papers");
+    for (const row of (allRes.length ? allRes[0].values : [])) yearById.set(row[0], row[1]);
+    embRows = new Array(m);
+    for (let i = 0; i < m; i++) {
+      const id = idByRow[i];
+      if (!yearById.has(id)) {
+        throw new Error(`[datasource:sqlite] subset id ${id} not in snapshot ${ds.sqlitePath} (stale subset — re-run \`biblion advanced subset make\`)`);
+      }
+      embRows[i] = [id, yearById.get(id)];
+    }
+    ghostRows = [];
+  } else {
+    // Full project: re-derive the EMBEDDED node set from the snapshot, in the
+    // same order, and verify it matches the embedding's index row-for-row.
+    const embRes = db.exec(`SELECT id, year FROM papers WHERE ${NODE_SET_WHERE} ORDER BY id`);
+    embRows = embRes.length ? embRes[0].values : [];
+    if (embRows.length !== m) {
+      throw new Error(`[datasource:sqlite] embedded node-set size ${embRows.length} != embedding rows ${m} (db drifted from embedding — re-run \`biblion advanced snapshot\` + \`embedding\`)`);
+    }
+    // Structural ("ghost") nodes: surfaced only when the snapshot was carved
+    // with --include-structural. They are NOT in the .npy; we append them as the
+    // last n-m node indices. On a legacy (embedded-only) snapshot this query
+    // returns nothing and the node set is unchanged.
+    const ghostRes = db.exec(`SELECT id, year FROM papers WHERE ${STRUCTURAL_WHERE} ORDER BY id`);
+    ghostRows = ghostRes.length ? ghostRes[0].values : [];
   }
+  const n = m + ghostRows.length;
 
   // Year range → t ∈ [0,1] (newest = 1), matching real.js's FR time anchor.
+  // Computed over all nodes (embedded + ghost) so ghosts share the timeline.
   let yrMin = Infinity, yrMax = -Infinity;
-  for (let i = 0; i < n; i++) {
-    const y = rows[i][1];
+  const noteYear = (y) => {
     if (Number.isFinite(y)) {
       if (y < yrMin) yrMin = y;
       if (y > yrMax) yrMax = y;
     }
-  }
+  };
+  for (let i = 0; i < m; i++) noteYear(embRows[i][1]);
+  for (let i = 0; i < ghostRows.length; i++) noteYear(ghostRows[i][1]);
   const yrRange = yrMax > yrMin ? yrMax - yrMin : 0;
 
   const rowById = new Map();
   const nodes = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const id = rows[i][0];
-    const y = rows[i][1];
-    if (id !== idByRow[i]) {
-      throw new Error(`[datasource:sqlite] row ${i}: snapshot id ${id} != paper_index ${idByRow[i]} (embedding/db drift — re-run \`biblion advanced snapshot\` + \`embedding\`)`);
-    }
-    rowById.set(id, i);
+  const mkNode = (idx, id, y, isGhost) => {
+    rowById.set(id, idx);
     let t = 0, year = null;
     if (Number.isFinite(y)) {
       year = y;
       t = yrRange > 0 ? (y - yrMin) / yrRange : 0;
     }
-    nodes[i] = { id: i, t, year, paperId: id };
+    nodes[idx] = { id: idx, t, year, paperId: id, isGhost };
+  };
+  // Embedded nodes occupy rows 0..m-1, in .npy order.
+  for (let i = 0; i < m; i++) {
+    const id = embRows[i][0];
+    if (id !== idByRow[i]) {
+      throw new Error(`[datasource:sqlite] row ${i}: snapshot id ${id} != paper_index ${idByRow[i]} (embedding/db drift — re-run \`biblion advanced snapshot\` + \`embedding\`)`);
+    }
+    mkNode(i, id, embRows[i][1], false);
   }
+  // Ghosts occupy rows m..n-1 (NO embedding row). Skip any structural id that
+  // somehow already appeared in the embedded set (defensive — the predicates
+  // are disjoint, but a malformed snapshot must not double-insert a node).
+  let ghostIdx = m;
+  for (let i = 0; i < ghostRows.length; i++) {
+    const id = ghostRows[i][0];
+    if (rowById.has(id)) continue;
+    mkNode(ghostIdx++, id, ghostRows[i][1], true);
+  }
+  // Compact away any skipped duplicate slots so node ids stay contiguous 0..n-1.
+  if (ghostIdx !== n) nodes.length = ghostIdx;
+  const nFinal = nodes.length;
+
+  // Node index → embedding row, -1 for ghosts. Embedded nodes are rows 0..m-1
+  // by construction, so this is the identity on [0,m) and -1 on [m,n) — but we
+  // emit it explicitly so downstream consumers never have to re-derive the mask.
+  const rowOf = new Int32Array(nFinal);
+  for (let i = 0; i < nFinal; i++) rowOf[i] = nodes[i].isGhost ? -1 : i;
 
   // Citation edges → flat [src, dst, …] in node-index space. biblion stores
   // canonical citing→cited, which already IS the toy's "source cites target",
-  // so NO direction flip. Drop edges whose endpoint fell outside the node set
-  // (the abstract filter can exclude a paper that citations still references).
+  // so NO direction flip. Edges to ghosts are KEPT (the whole point — they carry
+  // the A→ghost→B bridge). Drop only edges whose endpoint is in neither set.
   const edgeRes = db.exec("SELECT citing_id, cited_id FROM citations");
   const edgeVals = edgeRes.length ? edgeRes[0].values : [];
   const citationEdges = [];
   let droppedEdges = 0;
+  let ghostEdges = 0;
   for (let k = 0; k < edgeVals.length; k++) {
     const s = rowById.get(edgeVals[k][0]);
     const t = rowById.get(edgeVals[k][1]);
     if (s === undefined || t === undefined) { droppedEdges++; continue; }
+    if (nodes[s].isGhost || nodes[t].isGhost) ghostEdges++;
     citationEdges.push(s, t);
   }
+
+  // Node index → papers.id over ALL nodes (embedded + ghost), for on-demand
+  // text/record lookups keyed by the toy's node id (which now spans ghosts).
+  const paperIdByNode = new Array(nFinal);
+  for (let i = 0; i < nFinal; i++) paperIdByNode[i] = nodes[i].paperId;
 
   // Keep the db open for on-demand getNodeText(). Free any previous handle.
   if (_handle && _handle.db && _handle.db !== db) {
     try { _handle.db.close(); } catch { /* ignore */ }
   }
-  _handle = { dataset: datasetId, db, idByRow, textStmt: null };
+  _handle = { dataset: datasetId, db, idByRow: paperIdByNode, textStmt: null };
 
   return {
     method: "sqlite",
@@ -206,9 +319,14 @@ export async function produceSqlite(params = {}) {
       yearRange: Number.isFinite(yrMin) ? [yrMin, yrMax] : null,
       edgesKept: citationEdges.length / 2,
       edgesDropped: droppedEdges,
+      nEmbedded: m,
+      nGhost: nFinal - m,
+      ghostEdges,
     },
     nodes,
-    embedding: { d, data },
+    // Embedding covers the m embedded nodes only; ghosts have no row. rowOf
+    // maps node index → embedding row (-1 for ghosts); m is the embedded count.
+    embedding: { d, data, m, rowOf },
     citationEdges,
     // No basePos — Layer 1.5's viz sub-stage populates _basePos on demand.
   };

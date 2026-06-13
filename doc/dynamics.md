@@ -18,6 +18,12 @@ The pipeline has six layers, each with its own math:
    + nested lerp between basePos endpoints + aligned citation
    layout.
 
+**Ghost nodes** (metadata-less citation participants, `isGhost`) cut across
+Layers 1/1.5/2: no embedding row, carried through fusion as no-self-anchor
+conduits, excluded from the clustering fit and assigned post-hoc. They shape
+clusters only by moving real nodes during fusion, never by being clustered. See
+`doc/ghost-nodes.md`.
+
 Section 5 lists the controls and what each one actually drives.
 
 **Engine architecture and execution model:**

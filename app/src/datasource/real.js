@@ -63,7 +63,22 @@ export async function produceReal(params = {}) {
   ]);
 
   const { shape, data } = parseNpy(ab);
-  const [n, d] = shape;
+  const [m, d] = shape;   // m = EMBEDDED rows in the .npy (ghosts have no row)
+
+  // Structural ("ghost") nodes: a paper_index entry may be a bare id (legacy)
+  // or {id, structural}. Embedded rows 0..m-1 are aligned to the .npy and are
+  // never structural; any further index entries marked structural are appended
+  // as ghosts (last n-m indices, NO embedding row). On a legacy subset the
+  // index has exactly m bare-id entries and no ghosts appear. See spec §4.1.
+  const idOf      = (entry) => (entry && typeof entry === "object") ? entry.id : entry;
+  const isStruct  = (entry) => !!(entry && typeof entry === "object" && entry.structural);
+  const ghostIdxs = [];
+  for (const key of Object.keys(paperIndex)) {
+    const i = +key;
+    if (Number.isInteger(i) && i >= m && isStruct(paperIndex[key])) ghostIdxs.push(i);
+  }
+  ghostIdxs.sort((a, b) => a - b);
+  const n = m + ghostIdxs.length;
 
   // Per-node t ∈ [0, 1] normalised across the subset's year range.
   // Newest paper → t = 1, oldest → t = 0. This is the contract FR's
@@ -83,24 +98,40 @@ export async function produceReal(params = {}) {
   }
   const yrRange = (nWithYear > 0 && yrMax > yrMin) ? (yrMax - yrMin) : 0;
 
+  // remap: on-disk file index → contiguous toy node index. Embedded rows keep
+  // their index (0..m-1); ghosts (file index ≥ m, flagged structural) are
+  // packed into the contiguous tail m..n-1. Identity for legacy (no-ghost)
+  // subsets. Used both to place ghost nodes and to remap edge endpoints.
+  const remap = new Int32Array(
+    Math.max(m, ghostIdxs.length ? ghostIdxs[ghostIdxs.length - 1] + 1 : 0)
+  );
+  for (let i = 0; i < m; i++) remap[i] = i;
+  for (let g = 0; g < ghostIdxs.length; g++) remap[ghostIdxs[g]] = m + g;
+
   const nodes = new Array(n);
-  for (let i = 0; i < n; i++) {
-    let t = 0;
-    let year = null;
+  const mkNode = (toyIdx, fileIdx, isGhost) => {
+    let t = 0, year = null;
     if (paperYears) {
-      const y = +paperYears[String(i)];
+      const y = +paperYears[String(fileIdx)];
       if (Number.isFinite(y)) {
         year = y;
         t = yrRange > 0 ? (y - yrMin) / yrRange : 0;
       }
     }
-    nodes[i] = {
-      id:       i,
+    nodes[toyIdx] = {
+      id:      toyIdx,
       t,
       year,
-      paperId:  paperIndex[String(i)] || null,
+      paperId: idOf(paperIndex[String(fileIdx)]) || null,
+      isGhost,
     };
-  }
+  };
+  for (let i = 0; i < m; i++) mkNode(i, i, false);
+  for (let g = 0; g < ghostIdxs.length; g++) mkNode(m + g, ghostIdxs[g], true);
+
+  // Node index → embedding row, -1 for ghosts. Identity on [0,m) by construction.
+  const rowOf = new Int32Array(n);
+  for (let i = 0; i < n; i++) rowOf[i] = nodes[i].isGhost ? -1 : i;
 
   // Flatten citation edges into the [src, dst, src, dst, …] form the
   // engine + fusion stage consume. The on-disk schema is documented
@@ -111,23 +142,29 @@ export async function produceReal(params = {}) {
   // imported-edges algorithm flips on materialisation. For fusion's
   // *symmetric* diffusion the direction doesn't matter, so we pass
   // the as-stored edges through here; consumers that care about
-  // direction flip themselves.
+  // direction flip themselves. Endpoints are remapped to contiguous toy
+  // indices; ghost endpoints are KEPT (they carry the A→ghost→B bridge),
+  // edges to nodes outside both sets are dropped.
   let citationEdges = null;
   if (citationDoc && Array.isArray(citationDoc.edges)) {
     const raw = citationDoc.edges;
-    const flat = new Array(raw.length * 2);
+    const flat = [];
+    const inRange = (x) => x >= 0 && x < remap.length;
     for (let k = 0; k < raw.length; k++) {
-      flat[2 * k]     = raw[k][0] | 0;
-      flat[2 * k + 1] = raw[k][1] | 0;
+      const sf = raw[k][0] | 0, tf = raw[k][1] | 0;
+      if (!inRange(sf) || !inRange(tf)) continue;
+      flat.push(remap[sf], remap[tf]);
     }
     citationEdges = flat;
   }
 
   return {
     method:    "real",
-    params:    { subset: subsetId, yearRange: nWithYear > 0 ? [yrMin, yrMax] : null },
+    params:    { subset: subsetId, yearRange: nWithYear > 0 ? [yrMin, yrMax] : null,
+                 nEmbedded: m, nGhost: n - m },
     nodes,
-    embedding: { d, data },
+    // Embedding covers the m embedded nodes only; ghosts have no row.
+    embedding: { d, data, m, rowOf },
     citationEdges,
     // No basePos — Layer 1.5's viz sub-stage will populate _basePos when
     // the user picks a real algorithm there.

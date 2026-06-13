@@ -8,6 +8,13 @@ the cluster A/B colour mode shows.
 Implementation in `app/src/dimred/graph-diffusion.js` plus the engine
 wiring in `app/src/ui/engine.js`'s `redimred()` / `recluster()` lanes.
 
+> **Ghost nodes:** metadata-less citation participants (`isGhost`) have no
+> anchor `X`, so they ride this stage as **no-self-anchor conduits** — excluded
+> from the `(1−α)·X` teleport term (`α_eff = 1`), they transmit a shared
+> neighbour's signal along `A→G←B` without injecting a fabricated anchor. This is
+> the stage where a shared ghost actually pulls two real nodes together. See
+> `doc/ghost-nodes.md`.
+
 ---
 
 ## 1. Why fusion exists

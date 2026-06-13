@@ -19,6 +19,14 @@
 // transformer embeddings (variance-preserving, not boundary-preserving)
 // — so it's tagged `family: "noise"` in the registry, never standalone
 // "compression" for the locked default at real-data scale.
+//
+// Ghost nodes (ghost-node spec §4.2): PCA fits the covariance + projects on
+// EXACTLY the rows it is handed. The engine feeds it the m EMBEDDED nodes only
+// (input.n = m, the dense m×d embedding block) — ghosts have no embedding row
+// and so get NO PCA row here; they acquire a position later at fusion. This is
+// deliberate: fitting on real-only avoids the covariance bias the research
+// flags in Q4. Output is m×K. No code branch is needed — feeding m rows is the
+// whole mechanism.
 
 import { mulberry32 } from "../rng.js";
 

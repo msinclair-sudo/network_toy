@@ -4,6 +4,15 @@ This document is the source of truth for how the clustering layer is
 shaped, what every algorithm must produce, and how downstream code
 interacts with it. Algorithms come and go; the contract should not.
 
+> **Ghost nodes:** `isGhost` (metadata-less) nodes are **excluded from the fit**
+> at every level — HDBSCAN runs on the `m` embedded nodes only, then each ghost
+> inherits the cluster of its nearest embedded citation neighbour (post-hoc). The
+> Optimise multi-layer sweep does the same (slice → fit → expand). So ghosts
+> never seed/split/merge a cluster directly; they only shape clusters *indirectly*
+> by having moved the real nodes during fusion. Helpers in
+> `clustering-cascade.js` (`buildGhostContext` / `runLevelOnEmbedded` /
+> `expandGhostResult`); full detail in `doc/ghost-nodes.md`.
+
 If you are about to add or modify a clustering algorithm, the rule is:
 
 1. The algorithm produces a `ClusterResult` object that satisfies the

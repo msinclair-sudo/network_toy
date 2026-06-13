@@ -14,7 +14,7 @@
 
 import { produceToy,  defaultToyParams  } from "./toy.js";
 import { produceReal, defaultRealParams, SUBSET_IDS, SUBSET_LABELS } from "./real.js";
-import { produceSqlite, defaultSqliteParams, DATASET_IDS, DATASET_LABELS } from "./sqlite.js";
+import { produceSqlite, defaultSqliteParams, DATASET_IDS, DATASET_LABELS, SQLITE_OPTIONS } from "./sqlite.js";
 
 export const DATA_SOURCES = [
   {
@@ -81,8 +81,10 @@ export const DATA_SOURCES = [
         key: "dataset",
         label: "Dataset",
         kind: "select",
-        options: DATASET_IDS.map(id => ({ value: id, label: DATASET_LABELS[id] || id })),
-        hint: "Which biblion corpus to load. Build new ones with `biblion advanced snapshot` + `biblion advanced embedding`, then add an entry to DATASETS in datasource/sqlite.js.",
+        // Live list: projects + discovered subsets ("<project>::<subset>"),
+        // populated by sqlite.js discoverSubsets() at load. Read fresh each open.
+        options: SQLITE_OPTIONS,
+        hint: "Pick a project or one of its named subsets. New projects: add a DATASETS entry in datasource/sqlite.js. New subsets: `biblion advanced subset make <name> …` + `embedding --subset <name>` (they appear here after reload).",
       },
     ],
   },

@@ -1,8 +1,14 @@
 # Citation-edge salvage over filtered-out nodes (design note)
 
-> **Status: parked idea, not built.** Captured 2026-05-31 while wiring the
-> SQLite (biblion) data source. Come back to this when the basic ingest +
-> SPECTER2 path is working and we look at the fusion layer.
+> **Status: superseded by ghost nodes (the *inclusion* approach).** This note
+> proposed *contraction* — elide the textless intermediate and synthesise an
+> `a→c` edge. We instead **kept** the textless endpoints as first-class
+> structure-only nodes (`isGhost`) that carry their real edges and are positioned
+> by citation topology. See `doc/ghost-nodes.md`. The contraction idea below is
+> retained for reference; it is not what shipped.
+>
+> *(Original status: parked idea, not built. Captured 2026-05-31 while wiring the
+> SQLite (biblion) data source.)*
 
 ## The problem
 
