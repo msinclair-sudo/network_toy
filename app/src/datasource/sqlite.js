@@ -1,37 +1,75 @@
-// Real-data source backed by a biblion SQLite corpus (built by tools/ingest/).
+// Real-data source backed by a biblion SQLite corpus, built by biblion itself:
+//   biblion advanced snapshot   -> <name>_snapshot.db + paper_index.json + ...
+//   biblion advanced embedding  -> embeddings.npy
+// The bundle lands next to the project DB at data/<name>/; the toy reaches it
+// because network_toy/data is a symlink to that repo-root data/ dir.
 //
 // Unlike real.js (a pile of JSON/npy files), this source reads a single
-// `corpus.sqlite` snapshot in the browser via sql.js (WASM) and queries it on
-// demand. The high-dim embedding stays a separate `.npy` (injected exactly like
-// real.js). The build pipeline is tools/ingest/{extract_corpus,embed_specter2}.
+// `*_snapshot.db` snapshot in the browser via sql.js (WASM) and queries it on
+// demand. The high-dim embedding stays a separate `.npy` (injected like real.js).
 //
 // The one hard invariant (enforced below): embeddings.npy row i ==
 // paper_index["i"] == the i-th row of the canonical node-set query against the
 // snapshot. We re-run that query here and FAIL LOUD if the db has drifted from
 // the embedding (e.g. the db was re-enriched without re-embedding).
 //
-// Files are served from the repo root by the static server, so /data/... and
-// /app/ resolve as siblings. sql.js itself comes from the importmap; its WASM
-// binary is fetched from esm.sh via locateFile.
+// SAFETY: the toy must only ever attach a *snapshot* DB, never a live project
+// DB (data/<name>/<name>.db is in the same dir, mid-write WAL, and attaching it
+// would break the row-alignment invariant). We require `snapshot` in the DB
+// filename and refuse anything else — see assertSnapshotPath().
 
 import initSqlJs from "sql.js";
 import { parseNpy } from "./npy.js";
 
-// Canonical node-set filter + order. MUST match tools/ingest/corpus_query.py —
-// the snapshot, the .npy and this query all have to agree on the node set.
+// Canonical node-set filter + order. MUST match biblion/snapshot.py
+// (NODE_SET_WHERE) — the snapshot, the .npy and this query all have to agree on
+// the node set.
 const NODE_SET_WHERE =
   "is_rejected = 0 AND is_stub = 0 AND title IS NOT NULL AND abstract IS NOT NULL";
 
 const DATASETS = {
   // id → {label, sqlitePath, embeddingsPath, indexPath}. Paths are absolute
-  // fetch URLs (static server rooted at the repo root).
+  // fetch URLs (static server rooted at network_toy/, whose data/ symlinks to
+  // the repo-root data/). One entry per biblion project; the DB MUST be the
+  // snapshot copy (…_snapshot.db), not the live <name>.db. Add a project by
+  // copying a block and running `biblion advanced snapshot` for it.
   biblion: {
     label: "biblion test corpus",
-    sqlitePath: "/data/biblion/corpus.sqlite",
+    sqlitePath: "/data/biblion/biblion_snapshot.db",
     embeddingsPath: "/data/biblion/embeddings.npy",
     indexPath: "/data/biblion/paper_index.json",
   },
+  fallworm: {
+    label: "fallworm",
+    sqlitePath: "/data/fallworm/fallworm_snapshot.db",
+    embeddingsPath: "/data/fallworm/embeddings.npy",
+    indexPath: "/data/fallworm/paper_index.json",
+  },
+  microalgae: {
+    label: "microalgae",
+    sqlitePath: "/data/microalgae/microalgae_snapshot.db",
+    embeddingsPath: "/data/microalgae/embeddings.npy",
+    indexPath: "/data/microalgae/paper_index.json",
+  },
+  PhD_proposal: {
+    label: "PhD proposal",
+    sqlitePath: "/data/PhD_proposal/PhD_proposal_snapshot.db",
+    embeddingsPath: "/data/PhD_proposal/embeddings.npy",
+    indexPath: "/data/PhD_proposal/paper_index.json",
+  },
 };
+
+// Guard: only ever open a snapshot DB. A live project DB (…/<name>.db) in the
+// same data dir is mid-write and would corrupt the read / break alignment.
+function assertSnapshotPath(sqlitePath) {
+  const base = sqlitePath.split("/").pop() || "";
+  if (!/snapshot/i.test(base)) {
+    throw new Error(
+      `[datasource:sqlite] refusing non-snapshot DB "${base}" — the toy only ` +
+      `attaches *_snapshot.db files (run \`biblion advanced snapshot\`).`
+    );
+  }
+}
 
 export const DATASET_IDS = Object.keys(DATASETS);
 export const DATASET_LABELS = Object.fromEntries(
@@ -70,6 +108,7 @@ export async function produceSqlite(params = {}) {
   const datasetId = params.dataset || "biblion";
   const ds = DATASETS[datasetId];
   if (!ds) throw new Error(`[datasource:sqlite] unknown dataset "${datasetId}"`);
+  assertSnapshotPath(ds.sqlitePath);
 
   const [SQL, embAb, dbAb, indexObj] = await Promise.all([
     getSQL(),
@@ -108,7 +147,7 @@ export async function produceSqlite(params = {}) {
   const nodeRes = db.exec(`SELECT id, year FROM papers WHERE ${NODE_SET_WHERE} ORDER BY id`);
   const rows = nodeRes.length ? nodeRes[0].values : [];
   if (rows.length !== n) {
-    throw new Error(`[datasource:sqlite] node-set size ${rows.length} != embedding rows ${n} (db drifted from embedding — re-run tools/ingest)`);
+    throw new Error(`[datasource:sqlite] node-set size ${rows.length} != embedding rows ${n} (db drifted from embedding — re-run \`biblion advanced snapshot\` + \`embedding\`)`);
   }
 
   // Year range → t ∈ [0,1] (newest = 1), matching real.js's FR time anchor.
@@ -128,7 +167,7 @@ export async function produceSqlite(params = {}) {
     const id = rows[i][0];
     const y = rows[i][1];
     if (id !== idByRow[i]) {
-      throw new Error(`[datasource:sqlite] row ${i}: snapshot id ${id} != paper_index ${idByRow[i]} (embedding/db drift — re-run tools/ingest)`);
+      throw new Error(`[datasource:sqlite] row ${i}: snapshot id ${id} != paper_index ${idByRow[i]} (embedding/db drift — re-run \`biblion advanced snapshot\` + \`embedding\`)`);
     }
     rowById.set(id, i);
     let t = 0, year = null;

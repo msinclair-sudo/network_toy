@@ -151,8 +151,8 @@ The canonical node set is the `papers` rows passing
 ordered by `id`. `produceSqlite` re-runs that query, compares row-for-row
 against `paper_index.json`, and **fails loud** if they disagree — that's
 how it catches an embedding/db drift (e.g. the db was re-enriched without
-re-embedding). Rebuild via `tools/ingest/{extract_corpus,embed_specter2}`
-to re-align.
+re-embedding). Rebuild via `biblion advanced snapshot` + `biblion advanced
+embedding` to re-align.
 
 ### Per-node text (the labelling unlock)
 

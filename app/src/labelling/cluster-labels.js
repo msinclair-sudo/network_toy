@@ -71,6 +71,12 @@ const METHODS = {
     available: hasText,
     run: runKeyBERT,
   },
+  stratified: {
+    id: "stratified",
+    label: "Stratified",
+    available: hasText,
+    run: runStratified,
+  },
 };
 
 // List the label methods. Pass a ctx ({embedding, nodes, getText?}) to also
@@ -301,6 +307,133 @@ function runKeyBERT(cr, ctx, membersArg) {
   return out;
 }
 
+// STRATIFIED labels — describe a cluster at several specificity altitudes at
+// once instead of taking the top-N from one slice. The "grain" is a term's
+// cluster document-frequency df = #clusters containing it; we bucket candidate
+// terms into five bands from general ("anchor", in many clusters — places the
+// cluster in the corpus) down to "signature" (df==1, unique to this cluster —
+// what it actually holds), and take the top STRAT_PER_BAND of each by the same
+// class-TF-IDF relevance the other text methods use.
+//
+// The band edges are NOT fixed thresholds — they're read off this dataset's own
+// df distribution so the slices transfer across corpora. df is Zipfian (most
+// terms are df==1, and even df>=2 piles on 2), so the informative distinctions
+// live in the sparse upper tail and that axis is logarithmic: we log-space the
+// four non-signature bands over [2 .. maxDf]. See scratch/label_overlap/ for the
+// analysis that motivated this (quantiles collapse, flat ratios don't transfer).
+const STRAT_NGRAM_MAX = 2;
+const STRAT_PER_BAND = 3;
+const STRAT_BANDS = ["anchor", "broad", "mid", "specific", "signature"];
+
+// Common non-English (Romance) function words that survive the English-only
+// STOPWORDS list and otherwise pollute the df==1 signature band in multilingual
+// corpora (e.g. fallworm's Portuguese abstracts → "para", "foram", "uma").
+const STRAT_MULTI_STOP = new Set((
+  "para com que uma foram dos das por foi mas como este esta sao ser son del " +
+  "las los una con fue por sus est une des pour avec sur dans nel della delle"
+).split(/\s+/));
+
+function runStratified(cr, ctx, membersArg) {
+  const members = membersArg || membersOf(cr);
+  const nClusters = cr.clusters.length;
+
+  // Per-cluster phrase frequencies (1..STRAT_NGRAM_MAX grams).
+  const tf = new Array(nClusters);
+  for (let c = 0; c < nClusters; c++) {
+    const counts = new Map();
+    for (const i of members[c]) {
+      const text = ctx.getText(ctx.nodes[i] ? ctx.nodes[i].id : i);
+      if (!text) continue;
+      for (const ph of ngrams(tokenize(text), STRAT_NGRAM_MAX)) {
+        counts.set(ph, (counts.get(ph) || 0) + 1);
+      }
+    }
+    tf[c] = counts;
+  }
+
+  // Global cluster document-frequency, then the dataset-adaptive band edges.
+  const df = new Map();
+  for (let c = 0; c < nClusters; c++) {
+    for (const ph of tf[c].keys()) df.set(ph, (df.get(ph) || 0) + 1);
+  }
+  const edges = bandEdges(df);
+
+  const out = new Array(nClusters);
+  for (let c = 0; c < nClusters; c++) {
+    let total = 0;
+    for (const v of tf[c].values()) total += v;
+    total = total || 1;
+
+    const scored = [];
+    for (const [ph, count] of tf[c]) {
+      const dfv = df.get(ph) || 1;
+      const tfv = count / total;
+      const idf = Math.log(1 + nClusters / (1 + dfv));
+      const lenBoost = 1 + 0.15 * (ph.split(" ").length - 1);
+      scored.push({ term: ph, score: tfv * idf * lenBoost, df: dfv });
+    }
+    scored.sort((a, b) => b.score - a.score);
+
+    const bands = { anchor: [], broad: [], mid: [], specific: [], signature: [] };
+    for (const cand of scored) {
+      const b = bandOf(cand.df, edges);
+      const bucket = bands[b];
+      if (bucket.length >= STRAT_PER_BAND) continue;
+      const words = cand.term.split(" ");
+      // within a band, skip a unigram already covered by a chosen phrase (avoids
+      // "soil" next to "soil microbial"). Dedup is per-band, not global — a term
+      // recurring across bands is the point: general view vs. specific view.
+      if (words.length === 1 &&
+          bucket.some(t => t.term.split(" ").includes(words[0]))) continue;
+      // clean only the noisy df==1 tail; keep gene/strain codes (real signatures)
+      if (b === "signature" && looksJunk(cand.term)) continue;
+      bucket.push({ term: cand.term, df: cand.df, score: cand.score });
+    }
+
+    // Flat band-ordered term list for combine() / formatLabel and any consumer
+    // that reads `.terms` (general → specific).
+    const terms = [];
+    for (const b of STRAT_BANDS) for (const t of bands[b]) terms.push(t.term);
+    out[c] = { bands, terms, edges };
+  }
+  return out;
+}
+
+// Three df cut points (tops of specific|mid|broad; anchor is everything above),
+// log-spaced over [2 .. maxDf]. signature (df==1) is handled separately.
+function bandEdges(df) {
+  let maxdf = 2;
+  for (const v of df.values()) if (v > maxdf) maxdf = v;
+  const raw = [Math.pow(maxdf, 1 / 4), Math.pow(maxdf, 2 / 4), Math.pow(maxdf, 3 / 4)];
+  const edges = [];
+  let prev = 1;
+  for (const x of raw) {
+    const v = Math.max(Math.round(x), prev + 1, 2);   // strictly increasing, >= 2
+    edges.push(v);
+    prev = v;
+  }
+  return edges;
+}
+
+function bandOf(dfv, edges) {
+  if (dfv === 1) return "signature";
+  if (dfv <= edges[0]) return "specific";
+  if (dfv <= edges[1]) return "mid";
+  if (dfv <= edges[2]) return "broad";
+  return "anchor";
+}
+
+// Cheap signature-tail cleaner. Conservative on purpose: drops pure numbers and
+// foreign function words, but KEEPS code-like tokens (pgr5, ndh, faw) because in
+// this domain those are often the real distinguishing gene/strain names.
+function looksJunk(term) {
+  for (const w of term.split(" ")) {
+    if (/^\d+$/.test(w)) return true;            // pure number / year
+    if (STRAT_MULTI_STOP.has(w)) return true;    // non-English function word
+  }
+  return false;
+}
+
 // Maximal-marginal-relevance pick from a relevance-sorted candidate pool.
 // Diversity penalty = max Jaccard token-overlap with an already-picked phrase.
 function mmrSelect(pool, k) {
@@ -357,7 +490,7 @@ function hasText(ctx) {
 function reasonFor(id, ctx) {
   if (id === "representative") return "needs an embedding";
   if (id === "year")          return "no node has a year";
-  if (id === "cTfidf" || id === "tfidf" || id === "keybert") {
+  if (id === "cTfidf" || id === "tfidf" || id === "keybert" || id === "stratified") {
     return typeof ctx.getText !== "function"
       ? "needs per-node text — titles/abstracts are not materialised in this dataset"
       : "no member text found";
@@ -386,6 +519,16 @@ function combine(byMethod) {
   // KeyBERT first — diverse keyphrases read as the most informative label.
   if (byMethod.keybert && byMethod.keybert.terms && byMethod.keybert.terms.length) {
     return byMethod.keybert.terms.join(" · ");
+  }
+  // Stratified: a compact one-liner spanning the gradient — top anchor (the
+  // grouping) + top signature/specific (what's inside).
+  if (byMethod.stratified && byMethod.stratified.bands) {
+    const b = byMethod.stratified.bands;
+    const head = (b.anchor[0] || b.broad[0] || {}).term;
+    const tail = (b.signature[0] || b.specific[0] || b.mid[0] || {}).term;
+    const combo = [head, tail].filter(Boolean).join(" · ");
+    if (combo) return combo;
+    if (byMethod.stratified.terms.length) return byMethod.stratified.terms.slice(0, 3).join(" · ");
   }
   if (byMethod.cTfidf && byMethod.cTfidf.terms && byMethod.cTfidf.terms.length) {
     return byMethod.cTfidf.terms.join(" · ");

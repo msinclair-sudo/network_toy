@@ -73,7 +73,7 @@ export const DATA_SOURCES = [
   {
     id: "sqlite",
     label: "Real data (biblion corpus)",
-    description: "Loads a biblion SQLite corpus (papers + citations) built by tools/ingest/, with SPECTER2 embeddings injected from a sibling .npy. Read in-browser via sql.js — titles/abstracts/authors are queried on demand, which unlocks c-TF-IDF / TF-IDF labelling and real titles. Switching to this drops the toy/real data; only one source is loaded at a time. The viewer stays empty until you pick a 3-d visualisation reduction in the dim-reduction layer.",
+    description: "Loads a biblion SQLite corpus (papers + citations) built by `biblion advanced snapshot` + `biblion advanced embedding`, with SPECTER2 embeddings injected from a sibling .npy. Read in-browser via sql.js — titles/abstracts/authors are queried on demand, which unlocks c-TF-IDF / TF-IDF labelling and real titles. Switching to this drops the toy/real data; only one source is loaded at a time. The viewer stays empty until you pick a 3-d visualisation reduction in the dim-reduction layer.",
     defaultParams: defaultSqliteParams,
     produce: (params) => produceSqlite(params),
     modalSchema: [
@@ -82,7 +82,7 @@ export const DATA_SOURCES = [
         label: "Dataset",
         kind: "select",
         options: DATASET_IDS.map(id => ({ value: id, label: DATASET_LABELS[id] || id })),
-        hint: "Which biblion corpus to load. Build new ones with tools/ingest/extract_corpus.py + embed_specter2.py, then add an entry to DATASETS in datasource/sqlite.js.",
+        hint: "Which biblion corpus to load. Build new ones with `biblion advanced snapshot` + `biblion advanced embedding`, then add an entry to DATASETS in datasource/sqlite.js.",
       },
     ],
   },

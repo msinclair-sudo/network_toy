@@ -2,8 +2,8 @@
 //
 // Parses the magic + header and returns the raw Float32Array payload along
 // with its shape. Only '<f4' (little-endian float32), 2-D C-order is
-// supported — that's what tools/ingest/embed_specter2.py + the old
-// step02_embeddings.py write. We'll grow this if other dtypes ever show up.
+// supported — that's what `biblion advanced embedding` (biblion/embed.py) + the
+// old step02_embeddings.py write. We'll grow this if other dtypes ever show up.
 //
 // (Originally lived inline in real.js; lifted here so sqlite.js reuses it.)
 

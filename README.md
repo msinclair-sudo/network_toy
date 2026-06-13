@@ -239,7 +239,11 @@ Two panels consume it (add them from any panel slot's `+`):
   dominant parent's score (children of well-scored parents only), with
   bridges in their own section. Scores persist with the project. Cluster
   labels come from a multi-method module (representative paper + year on
-  real data; TF-IDF / c-TF-IDF light up once paper titles are materialised).
+  real data; the text methods — TF-IDF, c-TF-IDF, KeyBERT, and **Stratified**
+  multi-resolution labels — light up once paper titles are materialised, e.g.
+  via the SQLite biblion source). Stratified describes each cluster across five
+  generality bands at once (anchor → signature), with band edges fitted to the
+  dataset's own term-frequency distribution.
 
 Full design + math in `doc/multi-level.md`.
 

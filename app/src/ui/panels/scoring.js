@@ -308,6 +308,14 @@ function formatLabel(v) {
       return v.min === v.max ? `${v.min}` : `${v.min}–${v.max}`;
     }
     if (v.paperId) return String(v.paperId);
+    // stratified: render each populated band as "band: t1, t2, t3".
+    if (v.bands) {
+      return ["anchor", "broad", "mid", "specific", "signature"]
+        .map(b => (v.bands[b] && v.bands[b].length)
+          ? `${b}: ${v.bands[b].map(t => t.term).join(", ")}` : null)
+        .filter(Boolean)
+        .join("  ·  ");
+    }
     if (v.term || v.terms) return String(v.term || (v.terms || []).join(", "));
   }
   return String(v);
