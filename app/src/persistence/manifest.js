@@ -9,7 +9,8 @@
 // SCHEMA_VERSION 2: adds state._basePos2d (2D viewer input) +
 //   layerParams.dimred.viz2d sub-stage. Files saved under v1 don't
 //   carry these fields, so loader refuses (per strict-refusal rule).
-export const SCHEMA_VERSION = 2;
+// SCHEMA_VERSION 3: adds state.cart (cluster→cart→biblion-subset round-trip).
+export const SCHEMA_VERSION = 3;
 
 // Build the manifest header written into the zip. Caller fills in
 // the contents list (paths inside the archive) since it has the

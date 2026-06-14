@@ -21,8 +21,13 @@
 //   {type: "node",    id: nodeId}
 //   {type: "tBin",    binIdx: i}        (no viewer effect yet)
 
-import { getState, setSelection, setTabConfig, setBridgeConfig } from "../state.js";
+import {
+  getState, setSelection, setTabConfig, setBridgeConfig,
+  addToCart, clearCart,
+} from "../state.js";
 import { recomputeBridgeAnalysis } from "../engine.js";
+import { getIdByRow } from "../../datasource/sqlite.js";
+import { downloadText } from "../../export/cluster-export.js";
 import {
   tGradient, inDegGradient, boundaryScoreGradient,
   T_STOPS, INDEG_STOPS, BOUNDARY_STOPS, cssLinearGradient,
@@ -67,6 +72,43 @@ export function mount(container, _state, config = {}, tabContext = null) {
   headBar.appendChild(statusEl);
 
   root.appendChild(headBar);
+
+  // ── cart bar ────────────────────────────────────────────────────
+  // Minimal commit surface for the cluster→cart→biblion-subset round-trip.
+  // Add the selected cluster's papers to the cart, then export ids as JSON to
+  // feed `biblion advanced subset make <name> --ids-file <file>`. This is the
+  // temporary home until the (deferred) cart data-wrangle panel owns it.
+  const cartBar = document.createElement("div");
+  cartBar.className = "node-table-cartbar";
+
+  const cartAddBtn = document.createElement("button");
+  cartAddBtn.className = "node-table-cart-btn";
+  cartAddBtn.textContent = "+ Add cluster to cart";
+  cartBar.appendChild(cartAddBtn);
+
+  const cartCountEl = document.createElement("span");
+  cartCountEl.className = "node-table-cart-count";
+  cartBar.appendChild(cartCountEl);
+
+  const cartExportBtn = document.createElement("button");
+  cartExportBtn.className = "node-table-cart-btn";
+  cartExportBtn.textContent = "Export cart ids";
+  cartBar.appendChild(cartExportBtn);
+
+  const cartClearBtn = document.createElement("button");
+  cartClearBtn.className = "node-table-cart-btn";
+  cartClearBtn.textContent = "Clear";
+  cartBar.appendChild(cartClearBtn);
+
+  root.appendChild(cartBar);
+
+  cartAddBtn.addEventListener("click", () => {
+    const added = addSelectedClusterToCart(getState());
+    if (added != null) cartAddBtn.textContent = `+ Added ${added}`;
+    setTimeout(() => { cartAddBtn.textContent = cartAddLabel(getState()); }, 1200);
+  });
+  cartExportBtn.addEventListener("click", () => exportCart(getState()));
+  cartClearBtn.addEventListener("click", () => clearCart());
 
   // ── bridge pair selector (visible only for bridge / boundaryScore) ──
   const pairBar = document.createElement("div");
@@ -163,6 +205,54 @@ export function mount(container, _state, config = {}, tabContext = null) {
     renderHeader(data.columns);
     renderRows(data.columns, data.rows, data.selectionKey);
     footer.textContent = `${data.rows.length} ${data.unitLabel || "rows"}`;
+    refreshCartBar(s);
+  }
+
+  // ── cart bar helpers ────────────────────────────────────────────
+  function selectedCluster(s) {
+    const sel = s.selection;
+    if (!sel || sel.type !== "cluster") return null;
+    const lvl = (s.clusterLevels || [])[sel.level];
+    if (!lvl || !lvl.clusterResult) return null;
+    return { level: sel.level, id: sel.id, cr: lvl.clusterResult };
+  }
+
+  function cartAddLabel(s) {
+    const c = selectedCluster(s);
+    return c ? `+ Add L${c.level}·c${c.id} to cart` : "+ Add cluster to cart";
+  }
+
+  function refreshCartBar(s) {
+    const n = (s.cart || []).length;
+    cartCountEl.textContent = n ? `cart: ${n}` : "cart empty";
+    cartExportBtn.disabled = n === 0;
+    cartClearBtn.disabled = n === 0;
+    const c = selectedCluster(s);
+    cartAddBtn.disabled = !c;
+    cartAddBtn.textContent = cartAddLabel(s);
+  }
+
+  // Gather the selected cluster's members → cart. Returns the count added, or
+  // null if no cluster is selected.
+  function addSelectedClusterToCart(s) {
+    const c = selectedCluster(s);
+    if (!c) return null;
+    const source = `L${c.level}·c${c.id}`;
+    const items = [];
+    const nc = c.cr.nodeCluster;
+    for (let nodeId = 0; nodeId < nc.length; nodeId++) {
+      if (nc[nodeId] !== c.id) continue;
+      const paperId = getIdByRow(nodeId);
+      if (paperId != null) items.push({ paperId, nodeId, source });
+    }
+    return addToCart(items);
+  }
+
+  function exportCart(s) {
+    const cart = s.cart || [];
+    if (cart.length === 0) return;
+    const payload = { papers: cart.map(it => ({ id: it.paperId, source: it.source })) };
+    downloadText(JSON.stringify(payload, null, 2), "cart-ids.json", "application/json");
   }
 
   function rebuildPairBar(s, effective) {
@@ -370,6 +460,7 @@ export function mount(container, _state, config = {}, tabContext = null) {
       const isSel = sel && selectionKey && matched && selectionKey(matched, sel);
       tr.classList.toggle("selected", !!isSel);
     }
+    refreshCartBar(s);
   }
 }
 

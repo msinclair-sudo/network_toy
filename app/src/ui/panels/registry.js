@@ -22,6 +22,7 @@ import * as ExportRis              from "./export-ris.js";
 import * as CrossCluster           from "./cross-cluster.js";
 import * as NodeDisplacement       from "./node-displacement.js";
 import * as NextSteps              from "./next-steps.js";
+import * as Cart                   from "./cart.js";
 
 const entries = new Map();
 
@@ -61,6 +62,7 @@ register(ExportRis);
 register(CrossCluster);
 register(NodeDisplacement);
 register(NextSteps);
+register(Cart);
 
 // Future entries (mounted as their modules come online):
 // register(await import("./cluster-tree.js"));

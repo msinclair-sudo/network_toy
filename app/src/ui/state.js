@@ -211,6 +211,13 @@ const state = {
     },
   },
   selection: { type: null, id: null },
+  // ── cart ─────────────────────────────────────────────────────
+  // Papers collected (from clusters / selections) for export to a biblion
+  // subset. Each item: { paperId, nodeId, source } (source = provenance, e.g.
+  // "L2·c5"). Deduped by paperId. Identity + provenance only — the (deferred)
+  // cart panel joins richer per-node data at render time, so nothing heavy is
+  // stored here. Persisted (SCHEMA_VERSION 3).
+  cart: [],
   filter: null,
   blend: 0.0,
   // Fusion-comparison slider (Layer 1.5 A/B). Interpolates basePos
@@ -409,6 +416,30 @@ export function update(patch) {
 export function subscribe(fn) {
   subscribers.add(fn);
   return () => subscribers.delete(fn);
+}
+
+// ── Cart helpers ────────────────────────────────────────────────────
+// Append items (each { paperId, nodeId, source }), keeping the first occurrence
+// of each paperId — re-adding a cluster that overlaps an earlier one is a no-op
+// for the shared papers, and earlier provenance wins.
+export function addToCart(items) {
+  const seen = new Set(state.cart.map(it => it.paperId));
+  const fresh = [];
+  for (const it of items) {
+    if (it.paperId == null || seen.has(it.paperId)) continue;
+    seen.add(it.paperId);
+    fresh.push(it);
+  }
+  if (fresh.length) update({ cart: [...state.cart, ...fresh] });
+  return fresh.length;
+}
+
+export function removeFromCart(paperId) {
+  update({ cart: state.cart.filter(it => it.paperId !== paperId) });
+}
+
+export function clearCart() {
+  if (state.cart.length) update({ cart: [] });
 }
 
 // ── Panel/tab helpers ──────────────────────────────────────────────

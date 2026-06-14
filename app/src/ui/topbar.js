@@ -7,7 +7,10 @@
 // Most menu items open modals; in this slice they're stubs
 // (console.log placeholder). Modals get built in slice 5.
 
-import { getState, subscribe, setToyParam, setProjectName, update } from "./state.js";
+import {
+  getState, subscribe, setProjectName, update,
+  addTab, setActiveTab,
+} from "./state.js";
 import { serialiseState }   from "../persistence/serialise.js";
 import { deserialiseFile }  from "../persistence/deserialise.js";
 import { enqueueJob }       from "./queue.js";
@@ -66,7 +69,7 @@ export function mountTopbar() {
   spacer.className = "topbar-spacer";
   root.appendChild(spacer);
 
-  root.appendChild(renderSeed());
+  root.appendChild(renderCart());
 
   // Click-outside handler closes any open menu.
   document.addEventListener("click", (e) => {
@@ -124,34 +127,42 @@ function closeAllMenus() {
   });
 }
 
-function renderSeed() {
-  const wrap = document.createElement("div");
-  wrap.className = "topbar-seed";
+// Global cart button (top-right): opens the cart panel and shows a live count
+// badge of how many papers are currently in the cart.
+function renderCart() {
+  const btn = document.createElement("button");
+  btn.className = "topbar-cart";
+  btn.title = "Open cart";
 
   const label = document.createElement("span");
-  label.textContent = "seed:";
-  wrap.appendChild(label);
+  label.textContent = "Cart";
+  btn.appendChild(label);
 
-  const input = document.createElement("input");
-  input.type = "number";
-  // Seed is toy-only; real-data sources don't have one. setToyParam()
-  // always targets the toy config regardless of active mode, so this
-  // input keeps editing the toy generator's seed even while the user
-  // is in real mode.
-  input.value = String(getState().dataSource.configs.toy.seed);
-  input.addEventListener("change", (e) => {
-    const v = parseInt(e.target.value, 10);
-    if (Number.isFinite(v)) setToyParam("seed", v);
-  });
-  wrap.appendChild(input);
+  const badge = document.createElement("span");
+  badge.className = "topbar-cart-badge";
+  btn.appendChild(badge);
 
-  // Keep seed input in sync if state changes elsewhere.
-  subscribe((state) => {
-    const v = String(state.dataSource.configs.toy.seed);
-    if (input.value !== v) input.value = v;
-  });
+  const paint = (state) => {
+    const n = (state.cart || []).length;
+    badge.textContent = String(n);
+    btn.classList.toggle("empty", n === 0);
+  };
+  paint(getState());
+  subscribe(paint);
 
-  return wrap;
+  btn.addEventListener("click", openCartPanel);
+  return btn;
+}
+
+// Open the (singleton) cart panel, or focus it if it's already open somewhere.
+function openCartPanel() {
+  const s = getState();
+  for (const slot of Object.keys(s.panels)) {
+    const existing = s.panels[slot].tabs.find(t => t.type === "cart");
+    if (existing) { setActiveTab(slot, existing.id); return; }
+  }
+  // Default to the full-width bottom slot — the cart table is wide.
+  addTab("bottom", "cart", {});
 }
 
 function stub(id) {

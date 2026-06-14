@@ -18,8 +18,13 @@
 // would break the row-alignment invariant). We require `snapshot` in the DB
 // filename and refuse anything else — see assertSnapshotPath().
 
-import initSqlJs from "sql.js";
 import { parseNpy } from "./npy.js";
+// sql.js (the WASM engine) is lazy-loaded inside getSQL() rather than imported
+// at module top level. Merely importing this module — for DATASETS, getNodeText,
+// hasSqliteText, getIdByRow — must NOT pull the WASM lib, so the datasource (and
+// everything that transitively imports it: node-table, layer-descriptors,
+// next-steps-rules) stays importable under plain Node for the pure-logic unit
+// tests. In the browser the importmap resolves the dynamic import the same way.
 
 // Canonical node-set filter + order. MUST match biblion/snapshot.py
 // (NODE_SET_WHERE) — the snapshot, the .npy and this query all have to agree on
@@ -135,9 +140,11 @@ export const sqliteModalSchema = {
 let _sqlPromise = null;
 function getSQL() {
   if (!_sqlPromise) {
-    _sqlPromise = initSqlJs({
-      locateFile: (f) => `https://esm.sh/sql.js@1.10.3/dist/${f}`,
-    });
+    _sqlPromise = import("sql.js").then((m) =>
+      (m.default || m)({
+        locateFile: (f) => `https://esm.sh/sql.js@1.10.3/dist/${f}`,
+      })
+    );
   }
   return _sqlPromise;
 }
@@ -330,6 +337,15 @@ export async function produceSqlite(params = {}) {
     citationEdges,
     // No basePos — Layer 1.5's viz sub-stage populates _basePos on demand.
   };
+}
+
+// Node index → papers.id, the cheap path (no metadata query). For bulk
+// node→paperId mapping (e.g. gathering a cluster's members into the cart);
+// getNodeRecord stays the full-record path. Null if no corpus / row missing.
+export function getIdByRow(nodeId) {
+  if (!_handle) return null;
+  const paperId = _handle.idByRow[nodeId];
+  return paperId == null ? null : paperId;
 }
 
 // On-demand per-node text for the labelling ctx (c-TF-IDF / TF-IDF).

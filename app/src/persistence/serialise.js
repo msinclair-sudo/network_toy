@@ -29,6 +29,7 @@ const PASS_THROUGH_KEYS = [
   "layerStates",
   "panels",
   "selection",
+  "cart",
   "filter",
   "blend",
   "fusionBlend",
