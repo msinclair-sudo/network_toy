@@ -241,10 +241,31 @@ export function mount(container, _state, config = {}) {
       labWrap.appendChild(li);
     } else {
       for (const mid of methodIds) {
-        const li = document.createElement("div");
-        li.className = "scoring-label-bullet";
-        li.textContent = `• ${METHOD_LABEL[mid] || mid}: ${formatLabel(byMethod[mid])}`;
-        labWrap.appendChild(li);
+        const v = byMethod[mid];
+        const name = METHOD_LABEL[mid] || mid;
+        // banded (stratified) labels render one band per line for readability.
+        if (v && v.bands) {
+          const wrap = document.createElement("div");
+          wrap.className = "scoring-label-bullet stratified";
+          const head = document.createElement("div");
+          head.className = "scoring-label-method";
+          head.textContent = `• ${name}:`;
+          wrap.appendChild(head);
+          for (const b of ["anchor", "broad", "mid", "specific", "signature"]) {
+            const arr = v.bands[b];
+            if (!arr || !arr.length) continue;
+            const line = document.createElement("div");
+            line.className = "scoring-label-band";
+            line.textContent = `${b}: ${arr.map(t => t.term).join(", ")}`;
+            wrap.appendChild(line);
+          }
+          labWrap.appendChild(wrap);
+        } else {
+          const li = document.createElement("div");
+          li.className = "scoring-label-bullet";
+          li.textContent = `• ${name}: ${formatLabel(v)}`;
+          labWrap.appendChild(li);
+        }
       }
     }
     left.appendChild(labWrap);

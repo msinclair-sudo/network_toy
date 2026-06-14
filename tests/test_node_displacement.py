@@ -1,57 +1,12 @@
-"""Node displacement — pre→post fusion movement (the cross-branch payoff).
+"""Node displacement — card / colour / next-steps WIRING.
 
-Aligns the pre layout onto the post layout (Procrustes) then takes per-node
-Euclidean distance: papers whose citation context disagrees with their
-semantic position move the most. Pure compute + the card/colour/panel wiring.
+The pure compute (eval/node-displacement.js: Procrustes-align pre onto post,
+per-node distance) moved to the Node unit tier
+(tests/unit/node-displacement.test.mjs). These remaining tests exercise the
+card auto-spawn + refId wiring + colour-mode/next-steps surfacing, which import
+layer-descriptors / next-steps-rules (engine → esm.sh UMAP) and so stay on
+Playwright.
 """
-
-
-def test_displacement_compute_ranks_the_mover(clean_page):
-    """pre == post for all nodes except one MODERATELY shifted → after the
-    global Procrustes alignment that node ranks first. (A realistic shift, not
-    a wild outlier — an outlier 10×+ the cloud diameter would smear the rigid
-    fit across all nodes, which is expected Procrustes behaviour.)"""
-    out = clean_page.evaluate(r'''async () => {
-        const m = await import("/app/src/eval/node-displacement.js");
-        const n = 8;
-        // post: a cube of side 2 (diameter ~3.5).
-        const post = Float32Array.from([
-            0,0,0, 2,0,0, 0,2,0, 2,2,0, 0,0,2, 2,0,2, 0,2,2, 2,2,2,
-        ]);
-        // pre = post but node 3 moved ~1.1 units (modest vs cloud size).
-        const pre = post.slice();
-        pre[9] = 2 + 0.8; pre[10] = 2 + 0.8;   // node 3 (x,y)
-        const res = m.computeDisplacement(pre, post, n);
-        const others = res.ranked.slice(1).map(r => r.dist);
-        return {
-            ok: !!res,
-            topId: res.ranked[0].id,
-            topDist: res.ranked[0].dist,
-            maxOther: Math.max(...others),
-            correlation: res.correlation,
-            distLen: res.dist.length,
-        };
-    }''')
-    assert out["ok"] is True
-    assert out["topId"] == 3                       # the displaced node ranks first
-    assert out["topDist"] > out["maxOther"] * 2    # clearly above the rest
-    assert out["correlation"] > 0.9                # good rigid fit (one modest mover)
-    assert out["distLen"] == 8
-
-
-def test_displacement_null_on_bad_input(clean_page):
-    """Missing / wrong-length layouts → null (the card surfaces a message)."""
-    out = clean_page.evaluate(r'''async () => {
-        const m = await import("/app/src/eval/node-displacement.js");
-        return {
-            noPre:  m.computeDisplacement(null, new Float32Array(9), 3),
-            shortPost: m.computeDisplacement(new Float32Array(9), new Float32Array(6), 3),
-            zero:   m.computeDisplacement(new Float32Array(0), new Float32Array(0), 0),
-        };
-    }''')
-    assert out["noPre"] is None
-    assert out["shortPost"] is None
-    assert out["zero"] is None
 
 
 def test_displacement_autospawns_after_fusion_fork(clean_page):

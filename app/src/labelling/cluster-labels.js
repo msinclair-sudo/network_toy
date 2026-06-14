@@ -71,11 +71,30 @@ const METHODS = {
     available: hasText,
     run: runKeyBERT,
   },
-  stratified: {
-    id: "stratified",
-    label: "Stratified",
+  // Stratified (banded) variants — same scoring as the flat method above, but
+  // the terms are sampled across df-specificity bands (anchor → signature)
+  // instead of taken from one slice. One per base scorer, since which relevance
+  // the bands are built from matters (KeyBERT's MMR diversity ≠ plain TF-IDF).
+  cTfidfStratified: {
+    id: "cTfidfStratified",
+    label: "c-TF-IDF (banded)",
     available: hasText,
-    run: runStratified,
+    run: (cr, ctx, members) =>
+      stratifiedLabels(cr, ctx, members, { ngramMax: 1, lenBoost: false, mmr: false }),
+  },
+  tfidfStratified: {
+    id: "tfidfStratified",
+    label: "TF-IDF (banded)",
+    available: hasText,
+    run: (cr, ctx, members) =>
+      stratifiedLabels(cr, ctx, members, { ngramMax: 1, lenBoost: false, mmr: false }),
+  },
+  keybertStratified: {
+    id: "keybertStratified",
+    label: "KeyBERT (banded)",
+    available: hasText,
+    run: (cr, ctx, members) =>
+      stratifiedLabels(cr, ctx, members, { ngramMax: 2, lenBoost: true, mmr: true }),
   },
 };
 
@@ -321,7 +340,6 @@ function runKeyBERT(cr, ctx, membersArg) {
 // live in the sparse upper tail and that axis is logarithmic: we log-space the
 // four non-signature bands over [2 .. maxDf]. See scratch/label_overlap/ for the
 // analysis that motivated this (quantiles collapse, flat ratios don't transfer).
-const STRAT_NGRAM_MAX = 2;
 const STRAT_PER_BAND = 3;
 const STRAT_BANDS = ["anchor", "broad", "mid", "specific", "signature"];
 
@@ -333,18 +351,24 @@ const STRAT_MULTI_STOP = new Set((
   "las los una con fue por sus est une des pour avec sur dans nel della delle"
 ).split(/\s+/));
 
-function runStratified(cr, ctx, membersArg) {
+// Banding core, shared by every "(banded)" method. `opts` selects the base
+// scorer: ngramMax (1 = TF-IDF unigrams, 2 = KeyBERT 1–2-grams), lenBoost (give
+// longer phrases a mild edge, KeyBERT-style), and mmr (diversify within each
+// band with maximal-marginal-relevance, KeyBERT-style — otherwise take the top
+// per band by score with light unigram-in-phrase dedup).
+function stratifiedLabels(cr, ctx, membersArg, opts) {
+  const { ngramMax = 2, lenBoost = true, mmr = false } = opts || {};
   const members = membersArg || membersOf(cr);
   const nClusters = cr.clusters.length;
 
-  // Per-cluster phrase frequencies (1..STRAT_NGRAM_MAX grams).
+  // Per-cluster phrase frequencies (1..ngramMax grams).
   const tf = new Array(nClusters);
   for (let c = 0; c < nClusters; c++) {
     const counts = new Map();
     for (const i of members[c]) {
       const text = ctx.getText(ctx.nodes[i] ? ctx.nodes[i].id : i);
       if (!text) continue;
-      for (const ph of ngrams(tokenize(text), STRAT_NGRAM_MAX)) {
+      for (const ph of ngrams(tokenize(text), ngramMax)) {
         counts.set(ph, (counts.get(ph) || 0) + 1);
       }
     }
@@ -364,36 +388,44 @@ function runStratified(cr, ctx, membersArg) {
     for (const v of tf[c].values()) total += v;
     total = total || 1;
 
+    // Score every candidate, then split into bands by its global df.
+    const perBand = { anchor: [], broad: [], mid: [], specific: [], signature: [] };
     const scored = [];
     for (const [ph, count] of tf[c]) {
       const dfv = df.get(ph) || 1;
       const tfv = count / total;
       const idf = Math.log(1 + nClusters / (1 + dfv));
-      const lenBoost = 1 + 0.15 * (ph.split(" ").length - 1);
-      scored.push({ term: ph, score: tfv * idf * lenBoost, df: dfv });
+      const boost = lenBoost ? 1 + 0.15 * (ph.split(" ").length - 1) : 1;
+      scored.push({ term: ph, score: tfv * idf * boost, df: dfv });
     }
     scored.sort((a, b) => b.score - a.score);
+    for (const cand of scored) perBand[bandOf(cand.df, edges)].push(cand);
 
-    const bands = { anchor: [], broad: [], mid: [], specific: [], signature: [] };
-    for (const cand of scored) {
-      const b = bandOf(cand.df, edges);
-      const bucket = bands[b];
-      if (bucket.length >= STRAT_PER_BAND) continue;
-      const words = cand.term.split(" ");
-      // within a band, skip a unigram already covered by a chosen phrase (avoids
-      // "soil" next to "soil microbial"). Dedup is per-band, not global — a term
-      // recurring across bands is the point: general view vs. specific view.
-      if (words.length === 1 &&
-          bucket.some(t => t.term.split(" ").includes(words[0]))) continue;
-      // clean only the noisy df==1 tail; keep gene/strain codes (real signatures)
-      if (b === "signature" && looksJunk(cand.term)) continue;
-      bucket.push({ term: cand.term, df: cand.df, score: cand.score });
+    const bands = {};
+    for (const band of STRAT_BANDS) {
+      // clean only the noisy df==1 signature tail; keep gene/strain codes.
+      let pool = band === "signature" ? perBand[band].filter(c => !looksJunk(c.term))
+                                      : perBand[band];
+      let picks;
+      if (mmr) {
+        picks = mmrSelect(pool, STRAT_PER_BAND);
+      } else {
+        picks = [];
+        for (const cand of pool) {
+          if (picks.length >= STRAT_PER_BAND) break;
+          const words = cand.term.split(" ");
+          // within a band, skip a unigram already covered by a chosen phrase.
+          if (words.length === 1 &&
+              picks.some(t => t.term.split(" ").includes(words[0]))) continue;
+          picks.push(cand);
+        }
+      }
+      bands[band] = picks.map(c => ({ term: c.term, df: c.df, score: c.score }));
     }
 
-    // Flat band-ordered term list for combine() / formatLabel and any consumer
-    // that reads `.terms` (general → specific).
+    // Flat band-ordered term list (general → specific) for combine()/consumers.
     const terms = [];
-    for (const b of STRAT_BANDS) for (const t of bands[b]) terms.push(t.term);
+    for (const band of STRAT_BANDS) for (const t of bands[band]) terms.push(t.term);
     out[c] = { bands, terms, edges };
   }
   return out;
@@ -490,12 +522,10 @@ function hasText(ctx) {
 function reasonFor(id, ctx) {
   if (id === "representative") return "needs an embedding";
   if (id === "year")          return "no node has a year";
-  if (id === "cTfidf" || id === "tfidf" || id === "keybert" || id === "stratified") {
-    return typeof ctx.getText !== "function"
-      ? "needs per-node text — titles/abstracts are not materialised in this dataset"
-      : "no member text found";
-  }
-  return "unavailable";
+  // everything else is a text method (flat or banded TF-IDF / c-TF-IDF / KeyBERT)
+  return typeof ctx.getText !== "function"
+    ? "needs per-node text — titles/abstracts are not materialised in this dataset"
+    : "no member text found";
 }
 
 function membersOf(cr) {
@@ -520,15 +550,17 @@ function combine(byMethod) {
   if (byMethod.keybert && byMethod.keybert.terms && byMethod.keybert.terms.length) {
     return byMethod.keybert.terms.join(" · ");
   }
-  // Stratified: a compact one-liner spanning the gradient — top anchor (the
-  // grouping) + top signature/specific (what's inside).
-  if (byMethod.stratified && byMethod.stratified.bands) {
-    const b = byMethod.stratified.bands;
-    const head = (b.anchor[0] || b.broad[0] || {}).term;
-    const tail = (b.signature[0] || b.specific[0] || b.mid[0] || {}).term;
+  // Any banded method: a compact one-liner spanning the gradient — top anchor
+  // (the grouping) + top signature/specific (what's inside).
+  for (const id of ["keybertStratified", "cTfidfStratified", "tfidfStratified"]) {
+    const m = byMethod[id];
+    if (!m || !m.bands) continue;
+    const b = m.bands;
+    const head = ((b.anchor[0] || b.broad[0]) || {}).term;
+    const tail = ((b.signature[0] || b.specific[0] || b.mid[0]) || {}).term;
     const combo = [head, tail].filter(Boolean).join(" · ");
     if (combo) return combo;
-    if (byMethod.stratified.terms.length) return byMethod.stratified.terms.slice(0, 3).join(" · ");
+    if (m.terms.length) return m.terms.slice(0, 3).join(" · ");
   }
   if (byMethod.cTfidf && byMethod.cTfidf.terms && byMethod.cTfidf.terms.length) {
     return byMethod.cTfidf.terms.join(" · ");

@@ -43,7 +43,10 @@ def test_label_methods_synthetic(clean_page):
             c0Combined: c0.combined,
         };
     }''')
-    assert out["methodsAvail"] == ["representative:true", "year:true", "cTfidf:true", "tfidf:true", "keybert:true", "stratified:true"]
+    assert out["methodsAvail"] == [
+        "representative:true", "year:true", "cTfidf:true", "tfidf:true", "keybert:true",
+        "cTfidfStratified:true", "tfidfStratified:true", "keybertStratified:true",
+    ]
     assert "graph" in out["c0Terms"] and "transformer" not in out["c0Terms"]
     assert "transformer" in out["c1Terms"]
     assert out["c0Rep"] == "P0"
@@ -118,10 +121,11 @@ def test_text_methods_gate_without_titles(clean_page):
 
 
 def test_stratified_bands(clean_page):
-    """Stratified labels describe each cluster across df bands: a corpus-wide
-    term lands in a more-general band than a cluster-unique term, the band
-    edges adapt to the df distribution, and the signature (df==1) tail is
-    cleaned of pure-numeric / foreign-stopword junk."""
+    """Banded labels describe each cluster across df bands: a corpus-wide term
+    lands in a more-general band than a cluster-unique term, the band edges
+    adapt to the df distribution, and the signature (df==1) tail is cleaned of
+    pure-numeric / foreign-stopword junk. Stratification is an option on each
+    text scorer (here c-TF-IDF banded)."""
     out = clean_page.evaluate(r'''async () => {
         const { labelClusters } = await import("/app/src/labelling/cluster-labels.js");
         // 6 clusters × 2 nodes. "alga" is in every cluster (general → anchor);
@@ -145,8 +149,8 @@ def test_stratified_bands(clean_page):
             nodes: Object.keys(texts).map(id => ({ id: +id })),
             getText: (id) => texts[id],
         };
-        const res = labelClusters(cr, ctx, { methods: ["stratified"] });
-        const c0 = res.perCluster[0].byMethod.stratified;
+        const res = labelClusters(cr, ctx, { methods: ["cTfidfStratified"] });
+        const c0 = res.perCluster[0].byMethod.cTfidfStratified;
         const ORDER = ["anchor","broad","mid","specific","signature"];
         const bandOfTerm = (cl, term) => {
             for (const b of ORDER) if ((cl.bands[b]||[]).some(t => t.term === term)) return ORDER.indexOf(b);

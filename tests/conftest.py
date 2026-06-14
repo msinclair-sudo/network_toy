@@ -47,6 +47,15 @@ TEST_PORT = int(os.environ.get("NETWORK_TOY_TEST_PORT", "8000"))
 URL = f"http://localhost:{TEST_PORT}/app/"
 KNOWN_FG_TEARDOWN = "Cannot read properties of undefined (reading 'tick')"
 
+# Best-effort optional resources the app deliberately probes and gracefully
+# skips on 404 (e.g. a project's subsets/index.json — "no subsets" is a valid
+# state; see datasource/sqlite.js discoverSubsets). Their 404s are expected and
+# must NOT fail the boot guard. The browser also logs a generic, URL-less
+# console error for every failed fetch; we drop those and instead record real
+# failures at the response level (which carry the URL, so we can allowlist).
+OPTIONAL_RESOURCE_MARKERS = ("/subsets/index.json", "favicon.ico")
+_RESOURCE_LOAD_CONSOLE_ERR = "Failed to load resource"
+
 # Session-level analysis params — TUNED FOR TEST SPEED, not production
 # realism. The locked production defaults (PCA-100 noise → UMAP-100
 # compression → UMAP-3/2 viz, HDBSCAN minClusterSize=100) take ~60-90s
@@ -130,12 +139,22 @@ def playwright_browser(dev_server):
 
 
 def _attach_error_tracker(page):
-    """Hook page.errors as a list capturing console + pageerror events."""
+    """Hook page.errors as a list capturing console + pageerror + failed-response
+    events. Resource-load failures are tracked via the response hook (which has
+    the URL) so the URL-less console duplicate is dropped, and expected best-
+    effort probes (OPTIONAL_RESOURCE_MARKERS) are allowlisted."""
     errors = []
     page.on("pageerror", lambda e: errors.append(str(e)))
     page.on(
         "console",
-        lambda m: errors.append(f"[{m.type}] {m.text}") if m.type == "error" else None,
+        lambda m: errors.append(f"[{m.type}] {m.text}")
+        if m.type == "error" and _RESOURCE_LOAD_CONSOLE_ERR not in m.text else None,
+    )
+    page.on(
+        "response",
+        lambda r: errors.append(f"[http {r.status}] {r.url}")
+        if r.status >= 400 and not any(k in r.url for k in OPTIONAL_RESOURCE_MARKERS)
+        else None,
     )
     page.errors = errors
 

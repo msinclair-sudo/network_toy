@@ -182,3 +182,57 @@ def test_scoring_panel_renders_stored_labels(clean_page):
     )
     assert any("MY LABEL A" in t for t in out["labels"])
     assert any("MY LABEL B" in t for t in out["labels"])
+
+
+def test_scoring_panel_renders_banded_labels_multiline(clean_page):
+    """A banded (stratified) method renders one line per df band in the scoring
+    panel — anchor / broad / mid / specific / signature each on their own row."""
+    out = clean_page.evaluate(
+        '''async () => {
+            const st = await import("/app/src/ui/state.js");
+            const wf = await import("/app/src/ui/workflow.js");
+            const reg = await import("/app/src/ui/panels/registry.js");
+            st.update({ workflow: { steps: {}, rootId: null, selected: null } });
+            const lvl = (uid, nc) => ({ uid, scope: "global", clusterResult: {
+                method: "hdbscan", nodeCluster: Int32Array.from(nc),
+                clusters: [...new Set(nc)].map(id => ({ id, count: nc.filter(x=>x===id).length, colour: "#888" })),
+            }});
+            const levels = [ lvl("L0", [0,0,0,1,1,1]) ];
+            const data = wf.createStep({ type: "data", label: "data" });
+            const dim  = wf.createStep({ type: "dimred", label: "dimred", parentId: data });
+            wf.updateStepStatus(dim, "running"); wf.setStepResult(dim, { dimredResult: {} });
+            const ml = wf.createStep({ type: "multiLevel", label: "sweep", params: {}, parentId: dim });
+            wf.updateStepStatus(ml, "running");
+            wf.setStepResult(ml, { multiLevelSweep: { candidates: [], curve: [], uidPrefix: ml } });
+            const pk = wf.createStep({ type: "multiLevelPicker", label: "pick", params: { pickedCounts: [2] }, parentId: ml });
+            wf.updateStepStatus(pk, "running");
+            wf.setStepResult(pk, { clusterLevels: levels, clusterResult: levels[0].clusterResult });
+            const bands = { anchor: [{term:"alga"}], broad: [{term:"reef"}],
+                            mid: [{term:"symbiont"}], specific: [{term:"acropora"}],
+                            signature: [{term:"cassiopea"}] };
+            const lb = wf.createStep({ type: "labelling", label: "labels", parentId: pk });
+            wf.updateStepStatus(lb, "running");
+            wf.setStepResult(lb, { byLevel: { L0: { perCluster: [
+                { clusterId: 0, byMethod: { cTfidfStratified: { bands, terms: ["alga"] } }, combined: "alga · cassiopea" },
+                { clusterId: 1, byMethod: { cTfidfStratified: { bands, terms: ["alga"] } }, combined: "alga · cassiopea" },
+            ]}}});
+            const sc = wf.createStep({ type: "scoring", label: "scoring", parentId: lb });
+            wf.updateStepStatus(sc, "running"); wf.setStepResult(sc, { scores: {} });
+            wf.selectStep(sc);
+
+            const host = document.createElement("div");
+            host.style.width = "700px";
+            document.body.appendChild(host);
+            const inst = reg.getPanelType("scoring").mount(host, st.getState(), { stepId: sc });
+            await new Promise(r => setTimeout(r, 40));
+            const bandLines = [...host.querySelectorAll(".scoring-label-band")].map(n => n.textContent);
+            inst.destroy();
+            return { bandLines };
+        }'''
+    )
+    # five band lines per cluster × two clusters = ten; each band on its own line
+    assert any(t.startswith("anchor:") for t in out["bandLines"])
+    assert any(t.startswith("broad:") for t in out["bandLines"])
+    assert any(t.startswith("mid:") for t in out["bandLines"])
+    assert any(t.startswith("specific:") for t in out["bandLines"])
+    assert any(t.startswith("signature:") for t in out["bandLines"])
